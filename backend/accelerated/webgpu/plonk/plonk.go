@@ -5,96 +5,76 @@ package plonk
 import (
 	"fmt"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	webgpu_bls12377 "github.com/consensys/gnark/backend/accelerated/webgpu/plonk/bls12-377"
 	webgpu_bls12381 "github.com/consensys/gnark/backend/accelerated/webgpu/plonk/bls12-381"
 	webgpu_bn254 "github.com/consensys/gnark/backend/accelerated/webgpu/plonk/bn254"
 	"github.com/consensys/gnark/backend/plonk"
-	"github.com/consensys/gnark/backend/witness"
+	plonk_bls12377 "github.com/consensys/gnark/backend/plonk/bls12-377"
+	plonk_bls12381 "github.com/consensys/gnark/backend/plonk/bls12-381"
+	plonk_bn254 "github.com/consensys/gnark/backend/plonk/bn254"
 	"github.com/consensys/gnark/constraint"
-	csbls12377 "github.com/consensys/gnark/constraint/bls12-377"
-	csbls12381 "github.com/consensys/gnark/constraint/bls12-381"
-	csbn254 "github.com/consensys/gnark/constraint/bn254"
+	cs_bls12377 "github.com/consensys/gnark/constraint/bls12-377"
+	cs_bls12381 "github.com/consensys/gnark/constraint/bls12-381"
+	cs_bn254 "github.com/consensys/gnark/constraint/bn254"
 )
 
-// Prove runs the PLONK prover for supported curves.
-func Prove(spr constraint.ConstraintSystem, pk plonk.ProvingKey, fullWitness witness.Witness) (plonk.Proof, error) {
-	switch typedSPR := spr.(type) {
-	case *csbn254.SparseR1CS:
-		typedPK, ok := pk.(*webgpu_bn254.ProvingKey)
-		if !ok {
-			return nil, fmt.Errorf("webgpu plonk: expected *webgpu_bn254.ProvingKey, got %T", pk)
+// Prepare uploads the SRS of pk to the GPU and attaches a WebGPU accelerator to
+// it, so that subsequent calls to plonk.Prove with pk run their MSMs, quotient
+// numerator and large inverse FFT on the GPU. If ccs, the constraint system pk
+// was set up for, is not nil, the circuit-dependent caches are built too, which
+// keeps the one-time setup cost out of the first proof. Prepare is idempotent.
+func Prepare(pk plonk.ProvingKey, ccs constraint.ConstraintSystem) error {
+	switch pk := pk.(type) {
+	case *plonk_bn254.ProvingKey:
+		acc, err := webgpu_bn254.Attach(pk)
+		if err != nil {
+			return err
 		}
-		return webgpu_bn254.Prove(typedSPR, typedPK, fullWitness)
-	case *csbls12377.SparseR1CS:
-		typedPK, ok := pk.(*webgpu_bls12377.ProvingKey)
-		if !ok {
-			return nil, fmt.Errorf("webgpu plonk: expected *webgpu_bls12377.ProvingKey, got %T", pk)
+		if spr, ok := ccs.(*cs_bn254.SparseR1CS); ok {
+			return acc.Prewarm(spr)
 		}
-		return webgpu_bls12377.Prove(typedSPR, typedPK, fullWitness)
-	case *csbls12381.SparseR1CS:
-		typedPK, ok := pk.(*webgpu_bls12381.ProvingKey)
-		if !ok {
-			return nil, fmt.Errorf("webgpu plonk: expected *webgpu_bls12381.ProvingKey, got %T", pk)
+	case *plonk_bls12377.ProvingKey:
+		acc, err := webgpu_bls12377.Attach(pk)
+		if err != nil {
+			return err
 		}
-		return webgpu_bls12381.Prove(typedSPR, typedPK, fullWitness)
+		if spr, ok := ccs.(*cs_bls12377.SparseR1CS); ok {
+			return acc.Prewarm(spr)
+		}
+	case *plonk_bls12381.ProvingKey:
+		acc, err := webgpu_bls12381.Attach(pk)
+		if err != nil {
+			return err
+		}
+		if spr, ok := ccs.(*cs_bls12381.SparseR1CS); ok {
+			return acc.Prewarm(spr)
+		}
 	default:
-		return nil, fmt.Errorf("webgpu plonk: unsupported constraint system %T", spr)
+		return fmt.Errorf("webgpu plonk: unsupported proving key %T", pk)
 	}
+	if ccs != nil {
+		return fmt.Errorf("webgpu plonk: constraint system %T does not match proving key %T", ccs, pk)
+	}
+	return nil
 }
 
-// PrepareWithCS initializes browser-side caches that need both the proving key
-// and the constraint system. For PLONK this includes the static quotient
-// numerator polynomials derived from the trace.
-func PrepareWithCS(spr constraint.ConstraintSystem, pk plonk.ProvingKey) error {
-	switch typedSPR := spr.(type) {
-	case *csbn254.SparseR1CS:
-		typedPK, ok := pk.(*webgpu_bn254.ProvingKey)
-		if !ok {
-			return fmt.Errorf("webgpu plonk: expected *webgpu_bn254.ProvingKey, got %T", pk)
-		}
-		return typedPK.PrepareWithCS(typedSPR)
-	case *csbls12377.SparseR1CS:
-		typedPK, ok := pk.(*webgpu_bls12377.ProvingKey)
-		if !ok {
-			return fmt.Errorf("webgpu plonk: expected *webgpu_bls12377.ProvingKey, got %T", pk)
-		}
-		return typedPK.PrepareWithCS(typedSPR)
-	case *csbls12381.SparseR1CS:
-		typedPK, ok := pk.(*webgpu_bls12381.ProvingKey)
-		if !ok {
-			return fmt.Errorf("webgpu plonk: expected *webgpu_bls12381.ProvingKey, got %T", pk)
-		}
-		return typedPK.PrepareWithCS(typedSPR)
+// Release frees the GPU resources attached to pk by Prepare and restores the
+// CPU prover.
+func Release(pk plonk.ProvingKey) error {
+	type releaser interface{ Release() error }
+	var acc any
+	switch pk := pk.(type) {
+	case *plonk_bn254.ProvingKey:
+		acc = pk.Accelerator()
+	case *plonk_bls12377.ProvingKey:
+		acc = pk.Accelerator()
+	case *plonk_bls12381.ProvingKey:
+		acc = pk.Accelerator()
 	default:
-		return fmt.Errorf("webgpu plonk: unsupported constraint system %T", spr)
+		return fmt.Errorf("webgpu plonk: unsupported proving key %T", pk)
 	}
-}
-
-// NewProvingKey returns an empty proving-key wrapper for supported curves.
-func NewProvingKey(curveID ecc.ID) plonk.ProvingKey {
-	switch curveID {
-	case ecc.BN254:
-		return &webgpu_bn254.ProvingKey{}
-	case ecc.BLS12_377:
-		return &webgpu_bls12377.ProvingKey{}
-	case ecc.BLS12_381:
-		return &webgpu_bls12381.ProvingKey{}
-	default:
-		panic("webgpu plonk: unsupported curve")
+	if r, ok := acc.(releaser); ok {
+		return r.Release()
 	}
-}
-
-// Prepare initializes browser-side caches for a deserialized proving key.
-func Prepare(pk plonk.ProvingKey) error {
-	switch typedPK := pk.(type) {
-	case *webgpu_bn254.ProvingKey:
-		return typedPK.Prepare()
-	case *webgpu_bls12377.ProvingKey:
-		return typedPK.Prepare()
-	case *webgpu_bls12381.ProvingKey:
-		return typedPK.Prepare()
-	default:
-		return fmt.Errorf("webgpu plonk: unsupported proving key type %T", pk)
-	}
+	return nil
 }

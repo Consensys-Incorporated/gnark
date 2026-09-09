@@ -1,19 +1,16 @@
 //go:build js && wasm
 
-// Package groth16 provides an experimental browser/WebGPU-accelerated Groth16
-// prover surface for wasm targets.
+// Package groth16 attaches the browser WebGPU runtime to gnark's Groth16
+// prover for wasm targets.
 //
-// Scope of the current implementation:
-//   - circuit compilation, setup, witness assignment, and solver stay native
-//     (no WebGPU offload)
-//   - Groth16 heavy MSMs are offloaded through a JS bridge to the browser
-//     WebGPU runtime in this repository
-//   - BSB22 commitment hint, commitment MSM, and PoK MSM work is wired through
-//     the same WebGPU bridge
+// The prover itself is gnark's native one (backend/groth16): Prepare uploads
+// the proving key bases to the GPU and installs an implementation of the
+// prover's Accelerator interface on the key, after which groth16.Prove runs its
+// multi-scalar multiplications and quotient computation on the GPU while
+// witness solving and the final proof assembly stay in Go. The per-curve
+// implementations in the bn254, bls12-377 and bls12-381 subpackages are
+// generated from internal/generator/templates/go.
 //
-// Curve-specific proving code lives in the bn254, bls12-377, and bls12-381
-// subpackages, while this package keeps the curve-switching facade. Host
-// applications are expected to install the WebGPU bridge from the TS package
-// before invoking Prove so the wasm code can call into the browser runtime
-// through `syscall/js`.
+// The host application must install the TypeScript bridge
+// (gnarkGroth16WebGPU on globalThis) before calling Prepare.
 package groth16
