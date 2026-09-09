@@ -14,7 +14,8 @@ export type RawProfile = {
   totalMs: number;
 };
 
-const UNIFORM_BYTES = 32;
+// Large enough for the `Params` struct of every ops shader (`fr_vector` is 64 bytes).
+const UNIFORM_BYTES = 64;
 const WORKGROUP_SIZE = 64;
 
 export function createRawKernel(device: GPUDevice, label: string, shaderCode: string, entryPoint: string): RawKernel {

@@ -1,5 +1,6 @@
 import type { FieldShape } from "./types.js";
 import type { BufferPool } from "./buffer_pool.js";
+import type { BufferBinding, CommandBatch } from "./gpu.js";
 
 export type { CurveGPUError, CurveGPUNotSupportedError, CurveGPUDeviceLostError, CurveGPUShaderError } from "./errors.js";
 
@@ -369,6 +370,25 @@ export interface NTTModule {
    * coset form to canonical regular form.
    */
   inverseCosetBitReversePackedRegular(values: Uint8Array): Promise<Uint8Array>;
+  /**
+   * Run forward or inverse NTTs over `vectorCount` packed Montgomery-form
+   * vectors of equal size, optionally reading bit-reversed input and (inverse
+   * only) undoing the coset shift afterwards. Output stays in Montgomery form.
+   */
+  transformPackedMont(
+    values: Uint8Array,
+    transform: { inverse: boolean; vectorCount?: number; inputBitReversed?: boolean; inverseCoset?: boolean },
+  ): Promise<Uint8Array>;
+  /**
+   * Record a forward NTT of `vectorCount` Montgomery-form vectors held in
+   * `values` into `batch`; returns a batch temporary holding the result and
+   * leaves `values` untouched.
+   */
+  recordForward(batch: CommandBatch, values: GPUBuffer, vectorSize: number, vectorCount: number): GPUBuffer;
+  /** Inverse counterpart of `recordForward` (includes the `1/n` scaling). */
+  recordInverse(batch: CommandBatch, values: GPUBuffer, vectorSize: number, vectorCount: number): GPUBuffer;
+  /** Record `values[i] *= factors[i mod vectorSize]` (Montgomery) in place. */
+  recordMulVector(batch: CommandBatch, values: GPUBuffer, factors: BufferBinding, vectorSize: number, vectorCount: number): void;
   /** Precompute and cache domain data (twiddles, coset factors) on the GPU for a power-of-two size. */
   prewarmDomain(size: number): Promise<void>;
 }

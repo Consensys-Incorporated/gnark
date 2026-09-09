@@ -49,6 +49,8 @@ type wgslField struct {
 	One             []uint32 // R mod q (Montgomery form of 1), 32-bit limbs
 	RSquare         []uint32 // R² mod q as a regular integer, 32-bit limbs
 	QInvNeg16       uint32   // -q⁻¹ mod 2¹⁶
+
+	wgslTuning
 }
 
 // wgslCurve groups the two fields of a curve and the parameters of its
@@ -159,6 +161,7 @@ func newWGSLField(prefix string, limbs int, q *big.Int, inverse bool) (wgslField
 		One:             toLimbs(one, 32, limbs),
 		RSquare:         toLimbs(rSquare, 32, limbs),
 		QInvNeg16:       uint32(qInvNeg.Uint64()),
+		wgslTuning:      tuningFor(limbs),
 	}
 	return f, nil
 }
@@ -188,9 +191,6 @@ type fp2 struct {
 type fp2Elem struct{ c0, c1 *big.Int }
 
 func (f fp2) red(x *big.Int) *big.Int { return x.Mod(x, f.p) }
-func (f fp2) add(a, b fp2Elem) fp2Elem {
-	return fp2Elem{f.red(new(big.Int).Add(a.c0, b.c0)), f.red(new(big.Int).Add(a.c1, b.c1))}
-}
 func (f fp2) sub(a, b fp2Elem) fp2Elem {
 	return fp2Elem{f.red(new(big.Int).Sub(a.c0, b.c0)), f.red(new(big.Int).Sub(a.c1, b.c1))}
 }

@@ -6,6 +6,13 @@ import { appendContextDiagnostics, createRequestedCurveModule, curveDisplayName,
 
 const curveId = getRequestedCurveId();
 
+/** Concatenate fixed-size elements into one packed buffer. */
+function pack(values: readonly Uint8Array[], elementBytes: number): Uint8Array {
+  const out = new Uint8Array(values.length * elementBytes);
+  values.forEach((value, index) => out.set(value, index * elementBytes));
+  return out;
+}
+
 installBenchPage({
   title: suiteTitle(curveId, "fr NTT", "Benchmark"),
   idleMessage: `Press Run to benchmark ${curveDisplayName(curveId)} fr NTT in browser WebGPU.`,
@@ -23,13 +30,20 @@ installBenchPage({
     const row = (size: number, op: string, bench: { coldMs: number; warmMs: number }): string =>
       [size, op, initMs.toFixed(3), bench.coldMs.toFixed(3), (initMs + bench.coldMs).toFixed(3), bench.warmMs.toFixed(3)].join(",");
 
+    // The packed entry points are the ones the provers use; they measure the
+    // GPU pipeline plus one upload and one readback, without per-element
+    // JavaScript allocations. The cold run includes the domain preparation.
     for (let logSize = minLog; logSize <= maxLog; logSize += 1) {
       const size = 1 << logSize;
-      const inputMont = await curve.fr.toMontgomeryBatch(makeRandomScalars(size, 0x9e3779b9 ^ size));
-      lines.push(row(size, "forward_ntt", await benchmarkTotalDuration(iters, async () => void (await curve.ntt.forward(inputMont)))));
+      const inputMont = pack(await curve.fr.toMontgomeryBatch(makeRandomScalars(size, 0x9e3779b9 ^ size)), curve.fr.byteSize);
+      lines.push(row(size, "forward_ntt", await benchmarkTotalDuration(iters, async () => void (await curve.ntt.forwardPackedMont(inputMont)))));
       writeLog(lines);
-      const forwardValues = await curve.ntt.forward(inputMont);
-      lines.push(row(size, "inverse_ntt", await benchmarkTotalDuration(iters, async () => void (await curve.ntt.inverse(forwardValues)))));
+      const forwardValues = await curve.ntt.forwardPackedMont(inputMont);
+      lines.push(row(size, "inverse_ntt", await benchmarkTotalDuration(iters, async () => void (await curve.ntt.inversePackedMont(forwardValues)))));
+      writeLog(lines);
+      lines.push(
+        row(size, "inverse_coset_bitrev_regular", await benchmarkTotalDuration(iters, async () => void (await curve.ntt.inverseCosetBitReversePackedRegular(inputMont)))),
+      );
       writeLog(lines);
     }
     return `${curveDisplayName(curveId)} fr NTT browser benchmark completed`;

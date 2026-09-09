@@ -1,28 +1,34 @@
 {{/*
   Shared fragments for a prime field over 32-bit limbs. Dot is a wgslField.
 
-  field_types  : the limb structs ({{.Type}} and {{.Type16}}).
-  field_consts : 16-bit limb constants used by the Montgomery multiplication
-                 (and q-2 when .Inverse is set).
-  field_core   : the arithmetic (zero/one/modulus, adc/sbb, add/sub/neg,
-                 normalize, Montgomery mul via 16-bit limbs, square, and
-                 optionally Fermat inverse).
+  field_types  : the limb struct ({{.Type}}).
+  field_consts : the modulus (32-bit and 16-bit limbs) and the Montgomery
+                 constant used by the multiplication (and q-2 when .Inverse).
+  field_core   : the arithmetic (zero/one, adc/sbb, branchless add/sub/neg/
+                 double/normalize, Montgomery mul via 16-bit digits, square,
+                 and optionally Fermat inverse).
   adc_sbb      : the two carry/borrow helpers (unprefixed, shared by Fp and Fr).
+
+  Every operation is branch-free: candidates are computed unconditionally
+  and the result is picked with select() on the carry/borrow bit, so
+  divergent lanes never serialize. Results are always canonical (< q).
 */}}
 
 {{- define "field_types" -}}
 struct {{.Type}} {
   limbs: array<u32, {{.Limbs}}>,
 }
-
-struct {{.Type16}} {
-  limbs: array<u32, {{.Limbs16}}>,
-}
 {{- end -}}
 
 {{- define "field_consts" -}}
 const {{.UPrefix}}_LIMB16_MASK: u32 = 0xffffu;
 const {{.UPrefix}}_QINV_NEG_16: u32 = {{hex16 .QInvNeg16}};
+
+const {{.UPrefix}}_MODULUS32: array<u32, {{.Limbs}}> = array<u32, {{.Limbs}}>(
+{{- range .Modulus}}
+  {{hex32 .}},
+{{- end}}
+);
 
 const {{.UPrefix}}_MODULUS16: array<u32, {{.Limbs16}}> = array<u32, {{.Limbs16}}>(
 {{- range pairs .Modulus16}}
@@ -42,29 +48,73 @@ const {{.UPrefix}}_MODULUS_MINUS_TWO: array<u32, {{.Limbs}}> = array<u32, {{.Lim
 {{- define "adc_sbb" -}}
 fn adc(a: u32, b: u32, carry: u32) -> vec2<u32> {
   let sum0 = a + b;
-  let carry0 = select(0u, 1u, sum0 < a);
   let sum1 = sum0 + carry;
-  let carry1 = select(0u, 1u, sum1 < sum0);
-  return vec2<u32>(sum1, carry0 | carry1);
+  return vec2<u32>(sum1, u32(sum0 < a) | u32(sum1 < sum0));
 }
 
 fn sbb(a: u32, b: u32, borrow: u32) -> vec2<u32> {
   let diff0 = a - b;
-  let borrow0 = select(0u, 1u, a < b);
   let diff1 = diff0 - borrow;
-  let borrow1 = select(0u, 1u, diff1 > diff0);
-  return vec2<u32>(diff1, borrow0 | borrow1);
+  return vec2<u32>(diff1, u32(a < b) | u32(diff1 > diff0));
 }
+{{- end -}}
+
+{{/*
+  sub_q: emit "var t = x - q" as an sbb chain, leaving the final borrow in
+  `lane.y`. Dot is a dict with Field, Var (result variable), Src (limb
+  expression prefix, e.g. "z") and Indent.
+*/}}
+{{- define "sub_q" -}}
+{{- $f := .Field -}}{{- $v := .Var -}}{{- $s := .Src -}}{{- $ind := .Indent -}}
+{{- range $i := iterate 0 $f.Limbs}}
+{{$ind}}lane = sbb({{$s}}.limbs[{{$i}}], {{$f.UPrefix}}_MODULUS32[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
+{{$ind}}{{$v}}.limbs[{{$i}}] = lane.x;
+{{- end}}
+{{- end -}}
+
+{{/*
+  select_limbs: emit "Out.limbs[i] = select(A.limbs[i], B.limbs[i], Cond)".
+*/}}
+{{- define "select_limbs" -}}
+{{- range $i := iterate 0 .Limbs}}
+  {{$.Out}}.limbs[{{$i}}] = select({{$.A}}.limbs[{{$i}}], {{$.B}}.limbs[{{$i}}], {{$.Cond}});
+{{- end}}
+{{- end -}}
+
+{{/*
+  mul_row: one CIOS iteration over 16-bit digits. The accumulator is the
+  scalars t0..tN16 (kept in registers), the digits of the first operand are
+  a0..a(N16-1), and the current digit of the second operand is `{{.BI}}`.
+*/}}
+{{- define "mul_row" -}}
+{{- $f := .Field -}}{{- $P := $f.UPrefix -}}{{- $n16 := $f.Limbs16 -}}{{- $bi := .BI -}}
+{{- range $j := iterate 0 $n16}}
+    uv = t{{$j}} + a{{$j}} * {{$bi}}{{if $j}} + c{{end}};
+    {{if lt $j (sub $n16 1)}}t{{$j}} = uv & {{$P}}_LIMB16_MASK;
+    c = uv >> 16u;{{else}}t{{$j}} = uv & {{$P}}_LIMB16_MASK;
+    t{{$n16}} = uv >> 16u;{{end}}
+{{- end}}
+    m = (t0 * {{$P}}_QINV_NEG_16) & {{$P}}_LIMB16_MASK;
+    // (t0 + m*q0) is 0 mod 2^16 by construction: only its carry survives.
+    c = (t0 + m * {{$P}}_MODULUS16[0]) >> 16u;
+{{- range $j := iterate 1 $n16}}
+    uv = t{{$j}} + m * {{$P}}_MODULUS16[{{$j}}] + c;
+    t{{sub $j 1}} = uv & {{$P}}_LIMB16_MASK;
+    c = uv >> 16u;
+{{- end}}
+    uv = t{{$n16}} + c;
+    t{{sub $n16 1}} = uv & {{$P}}_LIMB16_MASK;
+    t{{$n16}} = uv >> 16u;
 {{- end -}}
 
 {{- define "field_core" -}}
 {{- $p := .Prefix -}}
 {{- $P := .UPrefix -}}
 {{- $T := .Type -}}
-{{- $T16 := .Type16 -}}
 {{- $n := .Limbs -}}
 {{- $n16 := .Limbs16 -}}
 {{- $last := sub .Limbs 1 -}}
+{{- $f := . -}}
 fn {{$p}}_zero() -> {{$T}} {
   var z: {{$T}};
 {{- range $i := iterate 0 $n}}
@@ -95,19 +145,12 @@ fn {{$p}}_rsquare_regular() -> {{$T}} {
   return z;
 }
 
-fn {{$p}}_modulus() -> {{$T}} {
-  var z: {{$T}};
-{{- range $i, $v := .Modulus}}
-  z.limbs[{{$i}}] = {{hex32 $v}};
-{{- end}}
-  return z;
-}
-
 fn {{$p}}_predicate(value: bool) -> {{$T}} {
-  var z = {{$p}}_zero();
-  if (value) {
-    z = {{$p}}_one();
-  }
+  let one = {{$p}}_one();
+  var z: {{$T}};
+{{- range $i := iterate 0 $n}}
+  z.limbs[{{$i}}] = select(0u, one.limbs[{{$i}}], value);
+{{- end}}
   return z;
 }
 
@@ -123,174 +166,128 @@ fn {{$p}}_equal(x: {{$T}}, y: {{$T}}) -> bool {
     {{end}}(x.limbs[{{$i}}] == y.limbs[{{$i}}]){{end}};
 }
 
-fn {{$p}}_gte(x: {{$T}}, y: {{$T}}) -> bool {
-{{- range $i := reverse (iterate 1 $n)}}
-  if (x.limbs[{{$i}}] != y.limbs[{{$i}}]) {
-    return x.limbs[{{$i}}] > y.limbs[{{$i}}];
-  }
-{{- end}}
-  return x.limbs[0] >= y.limbs[0];
-}
-
-fn {{$p}}_add_modulus(x: {{$T}}) -> {{$T}} {
-  let q = {{$p}}_modulus();
-  var z: {{$T}};
-  var carry = 0u;
-{{- range $i := iterate 0 $n}}
-  {{if eq $i 0}}var {{end}}lane = adc(x.limbs[{{$i}}], q.limbs[{{$i}}], carry);
-  z.limbs[{{$i}}] = lane.x;
-{{- if lt $i $last}}
-  carry = lane.y;
-{{- end}}
-{{- end}}
-  return z;
-}
-
-fn {{$p}}_sub_modulus(x: {{$T}}) -> {{$T}} {
-  let q = {{$p}}_modulus();
-  var z: {{$T}};
-  var borrow = 0u;
-{{- range $i := iterate 0 $n}}
-  {{if eq $i 0}}var {{end}}lane = sbb(x.limbs[{{$i}}], q.limbs[{{$i}}], borrow);
-  z.limbs[{{$i}}] = lane.x;
-{{- if lt $i $last}}
-  borrow = lane.y;
-{{- end}}
-{{- end}}
-  return z;
-}
-
+// x + y mod q: z = x + y, t = z - q; the result is t when the addition
+// carried or the subtraction did not borrow (z >= q), else z.
 fn {{$p}}_add(x: {{$T}}, y: {{$T}}) -> {{$T}} {
   var z: {{$T}};
-  var carry = 0u;
+  var t: {{$T}};
 {{- range $i := iterate 0 $n}}
-  {{if eq $i 0}}var {{end}}lane = adc(x.limbs[{{$i}}], y.limbs[{{$i}}], carry);
+  {{if eq $i 0}}var {{end}}lane = adc(x.limbs[{{$i}}], y.limbs[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
   z.limbs[{{$i}}] = lane.x;
-{{- if lt $i $last}}
-  carry = lane.y;
 {{- end}}
-{{- end}}
-  if ((lane.y != 0u) || {{$p}}_gte(z, {{$p}}_modulus())) {
-    return {{$p}}_sub_modulus(z);
-  }
+  let carry = lane.y;
+{{- template "sub_q" (dict "Field" $f "Var" "t" "Src" "z" "Indent" "  ")}}
+  let use_t = (carry != 0u) || (lane.y == 0u);
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "z" "B" "t" "Cond" "use_t")}}
   return z;
 }
 
+// x - y mod q: z = x - y, t = z + q; the result is t when the subtraction
+// borrowed, else z.
 fn {{$p}}_sub(x: {{$T}}, y: {{$T}}) -> {{$T}} {
   var z: {{$T}};
-  var borrow = 0u;
+  var t: {{$T}};
 {{- range $i := iterate 0 $n}}
-  {{if eq $i 0}}var {{end}}lane = sbb(x.limbs[{{$i}}], y.limbs[{{$i}}], borrow);
+  {{if eq $i 0}}var {{end}}lane = sbb(x.limbs[{{$i}}], y.limbs[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
   z.limbs[{{$i}}] = lane.x;
-{{- if lt $i $last}}
-  borrow = lane.y;
 {{- end}}
+  let use_t = lane.y != 0u;
+{{- range $i := iterate 0 $n}}
+  lane = adc(z.limbs[{{$i}}], {{$P}}_MODULUS32[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
+  t.limbs[{{$i}}] = lane.x;
 {{- end}}
-  if (lane.y != 0u) {
-    return {{$p}}_add_modulus(z);
-  }
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "z" "B" "t" "Cond" "use_t")}}
   return z;
 }
 
+// -x mod q: q - x, or zero when x is zero.
 fn {{$p}}_neg(x: {{$T}}) -> {{$T}} {
-  if ({{$p}}_is_zero(x)) {
-    return {{$p}}_zero();
-  }
-  return {{$p}}_sub({{$p}}_modulus(), x);
-}
-
-fn {{$p}}_double(x: {{$T}}) -> {{$T}} {
-  return {{$p}}_add(x, x);
-}
-
-fn {{$p}}_normalize(x: {{$T}}) -> {{$T}} {
-  if ({{$p}}_gte(x, {{$p}}_modulus())) {
-    return {{$p}}_sub_modulus(x);
-  }
-  return x;
-}
-
-fn {{$p}}_unpack16(x: {{$T}}) -> {{$T16}} {
-  var z: {{$T16}};
-  for (var i = 0u; i < {{$n}}u; i = i + 1u) {
-    z.limbs[2u * i] = x.limbs[i] & {{$P}}_LIMB16_MASK;
-    z.limbs[2u * i + 1u] = x.limbs[i] >> 16u;
-  }
-  return z;
-}
-
-fn {{$p}}_pack16(x: {{$T16}}) -> {{$T}} {
+  var t: {{$T}};
+{{- range $i := iterate 0 $n}}
+  {{if eq $i 0}}var {{end}}lane = sbb({{$P}}_MODULUS32[{{$i}}], x.limbs[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
+  t.limbs[{{$i}}] = lane.x;
+{{- end}}
+  let nonzero = !{{$p}}_is_zero(x);
   var z: {{$T}};
-  for (var i = 0u; i < {{$n}}u; i = i + 1u) {
-    z.limbs[i] = x.limbs[2u * i] | (x.limbs[2u * i + 1u] << 16u);
-  }
+{{- range $i := iterate 0 $n}}
+  z.limbs[{{$i}}] = select(0u, t.limbs[{{$i}}], nonzero);
+{{- end}}
   return z;
 }
 
-fn {{$p}}{{$n16}}_gte_modulus(x: {{$T16}}) -> bool {
-  for (var i: i32 = {{sub $n16 1}}; i >= 0; i = i - 1) {
-    let idx = u32(i);
-    let xLimb = x.limbs[idx];
-    let qLimb = {{$P}}_MODULUS16[idx];
-    if (xLimb != qLimb) {
-      return xLimb > qLimb;
-    }
-  }
-  return true;
-}
-
-fn {{$p}}{{$n16}}_sub_modulus(x: {{$T16}}) -> {{$T16}} {
-  var z: {{$T16}};
-  var borrow = 0u;
-  for (var i = 0u; i < {{$n16}}u; i = i + 1u) {
-    let lane = sbb(x.limbs[i], {{$P}}_MODULUS16[i], borrow);
-    z.limbs[i] = lane.x & {{$P}}_LIMB16_MASK;
-    borrow = lane.y;
-  }
+// 2x mod q: a left shift by one bit, then the same conditional subtraction
+// as {{$p}}_add.
+fn {{$p}}_double(x: {{$T}}) -> {{$T}} {
+  var z: {{$T}};
+  var t: {{$T}};
+  z.limbs[0] = x.limbs[0] << 1u;
+{{- range $i := iterate 1 $n}}
+  z.limbs[{{$i}}] = (x.limbs[{{$i}}] << 1u) | (x.limbs[{{sub $i 1}}] >> 31u);
+{{- end}}
+  let carry = x.limbs[{{$last}}] >> 31u;
+  var lane: vec2<u32>;
+{{- template "sub_q" (dict "Field" $f "Var" "t" "Src" "z" "Indent" "  ")}}
+  let use_t = (carry != 0u) || (lane.y == 0u);
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "z" "B" "t" "Cond" "use_t")}}
   return z;
 }
 
-// Montgomery multiplication (CIOS) over 16-bit limbs: R = 2^(16*{{$n16}}).
+// Reduce a value in [0, 2q) to [0, q).
+fn {{$p}}_normalize(x: {{$T}}) -> {{$T}} {
+  var t: {{$T}};
+  var z: {{$T}};
+  var lane: vec2<u32>;
+{{- template "sub_q" (dict "Field" $f "Var" "t" "Src" "x" "Indent" "  ")}}
+  let use_t = lane.y == 0u;
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "x" "B" "t" "Cond" "use_t")}}
+  return z;
+}
+
+// Montgomery multiplication (CIOS) over 16-bit digits: R = 2^(16*{{$n16}}).
 // Each 16x16 partial product plus carries fits in a u32 without overflow.
+// The digit loops are unrolled so the accumulator lives in registers; the
+// final conditional subtraction is branch-free.
 fn {{$p}}_mul(x: {{$T}}, y: {{$T}}) -> {{$T}} {
-  let a = {{$p}}_unpack16(x);
-  let b = {{$p}}_unpack16(y);
-  var t: array<u32, {{add $n16 1}}>;
-
-  for (var i = 0u; i < {{$n16}}u; i = i + 1u) {
-    var carry = 0u;
-    let bi = b.limbs[i];
-    for (var j = 0u; j < {{$n16}}u; j = j + 1u) {
-      let aLimb = a.limbs[j];
-      let uv = t[j] + (aLimb * bi) + carry;
-      t[j] = uv & {{$P}}_LIMB16_MASK;
-      carry = uv >> 16u;
-    }
-    t[{{$n16}}] = carry;
-
-    let m = (t[0] * {{$P}}_QINV_NEG_16) & {{$P}}_LIMB16_MASK;
-    carry = 0u;
-    for (var j = 0u; j < {{$n16}}u; j = j + 1u) {
-      let qLimb = {{$P}}_MODULUS16[j];
-      let uv = t[j] + (m * qLimb) + carry;
-      if (j > 0u) {
-        t[j - 1u] = uv & {{$P}}_LIMB16_MASK;
-      }
-      carry = uv >> 16u;
-    }
-    let uv = t[{{$n16}}] + carry;
-    t[{{sub $n16 1}}] = uv & {{$P}}_LIMB16_MASK;
-    t[{{$n16}}] = uv >> 16u;
+{{- range $j := iterate 0 $n16}}
+  let a{{$j}} = x.limbs[{{div $j 2}}] {{if eq (mod $j 2) 0}}& {{$P}}_LIMB16_MASK{{else}}>> 16u{{end}};
+{{- end}}
+{{- if .MulUnrollOuter}}
+{{- range $j := iterate 0 $n16}}
+  let b{{$j}} = y.limbs[{{div $j 2}}] {{if eq (mod $j 2) 0}}& {{$P}}_LIMB16_MASK{{else}}>> 16u{{end}};
+{{- end}}
+{{- end}}
+{{- range $j := iterate 0 (add $n16 1)}}
+  var t{{$j}} = 0u;
+{{- end}}
+  var uv = 0u;
+  var c = 0u;
+  var m = 0u;
+{{- if .MulUnrollOuter}}
+{{- range $i := iterate 0 $n16}}
+  {
+{{- template "mul_row" (dict "Field" $f "BI" (printf "b%d" $i))}}
   }
+{{- end}}
+{{- else}}
+  for (var i = 0u; i < {{$n}}u; i = i + 1u) {
+    let w = y.limbs[i];
+    let b_lo = w & {{$P}}_LIMB16_MASK;
+    let b_hi = w >> 16u;
+{{- template "mul_row" (dict "Field" $f "BI" "b_lo")}}
+{{- template "mul_row" (dict "Field" $f "BI" "b_hi")}}
+  }
+{{- end}}
 
-  var z{{$n16}}: {{$T16}};
-  for (var i = 0u; i < {{$n16}}u; i = i + 1u) {
-    z{{$n16}}.limbs[i] = t[i];
-  }
-  if ((t[{{$n16}}] != 0u) || {{$p}}{{$n16}}_gte_modulus(z{{$n16}})) {
-    z{{$n16}} = {{$p}}{{$n16}}_sub_modulus(z{{$n16}});
-  }
-  return {{$p}}_pack16(z{{$n16}});
+  var z: {{$T}};
+{{- range $i := iterate 0 $n}}
+  z.limbs[{{$i}}] = t{{mul $i 2}} | (t{{add (mul $i 2) 1}} << 16u);
+{{- end}}
+  var t: {{$T}};
+  var lane: vec2<u32>;
+{{- template "sub_q" (dict "Field" $f "Var" "t" "Src" "z" "Indent" "  ")}}
+  let use_t = (t{{$n16}} != 0u) || (lane.y == 0u);
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "z" "B" "t" "Cond" "use_t")}}
+  return z;
 }
 
 fn {{$p}}_square(x: {{$T}}) -> {{$T}} {

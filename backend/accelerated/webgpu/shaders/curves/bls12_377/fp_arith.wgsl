@@ -4,10 +4,6 @@
 struct Fp {
   limbs: array<u32, 12>,
 }
-
-struct Fp24 {
-  limbs: array<u32, 24>,
-}
 // curvegpu:section fp-types end
 
 struct Params {
@@ -34,6 +30,21 @@ const FP_OP_FROM_MONT: u32 = 12u;
 // curvegpu:section fp-consts begin
 const FP_LIMB16_MASK: u32 = 0xffffu;
 const FP_QINV_NEG_16: u32 = 0xffffu;
+
+const FP_MODULUS32: array<u32, 12> = array<u32, 12>(
+  0x00000001u,
+  0x8508c000u,
+  0x30000000u,
+  0x170b5d44u,
+  0xba094800u,
+  0x1ef3622fu,
+  0x00f5138fu,
+  0x1a22d9f3u,
+  0x6ca1493bu,
+  0xc63b05c0u,
+  0x17c510eau,
+  0x01ae3a46u,
+);
 
 const FP_MODULUS16: array<u32, 24> = array<u32, 24>(
   0x0001u, 0x0000u,
@@ -129,45 +140,34 @@ fn fp_rsquare_regular() -> Fp {
   return z;
 }
 
-fn fp_modulus() -> Fp {
-  var z: Fp;
-  z.limbs[0] = 0x00000001u;
-  z.limbs[1] = 0x8508c000u;
-  z.limbs[2] = 0x30000000u;
-  z.limbs[3] = 0x170b5d44u;
-  z.limbs[4] = 0xba094800u;
-  z.limbs[5] = 0x1ef3622fu;
-  z.limbs[6] = 0x00f5138fu;
-  z.limbs[7] = 0x1a22d9f3u;
-  z.limbs[8] = 0x6ca1493bu;
-  z.limbs[9] = 0xc63b05c0u;
-  z.limbs[10] = 0x17c510eau;
-  z.limbs[11] = 0x01ae3a46u;
-  return z;
-}
-
 fn fp_predicate(value: bool) -> Fp {
-  var z = fp_zero();
-  if (value) {
-    z = fp_one();
-  }
+  let one = fp_one();
+  var z: Fp;
+  z.limbs[0] = select(0u, one.limbs[0], value);
+  z.limbs[1] = select(0u, one.limbs[1], value);
+  z.limbs[2] = select(0u, one.limbs[2], value);
+  z.limbs[3] = select(0u, one.limbs[3], value);
+  z.limbs[4] = select(0u, one.limbs[4], value);
+  z.limbs[5] = select(0u, one.limbs[5], value);
+  z.limbs[6] = select(0u, one.limbs[6], value);
+  z.limbs[7] = select(0u, one.limbs[7], value);
+  z.limbs[8] = select(0u, one.limbs[8], value);
+  z.limbs[9] = select(0u, one.limbs[9], value);
+  z.limbs[10] = select(0u, one.limbs[10], value);
+  z.limbs[11] = select(0u, one.limbs[11], value);
   return z;
 }
 
 fn adc(a: u32, b: u32, carry: u32) -> vec2<u32> {
   let sum0 = a + b;
-  let carry0 = select(0u, 1u, sum0 < a);
   let sum1 = sum0 + carry;
-  let carry1 = select(0u, 1u, sum1 < sum0);
-  return vec2<u32>(sum1, carry0 | carry1);
+  return vec2<u32>(sum1, u32(sum0 < a) | u32(sum1 < sum0));
 }
 
 fn sbb(a: u32, b: u32, borrow: u32) -> vec2<u32> {
   let diff0 = a - b;
-  let borrow0 = select(0u, 1u, a < b);
   let diff1 = diff0 - borrow;
-  let borrow1 = select(0u, 1u, diff1 > diff0);
-  return vec2<u32>(diff1, borrow0 | borrow1);
+  return vec2<u32>(diff1, u32(a < b) | u32(diff1 > diff0));
 }
 
 fn fp_is_zero(x: Fp) -> bool {
@@ -191,314 +191,703 @@ fn fp_equal(x: Fp, y: Fp) -> bool {
     (x.limbs[11] == y.limbs[11]);
 }
 
-fn fp_gte(x: Fp, y: Fp) -> bool {
-  if (x.limbs[11] != y.limbs[11]) {
-    return x.limbs[11] > y.limbs[11];
-  }
-  if (x.limbs[10] != y.limbs[10]) {
-    return x.limbs[10] > y.limbs[10];
-  }
-  if (x.limbs[9] != y.limbs[9]) {
-    return x.limbs[9] > y.limbs[9];
-  }
-  if (x.limbs[8] != y.limbs[8]) {
-    return x.limbs[8] > y.limbs[8];
-  }
-  if (x.limbs[7] != y.limbs[7]) {
-    return x.limbs[7] > y.limbs[7];
-  }
-  if (x.limbs[6] != y.limbs[6]) {
-    return x.limbs[6] > y.limbs[6];
-  }
-  if (x.limbs[5] != y.limbs[5]) {
-    return x.limbs[5] > y.limbs[5];
-  }
-  if (x.limbs[4] != y.limbs[4]) {
-    return x.limbs[4] > y.limbs[4];
-  }
-  if (x.limbs[3] != y.limbs[3]) {
-    return x.limbs[3] > y.limbs[3];
-  }
-  if (x.limbs[2] != y.limbs[2]) {
-    return x.limbs[2] > y.limbs[2];
-  }
-  if (x.limbs[1] != y.limbs[1]) {
-    return x.limbs[1] > y.limbs[1];
-  }
-  return x.limbs[0] >= y.limbs[0];
-}
-
-fn fp_add_modulus(x: Fp) -> Fp {
-  let q = fp_modulus();
-  var z: Fp;
-  var carry = 0u;
-  var lane = adc(x.limbs[0], q.limbs[0], carry);
-  z.limbs[0] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[1], q.limbs[1], carry);
-  z.limbs[1] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[2], q.limbs[2], carry);
-  z.limbs[2] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[3], q.limbs[3], carry);
-  z.limbs[3] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[4], q.limbs[4], carry);
-  z.limbs[4] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[5], q.limbs[5], carry);
-  z.limbs[5] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[6], q.limbs[6], carry);
-  z.limbs[6] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[7], q.limbs[7], carry);
-  z.limbs[7] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[8], q.limbs[8], carry);
-  z.limbs[8] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[9], q.limbs[9], carry);
-  z.limbs[9] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[10], q.limbs[10], carry);
-  z.limbs[10] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[11], q.limbs[11], carry);
-  z.limbs[11] = lane.x;
-  return z;
-}
-
-fn fp_sub_modulus(x: Fp) -> Fp {
-  let q = fp_modulus();
-  var z: Fp;
-  var borrow = 0u;
-  var lane = sbb(x.limbs[0], q.limbs[0], borrow);
-  z.limbs[0] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[1], q.limbs[1], borrow);
-  z.limbs[1] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[2], q.limbs[2], borrow);
-  z.limbs[2] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[3], q.limbs[3], borrow);
-  z.limbs[3] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[4], q.limbs[4], borrow);
-  z.limbs[4] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[5], q.limbs[5], borrow);
-  z.limbs[5] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[6], q.limbs[6], borrow);
-  z.limbs[6] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[7], q.limbs[7], borrow);
-  z.limbs[7] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[8], q.limbs[8], borrow);
-  z.limbs[8] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[9], q.limbs[9], borrow);
-  z.limbs[9] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[10], q.limbs[10], borrow);
-  z.limbs[10] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[11], q.limbs[11], borrow);
-  z.limbs[11] = lane.x;
-  return z;
-}
-
+// x + y mod q: z = x + y, t = z - q; the result is t when the addition
+// carried or the subtraction did not borrow (z >= q), else z.
 fn fp_add(x: Fp, y: Fp) -> Fp {
   var z: Fp;
-  var carry = 0u;
-  var lane = adc(x.limbs[0], y.limbs[0], carry);
+  var t: Fp;
+  var lane = adc(x.limbs[0], y.limbs[0], 0u);
   z.limbs[0] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[1], y.limbs[1], carry);
+  lane = adc(x.limbs[1], y.limbs[1], lane.y);
   z.limbs[1] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[2], y.limbs[2], carry);
+  lane = adc(x.limbs[2], y.limbs[2], lane.y);
   z.limbs[2] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[3], y.limbs[3], carry);
+  lane = adc(x.limbs[3], y.limbs[3], lane.y);
   z.limbs[3] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[4], y.limbs[4], carry);
+  lane = adc(x.limbs[4], y.limbs[4], lane.y);
   z.limbs[4] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[5], y.limbs[5], carry);
+  lane = adc(x.limbs[5], y.limbs[5], lane.y);
   z.limbs[5] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[6], y.limbs[6], carry);
+  lane = adc(x.limbs[6], y.limbs[6], lane.y);
   z.limbs[6] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[7], y.limbs[7], carry);
+  lane = adc(x.limbs[7], y.limbs[7], lane.y);
   z.limbs[7] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[8], y.limbs[8], carry);
+  lane = adc(x.limbs[8], y.limbs[8], lane.y);
   z.limbs[8] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[9], y.limbs[9], carry);
+  lane = adc(x.limbs[9], y.limbs[9], lane.y);
   z.limbs[9] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[10], y.limbs[10], carry);
+  lane = adc(x.limbs[10], y.limbs[10], lane.y);
   z.limbs[10] = lane.x;
-  carry = lane.y;
-  lane = adc(x.limbs[11], y.limbs[11], carry);
+  lane = adc(x.limbs[11], y.limbs[11], lane.y);
   z.limbs[11] = lane.x;
-  if ((lane.y != 0u) || fp_gte(z, fp_modulus())) {
-    return fp_sub_modulus(z);
-  }
+  let carry = lane.y;
+  lane = sbb(z.limbs[0], FP_MODULUS32[0], 0u);
+  t.limbs[0] = lane.x;
+  lane = sbb(z.limbs[1], FP_MODULUS32[1], lane.y);
+  t.limbs[1] = lane.x;
+  lane = sbb(z.limbs[2], FP_MODULUS32[2], lane.y);
+  t.limbs[2] = lane.x;
+  lane = sbb(z.limbs[3], FP_MODULUS32[3], lane.y);
+  t.limbs[3] = lane.x;
+  lane = sbb(z.limbs[4], FP_MODULUS32[4], lane.y);
+  t.limbs[4] = lane.x;
+  lane = sbb(z.limbs[5], FP_MODULUS32[5], lane.y);
+  t.limbs[5] = lane.x;
+  lane = sbb(z.limbs[6], FP_MODULUS32[6], lane.y);
+  t.limbs[6] = lane.x;
+  lane = sbb(z.limbs[7], FP_MODULUS32[7], lane.y);
+  t.limbs[7] = lane.x;
+  lane = sbb(z.limbs[8], FP_MODULUS32[8], lane.y);
+  t.limbs[8] = lane.x;
+  lane = sbb(z.limbs[9], FP_MODULUS32[9], lane.y);
+  t.limbs[9] = lane.x;
+  lane = sbb(z.limbs[10], FP_MODULUS32[10], lane.y);
+  t.limbs[10] = lane.x;
+  lane = sbb(z.limbs[11], FP_MODULUS32[11], lane.y);
+  t.limbs[11] = lane.x;
+  let use_t = (carry != 0u) || (lane.y == 0u);
+  z.limbs[0] = select(z.limbs[0], t.limbs[0], use_t);
+  z.limbs[1] = select(z.limbs[1], t.limbs[1], use_t);
+  z.limbs[2] = select(z.limbs[2], t.limbs[2], use_t);
+  z.limbs[3] = select(z.limbs[3], t.limbs[3], use_t);
+  z.limbs[4] = select(z.limbs[4], t.limbs[4], use_t);
+  z.limbs[5] = select(z.limbs[5], t.limbs[5], use_t);
+  z.limbs[6] = select(z.limbs[6], t.limbs[6], use_t);
+  z.limbs[7] = select(z.limbs[7], t.limbs[7], use_t);
+  z.limbs[8] = select(z.limbs[8], t.limbs[8], use_t);
+  z.limbs[9] = select(z.limbs[9], t.limbs[9], use_t);
+  z.limbs[10] = select(z.limbs[10], t.limbs[10], use_t);
+  z.limbs[11] = select(z.limbs[11], t.limbs[11], use_t);
   return z;
 }
 
+// x - y mod q: z = x - y, t = z + q; the result is t when the subtraction
+// borrowed, else z.
 fn fp_sub(x: Fp, y: Fp) -> Fp {
   var z: Fp;
-  var borrow = 0u;
-  var lane = sbb(x.limbs[0], y.limbs[0], borrow);
+  var t: Fp;
+  var lane = sbb(x.limbs[0], y.limbs[0], 0u);
   z.limbs[0] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[1], y.limbs[1], borrow);
+  lane = sbb(x.limbs[1], y.limbs[1], lane.y);
   z.limbs[1] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[2], y.limbs[2], borrow);
+  lane = sbb(x.limbs[2], y.limbs[2], lane.y);
   z.limbs[2] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[3], y.limbs[3], borrow);
+  lane = sbb(x.limbs[3], y.limbs[3], lane.y);
   z.limbs[3] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[4], y.limbs[4], borrow);
+  lane = sbb(x.limbs[4], y.limbs[4], lane.y);
   z.limbs[4] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[5], y.limbs[5], borrow);
+  lane = sbb(x.limbs[5], y.limbs[5], lane.y);
   z.limbs[5] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[6], y.limbs[6], borrow);
+  lane = sbb(x.limbs[6], y.limbs[6], lane.y);
   z.limbs[6] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[7], y.limbs[7], borrow);
+  lane = sbb(x.limbs[7], y.limbs[7], lane.y);
   z.limbs[7] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[8], y.limbs[8], borrow);
+  lane = sbb(x.limbs[8], y.limbs[8], lane.y);
   z.limbs[8] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[9], y.limbs[9], borrow);
+  lane = sbb(x.limbs[9], y.limbs[9], lane.y);
   z.limbs[9] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[10], y.limbs[10], borrow);
+  lane = sbb(x.limbs[10], y.limbs[10], lane.y);
   z.limbs[10] = lane.x;
-  borrow = lane.y;
-  lane = sbb(x.limbs[11], y.limbs[11], borrow);
+  lane = sbb(x.limbs[11], y.limbs[11], lane.y);
   z.limbs[11] = lane.x;
-  if (lane.y != 0u) {
-    return fp_add_modulus(z);
-  }
+  let use_t = lane.y != 0u;
+  lane = adc(z.limbs[0], FP_MODULUS32[0], 0u);
+  t.limbs[0] = lane.x;
+  lane = adc(z.limbs[1], FP_MODULUS32[1], lane.y);
+  t.limbs[1] = lane.x;
+  lane = adc(z.limbs[2], FP_MODULUS32[2], lane.y);
+  t.limbs[2] = lane.x;
+  lane = adc(z.limbs[3], FP_MODULUS32[3], lane.y);
+  t.limbs[3] = lane.x;
+  lane = adc(z.limbs[4], FP_MODULUS32[4], lane.y);
+  t.limbs[4] = lane.x;
+  lane = adc(z.limbs[5], FP_MODULUS32[5], lane.y);
+  t.limbs[5] = lane.x;
+  lane = adc(z.limbs[6], FP_MODULUS32[6], lane.y);
+  t.limbs[6] = lane.x;
+  lane = adc(z.limbs[7], FP_MODULUS32[7], lane.y);
+  t.limbs[7] = lane.x;
+  lane = adc(z.limbs[8], FP_MODULUS32[8], lane.y);
+  t.limbs[8] = lane.x;
+  lane = adc(z.limbs[9], FP_MODULUS32[9], lane.y);
+  t.limbs[9] = lane.x;
+  lane = adc(z.limbs[10], FP_MODULUS32[10], lane.y);
+  t.limbs[10] = lane.x;
+  lane = adc(z.limbs[11], FP_MODULUS32[11], lane.y);
+  t.limbs[11] = lane.x;
+  z.limbs[0] = select(z.limbs[0], t.limbs[0], use_t);
+  z.limbs[1] = select(z.limbs[1], t.limbs[1], use_t);
+  z.limbs[2] = select(z.limbs[2], t.limbs[2], use_t);
+  z.limbs[3] = select(z.limbs[3], t.limbs[3], use_t);
+  z.limbs[4] = select(z.limbs[4], t.limbs[4], use_t);
+  z.limbs[5] = select(z.limbs[5], t.limbs[5], use_t);
+  z.limbs[6] = select(z.limbs[6], t.limbs[6], use_t);
+  z.limbs[7] = select(z.limbs[7], t.limbs[7], use_t);
+  z.limbs[8] = select(z.limbs[8], t.limbs[8], use_t);
+  z.limbs[9] = select(z.limbs[9], t.limbs[9], use_t);
+  z.limbs[10] = select(z.limbs[10], t.limbs[10], use_t);
+  z.limbs[11] = select(z.limbs[11], t.limbs[11], use_t);
   return z;
 }
 
+// -x mod q: q - x, or zero when x is zero.
 fn fp_neg(x: Fp) -> Fp {
-  if (fp_is_zero(x)) {
-    return fp_zero();
-  }
-  return fp_sub(fp_modulus(), x);
-}
-
-fn fp_double(x: Fp) -> Fp {
-  return fp_add(x, x);
-}
-
-fn fp_normalize(x: Fp) -> Fp {
-  if (fp_gte(x, fp_modulus())) {
-    return fp_sub_modulus(x);
-  }
-  return x;
-}
-
-fn fp_unpack16(x: Fp) -> Fp24 {
-  var z: Fp24;
-  for (var i = 0u; i < 12u; i = i + 1u) {
-    z.limbs[2u * i] = x.limbs[i] & FP_LIMB16_MASK;
-    z.limbs[2u * i + 1u] = x.limbs[i] >> 16u;
-  }
-  return z;
-}
-
-fn fp_pack16(x: Fp24) -> Fp {
+  var t: Fp;
+  var lane = sbb(FP_MODULUS32[0], x.limbs[0], 0u);
+  t.limbs[0] = lane.x;
+  lane = sbb(FP_MODULUS32[1], x.limbs[1], lane.y);
+  t.limbs[1] = lane.x;
+  lane = sbb(FP_MODULUS32[2], x.limbs[2], lane.y);
+  t.limbs[2] = lane.x;
+  lane = sbb(FP_MODULUS32[3], x.limbs[3], lane.y);
+  t.limbs[3] = lane.x;
+  lane = sbb(FP_MODULUS32[4], x.limbs[4], lane.y);
+  t.limbs[4] = lane.x;
+  lane = sbb(FP_MODULUS32[5], x.limbs[5], lane.y);
+  t.limbs[5] = lane.x;
+  lane = sbb(FP_MODULUS32[6], x.limbs[6], lane.y);
+  t.limbs[6] = lane.x;
+  lane = sbb(FP_MODULUS32[7], x.limbs[7], lane.y);
+  t.limbs[7] = lane.x;
+  lane = sbb(FP_MODULUS32[8], x.limbs[8], lane.y);
+  t.limbs[8] = lane.x;
+  lane = sbb(FP_MODULUS32[9], x.limbs[9], lane.y);
+  t.limbs[9] = lane.x;
+  lane = sbb(FP_MODULUS32[10], x.limbs[10], lane.y);
+  t.limbs[10] = lane.x;
+  lane = sbb(FP_MODULUS32[11], x.limbs[11], lane.y);
+  t.limbs[11] = lane.x;
+  let nonzero = !fp_is_zero(x);
   var z: Fp;
-  for (var i = 0u; i < 12u; i = i + 1u) {
-    z.limbs[i] = x.limbs[2u * i] | (x.limbs[2u * i + 1u] << 16u);
-  }
+  z.limbs[0] = select(0u, t.limbs[0], nonzero);
+  z.limbs[1] = select(0u, t.limbs[1], nonzero);
+  z.limbs[2] = select(0u, t.limbs[2], nonzero);
+  z.limbs[3] = select(0u, t.limbs[3], nonzero);
+  z.limbs[4] = select(0u, t.limbs[4], nonzero);
+  z.limbs[5] = select(0u, t.limbs[5], nonzero);
+  z.limbs[6] = select(0u, t.limbs[6], nonzero);
+  z.limbs[7] = select(0u, t.limbs[7], nonzero);
+  z.limbs[8] = select(0u, t.limbs[8], nonzero);
+  z.limbs[9] = select(0u, t.limbs[9], nonzero);
+  z.limbs[10] = select(0u, t.limbs[10], nonzero);
+  z.limbs[11] = select(0u, t.limbs[11], nonzero);
   return z;
 }
 
-fn fp24_gte_modulus(x: Fp24) -> bool {
-  for (var i: i32 = 23; i >= 0; i = i - 1) {
-    let idx = u32(i);
-    let xLimb = x.limbs[idx];
-    let qLimb = FP_MODULUS16[idx];
-    if (xLimb != qLimb) {
-      return xLimb > qLimb;
-    }
-  }
-  return true;
-}
-
-fn fp24_sub_modulus(x: Fp24) -> Fp24 {
-  var z: Fp24;
-  var borrow = 0u;
-  for (var i = 0u; i < 24u; i = i + 1u) {
-    let lane = sbb(x.limbs[i], FP_MODULUS16[i], borrow);
-    z.limbs[i] = lane.x & FP_LIMB16_MASK;
-    borrow = lane.y;
-  }
+// 2x mod q: a left shift by one bit, then the same conditional subtraction
+// as fp_add.
+fn fp_double(x: Fp) -> Fp {
+  var z: Fp;
+  var t: Fp;
+  z.limbs[0] = x.limbs[0] << 1u;
+  z.limbs[1] = (x.limbs[1] << 1u) | (x.limbs[0] >> 31u);
+  z.limbs[2] = (x.limbs[2] << 1u) | (x.limbs[1] >> 31u);
+  z.limbs[3] = (x.limbs[3] << 1u) | (x.limbs[2] >> 31u);
+  z.limbs[4] = (x.limbs[4] << 1u) | (x.limbs[3] >> 31u);
+  z.limbs[5] = (x.limbs[5] << 1u) | (x.limbs[4] >> 31u);
+  z.limbs[6] = (x.limbs[6] << 1u) | (x.limbs[5] >> 31u);
+  z.limbs[7] = (x.limbs[7] << 1u) | (x.limbs[6] >> 31u);
+  z.limbs[8] = (x.limbs[8] << 1u) | (x.limbs[7] >> 31u);
+  z.limbs[9] = (x.limbs[9] << 1u) | (x.limbs[8] >> 31u);
+  z.limbs[10] = (x.limbs[10] << 1u) | (x.limbs[9] >> 31u);
+  z.limbs[11] = (x.limbs[11] << 1u) | (x.limbs[10] >> 31u);
+  let carry = x.limbs[11] >> 31u;
+  var lane: vec2<u32>;
+  lane = sbb(z.limbs[0], FP_MODULUS32[0], 0u);
+  t.limbs[0] = lane.x;
+  lane = sbb(z.limbs[1], FP_MODULUS32[1], lane.y);
+  t.limbs[1] = lane.x;
+  lane = sbb(z.limbs[2], FP_MODULUS32[2], lane.y);
+  t.limbs[2] = lane.x;
+  lane = sbb(z.limbs[3], FP_MODULUS32[3], lane.y);
+  t.limbs[3] = lane.x;
+  lane = sbb(z.limbs[4], FP_MODULUS32[4], lane.y);
+  t.limbs[4] = lane.x;
+  lane = sbb(z.limbs[5], FP_MODULUS32[5], lane.y);
+  t.limbs[5] = lane.x;
+  lane = sbb(z.limbs[6], FP_MODULUS32[6], lane.y);
+  t.limbs[6] = lane.x;
+  lane = sbb(z.limbs[7], FP_MODULUS32[7], lane.y);
+  t.limbs[7] = lane.x;
+  lane = sbb(z.limbs[8], FP_MODULUS32[8], lane.y);
+  t.limbs[8] = lane.x;
+  lane = sbb(z.limbs[9], FP_MODULUS32[9], lane.y);
+  t.limbs[9] = lane.x;
+  lane = sbb(z.limbs[10], FP_MODULUS32[10], lane.y);
+  t.limbs[10] = lane.x;
+  lane = sbb(z.limbs[11], FP_MODULUS32[11], lane.y);
+  t.limbs[11] = lane.x;
+  let use_t = (carry != 0u) || (lane.y == 0u);
+  z.limbs[0] = select(z.limbs[0], t.limbs[0], use_t);
+  z.limbs[1] = select(z.limbs[1], t.limbs[1], use_t);
+  z.limbs[2] = select(z.limbs[2], t.limbs[2], use_t);
+  z.limbs[3] = select(z.limbs[3], t.limbs[3], use_t);
+  z.limbs[4] = select(z.limbs[4], t.limbs[4], use_t);
+  z.limbs[5] = select(z.limbs[5], t.limbs[5], use_t);
+  z.limbs[6] = select(z.limbs[6], t.limbs[6], use_t);
+  z.limbs[7] = select(z.limbs[7], t.limbs[7], use_t);
+  z.limbs[8] = select(z.limbs[8], t.limbs[8], use_t);
+  z.limbs[9] = select(z.limbs[9], t.limbs[9], use_t);
+  z.limbs[10] = select(z.limbs[10], t.limbs[10], use_t);
+  z.limbs[11] = select(z.limbs[11], t.limbs[11], use_t);
   return z;
 }
 
-// Montgomery multiplication (CIOS) over 16-bit limbs: R = 2^(16*24).
+// Reduce a value in [0, 2q) to [0, q).
+fn fp_normalize(x: Fp) -> Fp {
+  var t: Fp;
+  var z: Fp;
+  var lane: vec2<u32>;
+  lane = sbb(x.limbs[0], FP_MODULUS32[0], 0u);
+  t.limbs[0] = lane.x;
+  lane = sbb(x.limbs[1], FP_MODULUS32[1], lane.y);
+  t.limbs[1] = lane.x;
+  lane = sbb(x.limbs[2], FP_MODULUS32[2], lane.y);
+  t.limbs[2] = lane.x;
+  lane = sbb(x.limbs[3], FP_MODULUS32[3], lane.y);
+  t.limbs[3] = lane.x;
+  lane = sbb(x.limbs[4], FP_MODULUS32[4], lane.y);
+  t.limbs[4] = lane.x;
+  lane = sbb(x.limbs[5], FP_MODULUS32[5], lane.y);
+  t.limbs[5] = lane.x;
+  lane = sbb(x.limbs[6], FP_MODULUS32[6], lane.y);
+  t.limbs[6] = lane.x;
+  lane = sbb(x.limbs[7], FP_MODULUS32[7], lane.y);
+  t.limbs[7] = lane.x;
+  lane = sbb(x.limbs[8], FP_MODULUS32[8], lane.y);
+  t.limbs[8] = lane.x;
+  lane = sbb(x.limbs[9], FP_MODULUS32[9], lane.y);
+  t.limbs[9] = lane.x;
+  lane = sbb(x.limbs[10], FP_MODULUS32[10], lane.y);
+  t.limbs[10] = lane.x;
+  lane = sbb(x.limbs[11], FP_MODULUS32[11], lane.y);
+  t.limbs[11] = lane.x;
+  let use_t = lane.y == 0u;
+  z.limbs[0] = select(x.limbs[0], t.limbs[0], use_t);
+  z.limbs[1] = select(x.limbs[1], t.limbs[1], use_t);
+  z.limbs[2] = select(x.limbs[2], t.limbs[2], use_t);
+  z.limbs[3] = select(x.limbs[3], t.limbs[3], use_t);
+  z.limbs[4] = select(x.limbs[4], t.limbs[4], use_t);
+  z.limbs[5] = select(x.limbs[5], t.limbs[5], use_t);
+  z.limbs[6] = select(x.limbs[6], t.limbs[6], use_t);
+  z.limbs[7] = select(x.limbs[7], t.limbs[7], use_t);
+  z.limbs[8] = select(x.limbs[8], t.limbs[8], use_t);
+  z.limbs[9] = select(x.limbs[9], t.limbs[9], use_t);
+  z.limbs[10] = select(x.limbs[10], t.limbs[10], use_t);
+  z.limbs[11] = select(x.limbs[11], t.limbs[11], use_t);
+  return z;
+}
+
+// Montgomery multiplication (CIOS) over 16-bit digits: R = 2^(16*24).
 // Each 16x16 partial product plus carries fits in a u32 without overflow.
+// The digit loops are unrolled so the accumulator lives in registers; the
+// final conditional subtraction is branch-free.
 fn fp_mul(x: Fp, y: Fp) -> Fp {
-  let a = fp_unpack16(x);
-  let b = fp_unpack16(y);
-  var t: array<u32, 25>;
-
-  for (var i = 0u; i < 24u; i = i + 1u) {
-    var carry = 0u;
-    let bi = b.limbs[i];
-    for (var j = 0u; j < 24u; j = j + 1u) {
-      let aLimb = a.limbs[j];
-      let uv = t[j] + (aLimb * bi) + carry;
-      t[j] = uv & FP_LIMB16_MASK;
-      carry = uv >> 16u;
-    }
-    t[24] = carry;
-
-    let m = (t[0] * FP_QINV_NEG_16) & FP_LIMB16_MASK;
-    carry = 0u;
-    for (var j = 0u; j < 24u; j = j + 1u) {
-      let qLimb = FP_MODULUS16[j];
-      let uv = t[j] + (m * qLimb) + carry;
-      if (j > 0u) {
-        t[j - 1u] = uv & FP_LIMB16_MASK;
-      }
-      carry = uv >> 16u;
-    }
-    let uv = t[24] + carry;
-    t[23] = uv & FP_LIMB16_MASK;
-    t[24] = uv >> 16u;
+  let a0 = x.limbs[0] & FP_LIMB16_MASK;
+  let a1 = x.limbs[0] >> 16u;
+  let a2 = x.limbs[1] & FP_LIMB16_MASK;
+  let a3 = x.limbs[1] >> 16u;
+  let a4 = x.limbs[2] & FP_LIMB16_MASK;
+  let a5 = x.limbs[2] >> 16u;
+  let a6 = x.limbs[3] & FP_LIMB16_MASK;
+  let a7 = x.limbs[3] >> 16u;
+  let a8 = x.limbs[4] & FP_LIMB16_MASK;
+  let a9 = x.limbs[4] >> 16u;
+  let a10 = x.limbs[5] & FP_LIMB16_MASK;
+  let a11 = x.limbs[5] >> 16u;
+  let a12 = x.limbs[6] & FP_LIMB16_MASK;
+  let a13 = x.limbs[6] >> 16u;
+  let a14 = x.limbs[7] & FP_LIMB16_MASK;
+  let a15 = x.limbs[7] >> 16u;
+  let a16 = x.limbs[8] & FP_LIMB16_MASK;
+  let a17 = x.limbs[8] >> 16u;
+  let a18 = x.limbs[9] & FP_LIMB16_MASK;
+  let a19 = x.limbs[9] >> 16u;
+  let a20 = x.limbs[10] & FP_LIMB16_MASK;
+  let a21 = x.limbs[10] >> 16u;
+  let a22 = x.limbs[11] & FP_LIMB16_MASK;
+  let a23 = x.limbs[11] >> 16u;
+  var t0 = 0u;
+  var t1 = 0u;
+  var t2 = 0u;
+  var t3 = 0u;
+  var t4 = 0u;
+  var t5 = 0u;
+  var t6 = 0u;
+  var t7 = 0u;
+  var t8 = 0u;
+  var t9 = 0u;
+  var t10 = 0u;
+  var t11 = 0u;
+  var t12 = 0u;
+  var t13 = 0u;
+  var t14 = 0u;
+  var t15 = 0u;
+  var t16 = 0u;
+  var t17 = 0u;
+  var t18 = 0u;
+  var t19 = 0u;
+  var t20 = 0u;
+  var t21 = 0u;
+  var t22 = 0u;
+  var t23 = 0u;
+  var t24 = 0u;
+  var uv = 0u;
+  var c = 0u;
+  var m = 0u;
+  for (var i = 0u; i < 12u; i = i + 1u) {
+    let w = y.limbs[i];
+    let b_lo = w & FP_LIMB16_MASK;
+    let b_hi = w >> 16u;
+    uv = t0 + a0 * b_lo;
+    t0 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t1 + a1 * b_lo + c;
+    t1 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t2 + a2 * b_lo + c;
+    t2 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t3 + a3 * b_lo + c;
+    t3 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t4 + a4 * b_lo + c;
+    t4 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t5 + a5 * b_lo + c;
+    t5 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t6 + a6 * b_lo + c;
+    t6 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t7 + a7 * b_lo + c;
+    t7 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t8 + a8 * b_lo + c;
+    t8 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t9 + a9 * b_lo + c;
+    t9 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t10 + a10 * b_lo + c;
+    t10 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t11 + a11 * b_lo + c;
+    t11 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t12 + a12 * b_lo + c;
+    t12 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t13 + a13 * b_lo + c;
+    t13 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t14 + a14 * b_lo + c;
+    t14 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t15 + a15 * b_lo + c;
+    t15 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t16 + a16 * b_lo + c;
+    t16 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t17 + a17 * b_lo + c;
+    t17 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t18 + a18 * b_lo + c;
+    t18 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t19 + a19 * b_lo + c;
+    t19 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t20 + a20 * b_lo + c;
+    t20 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t21 + a21 * b_lo + c;
+    t21 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t22 + a22 * b_lo + c;
+    t22 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t23 + a23 * b_lo + c;
+    t23 = uv & FP_LIMB16_MASK;
+    t24 = uv >> 16u;
+    m = (t0 * FP_QINV_NEG_16) & FP_LIMB16_MASK;
+    // (t0 + m*q0) is 0 mod 2^16 by construction: only its carry survives.
+    c = (t0 + m * FP_MODULUS16[0]) >> 16u;
+    uv = t1 + m * FP_MODULUS16[1] + c;
+    t0 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t2 + m * FP_MODULUS16[2] + c;
+    t1 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t3 + m * FP_MODULUS16[3] + c;
+    t2 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t4 + m * FP_MODULUS16[4] + c;
+    t3 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t5 + m * FP_MODULUS16[5] + c;
+    t4 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t6 + m * FP_MODULUS16[6] + c;
+    t5 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t7 + m * FP_MODULUS16[7] + c;
+    t6 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t8 + m * FP_MODULUS16[8] + c;
+    t7 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t9 + m * FP_MODULUS16[9] + c;
+    t8 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t10 + m * FP_MODULUS16[10] + c;
+    t9 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t11 + m * FP_MODULUS16[11] + c;
+    t10 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t12 + m * FP_MODULUS16[12] + c;
+    t11 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t13 + m * FP_MODULUS16[13] + c;
+    t12 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t14 + m * FP_MODULUS16[14] + c;
+    t13 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t15 + m * FP_MODULUS16[15] + c;
+    t14 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t16 + m * FP_MODULUS16[16] + c;
+    t15 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t17 + m * FP_MODULUS16[17] + c;
+    t16 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t18 + m * FP_MODULUS16[18] + c;
+    t17 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t19 + m * FP_MODULUS16[19] + c;
+    t18 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t20 + m * FP_MODULUS16[20] + c;
+    t19 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t21 + m * FP_MODULUS16[21] + c;
+    t20 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t22 + m * FP_MODULUS16[22] + c;
+    t21 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t23 + m * FP_MODULUS16[23] + c;
+    t22 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t24 + c;
+    t23 = uv & FP_LIMB16_MASK;
+    t24 = uv >> 16u;
+    uv = t0 + a0 * b_hi;
+    t0 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t1 + a1 * b_hi + c;
+    t1 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t2 + a2 * b_hi + c;
+    t2 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t3 + a3 * b_hi + c;
+    t3 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t4 + a4 * b_hi + c;
+    t4 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t5 + a5 * b_hi + c;
+    t5 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t6 + a6 * b_hi + c;
+    t6 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t7 + a7 * b_hi + c;
+    t7 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t8 + a8 * b_hi + c;
+    t8 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t9 + a9 * b_hi + c;
+    t9 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t10 + a10 * b_hi + c;
+    t10 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t11 + a11 * b_hi + c;
+    t11 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t12 + a12 * b_hi + c;
+    t12 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t13 + a13 * b_hi + c;
+    t13 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t14 + a14 * b_hi + c;
+    t14 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t15 + a15 * b_hi + c;
+    t15 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t16 + a16 * b_hi + c;
+    t16 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t17 + a17 * b_hi + c;
+    t17 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t18 + a18 * b_hi + c;
+    t18 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t19 + a19 * b_hi + c;
+    t19 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t20 + a20 * b_hi + c;
+    t20 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t21 + a21 * b_hi + c;
+    t21 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t22 + a22 * b_hi + c;
+    t22 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t23 + a23 * b_hi + c;
+    t23 = uv & FP_LIMB16_MASK;
+    t24 = uv >> 16u;
+    m = (t0 * FP_QINV_NEG_16) & FP_LIMB16_MASK;
+    // (t0 + m*q0) is 0 mod 2^16 by construction: only its carry survives.
+    c = (t0 + m * FP_MODULUS16[0]) >> 16u;
+    uv = t1 + m * FP_MODULUS16[1] + c;
+    t0 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t2 + m * FP_MODULUS16[2] + c;
+    t1 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t3 + m * FP_MODULUS16[3] + c;
+    t2 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t4 + m * FP_MODULUS16[4] + c;
+    t3 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t5 + m * FP_MODULUS16[5] + c;
+    t4 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t6 + m * FP_MODULUS16[6] + c;
+    t5 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t7 + m * FP_MODULUS16[7] + c;
+    t6 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t8 + m * FP_MODULUS16[8] + c;
+    t7 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t9 + m * FP_MODULUS16[9] + c;
+    t8 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t10 + m * FP_MODULUS16[10] + c;
+    t9 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t11 + m * FP_MODULUS16[11] + c;
+    t10 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t12 + m * FP_MODULUS16[12] + c;
+    t11 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t13 + m * FP_MODULUS16[13] + c;
+    t12 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t14 + m * FP_MODULUS16[14] + c;
+    t13 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t15 + m * FP_MODULUS16[15] + c;
+    t14 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t16 + m * FP_MODULUS16[16] + c;
+    t15 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t17 + m * FP_MODULUS16[17] + c;
+    t16 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t18 + m * FP_MODULUS16[18] + c;
+    t17 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t19 + m * FP_MODULUS16[19] + c;
+    t18 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t20 + m * FP_MODULUS16[20] + c;
+    t19 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t21 + m * FP_MODULUS16[21] + c;
+    t20 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t22 + m * FP_MODULUS16[22] + c;
+    t21 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t23 + m * FP_MODULUS16[23] + c;
+    t22 = uv & FP_LIMB16_MASK;
+    c = uv >> 16u;
+    uv = t24 + c;
+    t23 = uv & FP_LIMB16_MASK;
+    t24 = uv >> 16u;
   }
 
-  var z24: Fp24;
-  for (var i = 0u; i < 24u; i = i + 1u) {
-    z24.limbs[i] = t[i];
-  }
-  if ((t[24] != 0u) || fp24_gte_modulus(z24)) {
-    z24 = fp24_sub_modulus(z24);
-  }
-  return fp_pack16(z24);
+  var z: Fp;
+  z.limbs[0] = t0 | (t1 << 16u);
+  z.limbs[1] = t2 | (t3 << 16u);
+  z.limbs[2] = t4 | (t5 << 16u);
+  z.limbs[3] = t6 | (t7 << 16u);
+  z.limbs[4] = t8 | (t9 << 16u);
+  z.limbs[5] = t10 | (t11 << 16u);
+  z.limbs[6] = t12 | (t13 << 16u);
+  z.limbs[7] = t14 | (t15 << 16u);
+  z.limbs[8] = t16 | (t17 << 16u);
+  z.limbs[9] = t18 | (t19 << 16u);
+  z.limbs[10] = t20 | (t21 << 16u);
+  z.limbs[11] = t22 | (t23 << 16u);
+  var t: Fp;
+  var lane: vec2<u32>;
+  lane = sbb(z.limbs[0], FP_MODULUS32[0], 0u);
+  t.limbs[0] = lane.x;
+  lane = sbb(z.limbs[1], FP_MODULUS32[1], lane.y);
+  t.limbs[1] = lane.x;
+  lane = sbb(z.limbs[2], FP_MODULUS32[2], lane.y);
+  t.limbs[2] = lane.x;
+  lane = sbb(z.limbs[3], FP_MODULUS32[3], lane.y);
+  t.limbs[3] = lane.x;
+  lane = sbb(z.limbs[4], FP_MODULUS32[4], lane.y);
+  t.limbs[4] = lane.x;
+  lane = sbb(z.limbs[5], FP_MODULUS32[5], lane.y);
+  t.limbs[5] = lane.x;
+  lane = sbb(z.limbs[6], FP_MODULUS32[6], lane.y);
+  t.limbs[6] = lane.x;
+  lane = sbb(z.limbs[7], FP_MODULUS32[7], lane.y);
+  t.limbs[7] = lane.x;
+  lane = sbb(z.limbs[8], FP_MODULUS32[8], lane.y);
+  t.limbs[8] = lane.x;
+  lane = sbb(z.limbs[9], FP_MODULUS32[9], lane.y);
+  t.limbs[9] = lane.x;
+  lane = sbb(z.limbs[10], FP_MODULUS32[10], lane.y);
+  t.limbs[10] = lane.x;
+  lane = sbb(z.limbs[11], FP_MODULUS32[11], lane.y);
+  t.limbs[11] = lane.x;
+  let use_t = (t24 != 0u) || (lane.y == 0u);
+  z.limbs[0] = select(z.limbs[0], t.limbs[0], use_t);
+  z.limbs[1] = select(z.limbs[1], t.limbs[1], use_t);
+  z.limbs[2] = select(z.limbs[2], t.limbs[2], use_t);
+  z.limbs[3] = select(z.limbs[3], t.limbs[3], use_t);
+  z.limbs[4] = select(z.limbs[4], t.limbs[4], use_t);
+  z.limbs[5] = select(z.limbs[5], t.limbs[5], use_t);
+  z.limbs[6] = select(z.limbs[6], t.limbs[6], use_t);
+  z.limbs[7] = select(z.limbs[7], t.limbs[7], use_t);
+  z.limbs[8] = select(z.limbs[8], t.limbs[8], use_t);
+  z.limbs[9] = select(z.limbs[9], t.limbs[9], use_t);
+  z.limbs[10] = select(z.limbs[10], t.limbs[10], use_t);
+  z.limbs[11] = select(z.limbs[11], t.limbs[11], use_t);
+  return z;
 }
 
 fn fp_square(x: Fp) -> Fp {

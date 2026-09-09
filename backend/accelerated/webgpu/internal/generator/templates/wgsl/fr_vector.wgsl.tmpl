@@ -2,18 +2,33 @@
 {{- $p := .Prefix -}}{{- $T := .Type -}}
 {{template "field_types" .}}
 
+// Every opcode may additionally multiply its result by `scalar` (Montgomery
+// multiplication) when `scale` is non-zero, which folds "scale by a
+// constant" and "convert to/from Montgomery form" into the same pass.
 struct Params {
   count: u32,
   opcode: u32,
+  // BIT_REVERSE_COPY / POWER: number of significant index bits.
   log_count: u32,
+  // BIT_REVERSE_COPY / MUL_FACTORS: length of each vector when the buffer
+  // holds several (0 = a single vector).
+  vector_size: u32,
+  scale: u32,
   _pad0: u32,
+  _pad1: u32,
+  _pad2: u32,
+  scalar: array<vec4<u32>, 2>,
 }
 
 const FR_VECTOR_OP_COPY: u32 = 0u;
 const FR_VECTOR_OP_ADD: u32 = 1u;
 const FR_VECTOR_OP_SUB: u32 = 2u;
+// output[i] = values[i] * aux[i mod vector_size]
 const FR_VECTOR_OP_MUL_FACTORS: u32 = 3u;
+// output[i] = values[reverse_bits(i)] within each vector
 const FR_VECTOR_OP_BIT_REVERSE_COPY: u32 = 4u;
+// output[i] = scalar^i (scalar in Montgomery form); the scale flag is ignored.
+const FR_VECTOR_OP_POWER: u32 = 5u;
 
 {{template "field_consts" .}}
 
@@ -24,12 +39,12 @@ const FR_VECTOR_OP_BIT_REVERSE_COPY: u32 = 4u;
 
 {{template "field_core" .}}
 
-fn reverse_bits(index: u32, log_count: u32) -> u32 {
-  var out = 0u;
-  for (var bit = 0u; bit < log_count; bit = bit + 1u) {
-    out = (out << 1u) | ((index >> bit) & 1u);
-  }
-  return out;
+fn {{$p}}_from_uniform(words: array<vec4<u32>, 2>) -> {{$T}} {
+  var z: {{$T}};
+{{- range $i := iterate 0 .Limbs}}
+  z.limbs[{{$i}}] = words[{{div $i 4}}][{{mod $i 4}}];
+{{- end}}
+  return z;
 }
 
 fn {{$p}}_load_from(buffer_kind: u32, index: u32) -> {{$T}} {
@@ -48,7 +63,23 @@ fn {{$p}}_store(index: u32, value: {{$T}}) {
 {{- template "store_limbs" (dict "Buffer" "output" "Limbs" .Limbs "Indent" "  " "Var" "value")}}
 }
 
+// scalar^exponent by square-and-multiply over the low `log_count` bits.
+fn {{$p}}_power(base: {{$T}}, exponent: u32, bits: u32) -> {{$T}} {
+  var acc = {{$p}}_one();
+  var sq = base;
+  for (var bit = 0u; bit < bits; bit = bit + 1u) {
+    let product = {{$p}}_mul(acc, sq);
+    let take = ((exponent >> bit) & 1u) != 0u;
+{{- range $i := iterate 0 .Limbs}}
+    acc.limbs[{{$i}}] = select(acc.limbs[{{$i}}], product.limbs[{{$i}}], take);
+{{- end}}
+    sq = {{$p}}_mul(sq, sq);
+  }
+  return acc;
+}
+
 fn {{$p}}_dispatch(index: u32) -> {{$T}} {
+  let vector_mask = select(0xffffffffu, params.vector_size - 1u, params.vector_size != 0u);
   if (params.opcode == FR_VECTOR_OP_COPY) {
     return {{$p}}_load_from(0u, index);
   }
@@ -59,16 +90,15 @@ fn {{$p}}_dispatch(index: u32) -> {{$T}} {
     return {{$p}}_sub({{$p}}_load_from(0u, index), {{$p}}_load_from(1u, index));
   }
   if (params.opcode == FR_VECTOR_OP_MUL_FACTORS) {
-    return {{$p}}_mul({{$p}}_load_from(0u, index), {{$p}}_load_from(1u, index));
+    return {{$p}}_mul({{$p}}_load_from(0u, index), {{$p}}_load_from(1u, index & vector_mask));
   }
   if (params.opcode == FR_VECTOR_OP_BIT_REVERSE_COPY) {
-    if (params._pad0 != 0u) {
-      let vector_size = params._pad0;
-      let vector_base = (index / vector_size) * vector_size;
-      let lane = index % vector_size;
-      return {{$p}}_load_from(0u, vector_base + reverse_bits(lane, params.log_count));
-    }
-    return {{$p}}_load_from(0u, reverse_bits(index, params.log_count));
+    let lane = index & vector_mask;
+    let reversed = reverseBits(lane) >> min(32u - params.log_count, 31u);
+    return {{$p}}_load_from(0u, (index - lane) + reversed);
+  }
+  if (params.opcode == FR_VECTOR_OP_POWER) {
+    return {{$p}}_power({{$p}}_from_uniform(params.scalar), index, params.log_count);
   }
   return {{$p}}_zero();
 }
@@ -81,5 +111,9 @@ fn fr_vector_main(@builtin(global_invocation_id) id: vec3<u32>) {
   if (i >= params.count) {
     return;
   }
-  {{$p}}_store(i, {{$p}}_dispatch(i));
+  var value = {{$p}}_dispatch(i);
+  if (params.scale != 0u && params.opcode != FR_VECTOR_OP_POWER) {
+    value = {{$p}}_mul(value, {{$p}}_from_uniform(params.scalar));
+  }
+  {{$p}}_store(i, value);
 }

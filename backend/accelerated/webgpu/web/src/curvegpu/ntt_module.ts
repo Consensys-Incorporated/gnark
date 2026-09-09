@@ -1,48 +1,65 @@
 import type { CurveGPUContext, CurveGPUElementBytes, FieldModule, Groth16QuotientModule, NTTModule, SupportedCurveID } from "./api.js";
 import type { BufferBinding, CommandBatch, Kernel } from "./gpu.js";
 import {
-  alignBytes,
+  createGPUBuffer,
   ensureByteLength,
   ensurePackedElements,
   packElementBatch,
   recordAndRead,
   STORAGE_IN_USAGE,
   STORAGE_RW_USAGE,
+  UNIFORM_USAGE,
   unpackElementBatch,
   uploadGPUBuffer,
 } from "./gpu.js";
 import { FIELD_OP } from "./field_module.js";
 
 /** Opcodes of the `fr_vector_main` shader. */
-const VECTOR_OP_MUL_FACTORS = 3;
-const VECTOR_OP_BIT_REVERSE_COPY = 4;
+const VECTOR_OP = { COPY: 0, MUL_FACTORS: 3, BIT_REVERSE_COPY: 4, POWER: 5 } as const;
+
+/** Flags of the `fr_ntt_fused_main` shader. */
+const NTT_FLAG = { BIT_REVERSE: 1, LOAD_SCALE: 2, STORE_SCALE: 4, INVERSE: 8 } as const;
+
+/** Uniform sizes in 32-bit words (`Params` structs of the vector and NTT shaders). */
+const VECTOR_PARAM_WORDS = 16;
+const NTT_PARAM_WORDS = 24;
+
+/** Maximum workgroups per grid dimension (WebGPU `maxComputeWorkgroupsPerDimension` default). */
+const MAX_WORKGROUPS_PER_DIMENSION = 65535;
 
 /** Montgomery radix for 32-byte scalar fields (8 × 32-bit limbs). */
 const MONT_R = 1n << 256n;
 
 /**
  * GPU-resident constants of one power-of-two domain. Uploaded once per
- * (curve, size) and reused by every NTT over that domain.
+ * (curve, size) and reused by every NTT over that domain. The tables are
+ * computed on the GPU (`FR_VECTOR_OP_POWER`), so preparing a domain costs a
+ * few dispatches rather than `n` host-side big-integer multiplications.
  */
 type PreparedDomain = {
   size: number;
   logN: number;
-  /** Per-direction twiddle buffers; stage `s` occupies `[stageOffsets[s], stageOffsets[s] + stageSizes[s])`. */
-  forwardTwiddles: GPUBuffer;
-  inverseTwiddles: GPUBuffer;
-  stageOffsets: number[];
-  stageSizes: number[];
-  /** `n` copies of `1/n` (the vector kernel has no scalar-multiply opcode). */
-  inverseScaleFactors: GPUBuffer;
-  /** `g^i` and `g^-i` for the coset generator `g`. */
+  /** `omega^i` for `i < n/2` (Montgomery form). Inverse twiddles derive from it in-kernel. */
+  twiddles: GPUBuffer;
+  /** `g^i` and `g^-i` for the coset generator `g` (Montgomery form). */
   cosetPowers: GPUBuffer;
   inverseCosetPowers: GPUBuffer;
-  /** `n` copies of `1 / (g^n - 1)`. */
-  cosetDenInvFactors: GPUBuffer;
+  /** `1/n` as a regular integer. */
+  inverseSize: bigint;
+  /** `1 / (g^n - 1)` as a regular integer. */
+  cosetDenInv: bigint;
 };
 
 /** Ping-pong pair of state buffers; `current` holds the live vector. */
 type State = { current: GPUBuffer; next: GPUBuffer };
+
+/**
+ * A constant multiplier for the `scale` slots of the shaders, which apply a
+ * Montgomery multiplication `x * c * R^-1`. `value` is the regular integer to
+ * multiply by, `inputMont` / `outputMont` the representation of the operand
+ * and of the wanted result; `c` is then `value * R^(1 + outputMont - inputMont)`.
+ */
+type Scale = { value: bigint; inputMont: boolean; outputMont: boolean };
 
 function modPow(base: bigint, exp: bigint, mod: bigint): bigint {
   let result = 1n;
@@ -87,6 +104,24 @@ function log2PowerOfTwo(size: number, label: string): number {
   return logN;
 }
 
+/** Write a 256-bit value as eight little-endian words at `offset`. */
+function writeWords(out: Uint32Array, offset: number, value: bigint): void {
+  let x = value;
+  for (let i = 0; i < 8; i += 1) {
+    out[offset + i] = Number(x & 0xffffffffn);
+    x >>= 32n;
+  }
+}
+
+/** Split `workgroups` over a 2D grid when it exceeds the per-dimension limit (fused NTT kernel only). */
+function workgroupGrid(workgroups: number): [number, number, number] {
+  if (workgroups <= MAX_WORKGROUPS_PER_DIMENSION) {
+    return [workgroups, 1, 1];
+  }
+  const x = 32768;
+  return [x, Math.ceil(workgroups / x), 1];
+}
+
 export function createNTTModule(
   context: CurveGPUContext,
   options: {
@@ -104,7 +139,6 @@ export function createNTTModule(
   const label = `${curve}-fr-ntt`;
   const elementBytes = fr.byteSize;
   const device = context.device;
-  const alignment = context.minStorageBufferOffsetAlignment;
 
   const modulus = BigInt(modulusHex);
   const multiplicativeGenerator = hexToBigInt(multiplicativeGeneratorHex);
@@ -112,55 +146,68 @@ export function createNTTModule(
   const maxLogSize = twoAdicity(modulus - 1n);
   const domainCache = new Map<number, PreparedDomain>();
 
-  /** Montgomery form of one: the starting point of every power sequence below. */
-  const oneMont = MONT_R % modulus;
+  /** Elements per fused NTT dispatch tile, and the most stages one dispatch can fuse. */
+  const tileElements = 2 * nttKernel.workgroupSize;
+  const maxStagesPerDispatch = Math.round(Math.log2(tileElements));
 
-  /** Write an element already in Montgomery form as little-endian bytes. */
-  function writeElement(out: Uint8Array, offset: number, montValue: bigint): void {
-    let x = montValue;
-    for (let i = 0; i < elementBytes; i += 1) {
-      out[offset + i] = Number(x & 0xffn);
-      x >>= 8n;
+  /** Montgomery form of a regular value. */
+  const toMont = (value: bigint): bigint => (value * MONT_R) % modulus;
+
+  /** Placeholder for the unused read-only bindings of table-generating dispatches. */
+  const unusedInput = createGPUBuffer(device, `${label}-unused-input`, 4, STORAGE_IN_USAGE);
+
+  const scaleConstant = (scale: Scale): bigint => {
+    let c = scale.value % modulus;
+    if (!scale.inputMont) {
+      c = toMont(c);
     }
+    if (scale.outputMont) {
+      c = toMont(c);
+    }
+    return c;
+  };
+
+  /** Uniform words of the vector kernel. */
+  function vectorParams(count: number, opcode: number, extra: { logCount?: number; vectorSize?: number; scale?: Scale } = {}): Uint32Array {
+    const words = new Uint32Array(VECTOR_PARAM_WORDS);
+    words[0] = count;
+    words[1] = opcode;
+    words[2] = extra.logCount ?? 0;
+    words[3] = extra.vectorSize ?? 0;
+    if (extra.scale) {
+      words[4] = 1;
+      writeWords(words, 8, scaleConstant(extra.scale));
+    }
+    return words;
   }
 
-  /**
-   * `base^i` for `i < count` in Montgomery form. Multiplying a Montgomery
-   * value by a regular one keeps it in Montgomery form, so no per-element
-   * conversion is needed.
-   */
-  function powerVectorMont(base: bigint, count: number): Uint8Array {
-    const out = new Uint8Array(count * elementBytes);
-    let acc = oneMont;
-    for (let i = 0; i < count; i += 1) {
-      writeElement(out, i * elementBytes, acc);
-      acc = (acc * base) % modulus;
+  /** `base^i` for `i < count` (Montgomery form), computed on the GPU. */
+  function powerTable(base: bigint, count: number, name: string): GPUBuffer {
+    const buffer = createGPUBuffer(device, `${label}-${name}`, count * elementBytes, STORAGE_RW_USAGE);
+    if (count === 0) {
+      return buffer;
     }
-    return out;
-  }
-
-  function repeatedMont(value: bigint, count: number): Uint8Array {
-    const out = new Uint8Array(count * elementBytes);
-    writeElement(out, 0, (value * MONT_R) % modulus);
-    for (let i = 1; i < count; i += 1) {
-      out.copyWithin(i * elementBytes, 0, elementBytes);
-    }
-    return out;
-  }
-
-  /** Stage twiddles `omega^(i * 2^(logN - stage))` for `stage = 1..logN`, packed at aligned offsets. */
-  function twiddleBuffer(omega: bigint, logN: number, offsets: number[], sizes: number[], name: string): GPUBuffer {
-    const out = new Uint8Array(logN === 0 ? 4 : offsets[logN - 1] + sizes[logN - 1]);
-    for (let stage = 1; stage <= logN; stage += 1) {
-      const m = 2 ** (stage - 1);
-      const step = modPow(omega, 1n << BigInt(logN - stage), modulus);
-      let acc = oneMont;
-      for (let i = 0; i < m; i += 1) {
-        writeElement(out, offsets[stage - 1] + i * elementBytes, acc);
-        acc = (acc * step) % modulus;
-      }
-    }
-    return uploadGPUBuffer(device, `${label}-${name}`, out, STORAGE_IN_USAGE);
+    const logCount = Math.ceil(Math.log2(count));
+    const words = new Uint32Array(VECTOR_PARAM_WORDS);
+    words[0] = count;
+    words[1] = VECTOR_OP.POWER;
+    words[2] = logCount;
+    writeWords(words, 8, toMont(base));
+    const params = uploadGPUBuffer(device, `${label}-${name}-params`, words, UNIFORM_USAGE);
+    const bindGroup = device.createBindGroup({
+      label: `${label}-${name}-bg`,
+      layout: vectorKernel.bindGroupLayout,
+      entries: [unusedInput, unusedInput, buffer, params].map((resource, binding) => ({ binding, resource: { buffer: resource } })),
+    });
+    const encoder = device.createCommandEncoder({ label: `${label}-${name}` });
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(vectorKernel.pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(count / vectorKernel.workgroupSize));
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    params.destroy();
+    return buffer;
   }
 
   function prepareDomain(size: number): PreparedDomain {
@@ -176,26 +223,14 @@ export function createNTTModule(
     const omega = modPow(multiplicativeGenerator, (modulus - 1n) / sizeBig, modulus);
     const cosetDen = (modPow(cosetGenerator, sizeBig, modulus) - 1n + modulus) % modulus;
 
-    const stageOffsets: number[] = [];
-    const stageSizes: number[] = [];
-    let offset = 0;
-    for (let stage = 0; stage < logN; stage += 1) {
-      stageOffsets.push(offset);
-      stageSizes.push(alignBytes((1 << stage) * elementBytes));
-      offset += Math.ceil(stageSizes[stage] / alignment) * alignment;
-    }
-
     const domain: PreparedDomain = {
       size,
       logN,
-      forwardTwiddles: twiddleBuffer(omega, logN, stageOffsets, stageSizes, `twiddles-fwd-${size}`),
-      inverseTwiddles: twiddleBuffer(modInv(omega, modulus), logN, stageOffsets, stageSizes, `twiddles-inv-${size}`),
-      stageOffsets,
-      stageSizes,
-      inverseScaleFactors: uploadGPUBuffer(device, `${label}-inverse-scale-${size}`, repeatedMont(modInv(sizeBig, modulus), size)),
-      cosetPowers: uploadGPUBuffer(device, `${label}-coset-powers-${size}`, powerVectorMont(cosetGenerator, size)),
-      inverseCosetPowers: uploadGPUBuffer(device, `${label}-inverse-coset-powers-${size}`, powerVectorMont(modInv(cosetGenerator, modulus), size)),
-      cosetDenInvFactors: uploadGPUBuffer(device, `${label}-coset-den-inv-${size}`, repeatedMont(modInv(cosetDen, modulus), size)),
+      twiddles: powerTable(omega, size / 2, `twiddles-${size}`),
+      cosetPowers: powerTable(cosetGenerator, size, `coset-powers-${size}`),
+      inverseCosetPowers: powerTable(modInv(cosetGenerator, modulus), size, `inverse-coset-powers-${size}`),
+      inverseSize: modInv(sizeBig, modulus),
+      cosetDenInv: modInv(cosetDen, modulus),
     };
     domainCache.set(size, domain);
     return domain;
@@ -223,37 +258,21 @@ export function createNTTModule(
   }
 
   /**
-   * Multiply each of `vectorCount` vectors by the same per-size factor buffer
-   * (`current[i] * factors[i mod vectorSize] -> next`). Vectors are addressed
-   * through bind-group offsets when the alignment allows, otherwise the factor
-   * vector is repeated into a scratch buffer.
+   * Multiply each of `vectorCount` vectors by the same per-size factor table
+   * (`current[i] * factors[i mod vectorSize] -> next`), optionally scaling the
+   * result by a constant in the same pass.
    */
-  function recordMulFactors(batch: CommandBatch, state: State, factors: GPUBuffer, vectorSize: number, vectorCount: number, opLabel: string): void {
-    const vectorBytes = vectorSize * elementBytes;
-    if (vectorCount === 1) {
-      recordElementwise(batch, vectorKernel, state, factors, vectorSize, Uint32Array.from([vectorSize, VECTOR_OP_MUL_FACTORS, 0, 0, 0, 0, 0, 0]), opLabel);
-      return;
-    }
-    if (vectorBytes % alignment !== 0) {
-      const repeated = batch.temp(vectorCount * vectorBytes, STORAGE_RW_USAGE, `${opLabel}-factors`);
-      for (let i = 0; i < vectorCount; i += 1) {
-        batch.copy(factors, repeated, vectorBytes, 0, i * vectorBytes);
-      }
-      recordElementwise(batch, vectorKernel, state, repeated, vectorSize * vectorCount, Uint32Array.from([vectorSize * vectorCount, VECTOR_OP_MUL_FACTORS, 0, 0, 0, 0, 0, 0]), opLabel);
-      return;
-    }
-    const params = batch.uniform(Uint32Array.from([vectorSize, VECTOR_OP_MUL_FACTORS, 0, 0, 0, 0, 0, 0]));
-    for (let i = 0; i < vectorCount; i += 1) {
-      const input: BufferBinding = { buffer: state.current, offset: i * vectorBytes, size: vectorBytes };
-      const output: BufferBinding = { buffer: state.next, offset: i * vectorBytes, size: vectorBytes };
-      batch.dispatch(vectorKernel, [input, factors, output, params], Math.ceil(vectorSize / vectorKernel.workgroupSize), `${opLabel}-${i}`);
-    }
-    swap(state);
+  function recordMulFactors(batch: CommandBatch, state: State, factors: GPUBuffer, vectorSize: number, vectorCount: number, opLabel: string, scale?: Scale): void {
+    const totalCount = vectorSize * vectorCount;
+    recordElementwise(batch, vectorKernel, state, factors, totalCount, vectorParams(totalCount, VECTOR_OP.MUL_FACTORS, { vectorSize, scale }), opLabel);
   }
 
   /**
-   * Record a full NTT pipeline over `vectorCount` vectors of `vectorSize`
-   * Montgomery (or regular, see `inputRegular`) elements held in `state`.
+   * Record a full NTT over `vectorCount` vectors of `domain.size` elements
+   * held in `state`, as `ceil(logN / maxStagesPerDispatch)` fused-stage
+   * dispatches. The optional bit-reversal of the input and the constant
+   * multiplications (Montgomery conversions, `1/n`, `loadFactor`) are folded
+   * into the first and last dispatch.
    */
   function recordPipeline(
     batch: CommandBatch,
@@ -266,40 +285,58 @@ export function createNTTModule(
       outputRegular: boolean;
       inputBitReversed?: boolean;
       inverseCoset?: boolean;
+      /** Extra regular-integer factor applied to the input. */
+      loadFactor?: bigint;
     },
   ): void {
-    const { vectorCount, inverse, inputRegular, outputRegular, inputBitReversed = false, inverseCoset = false } = pipeline;
-    const vectorSize = domain.size;
-    const totalCount = vectorSize * vectorCount;
-    const zeroAux = batch.upload(new Uint8Array(4), STORAGE_IN_USAGE, "zero-aux");
+    const { vectorCount, inverse, inputRegular, outputRegular, inputBitReversed = false, inverseCoset = false, loadFactor = 1n } = pipeline;
+    const totalCount = domain.size * vectorCount;
+    // The coset scaling is a separate table pass after the transform; the
+    // conversion back to regular form is folded into it when present.
+    const outputRegularHere = outputRegular && !inverseCoset;
 
-    if (inputRegular) {
-      recordElementwise(batch, fieldKernel, state, zeroAux, totalCount, Uint32Array.from([totalCount, FIELD_OP.TO_MONT, 0, 0, 0, 0, 0, 0]), "to-mont");
+    const stagePlan: { first: number; count: number }[] = [];
+    for (let first = 0; first < domain.logN; first += maxStagesPerDispatch) {
+      stagePlan.push({ first, count: Math.min(maxStagesPerDispatch, domain.logN - first) });
     }
-    if (!inputBitReversed) {
-      recordElementwise(batch, vectorKernel, state, zeroAux, totalCount, Uint32Array.from([totalCount, VECTOR_OP_BIT_REVERSE_COPY, domain.logN, vectorSize, 0, 0, 0, 0]), "bit-reverse");
+    if (stagePlan.length === 0) {
+      stagePlan.push({ first: 0, count: 0 });
     }
 
-    const twiddles = inverse ? domain.inverseTwiddles : domain.forwardTwiddles;
-    for (let stage = 0; stage < domain.logN; stage += 1) {
-      const stageTwiddles: BufferBinding = { buffer: twiddles, offset: domain.stageOffsets[stage], size: domain.stageSizes[stage] };
+    stagePlan.forEach((stages, i) => {
+      const isFirst = i === 0;
+      const isLast = i === stagePlan.length - 1;
+      const words = new Uint32Array(NTT_PARAM_WORDS);
+      words[0] = totalCount;
+      words[1] = stages.first;
+      words[2] = stages.count;
+      words[4] = domain.logN;
+      let flags = inverse ? NTT_FLAG.INVERSE : 0;
+      if (isFirst) {
+        if (!inputBitReversed) {
+          flags |= NTT_FLAG.BIT_REVERSE;
+        }
+        if (inputRegular || loadFactor !== 1n) {
+          flags |= NTT_FLAG.LOAD_SCALE;
+          writeWords(words, 8, scaleConstant({ value: loadFactor, inputMont: !inputRegular, outputMont: true }));
+        }
+      }
+      if (isLast && (inverse || outputRegularHere)) {
+        flags |= NTT_FLAG.STORE_SCALE;
+        writeWords(words, 16, scaleConstant({ value: inverse ? domain.inverseSize : 1n, inputMont: true, outputMont: !outputRegularHere }));
+      }
+      words[3] = flags;
       batch.dispatch(
         nttKernel,
-        [state.current, stageTwiddles, state.next, batch.uniform(Uint32Array.from([vectorSize, 1 << stage, vectorCount, inverse ? 1 : 0, 0, 0, 0, 0]))],
-        [Math.ceil(vectorSize / 2 / nttKernel.workgroupSize), vectorCount, 1],
-        `stage-${stage}-${inverse ? "inv" : "fwd"}`,
+        [state.current, domain.twiddles, state.next, batch.uniform(words)],
+        workgroupGrid(Math.ceil(totalCount / tileElements)),
+        `ntt-${inverse ? "inv" : "fwd"}-stages-${stages.first}-${stages.first + stages.count}`,
       );
       swap(state);
-    }
+    });
 
-    if (inverse) {
-      recordMulFactors(batch, state, domain.inverseScaleFactors, vectorSize, vectorCount, "inverse-scale");
-    }
     if (inverseCoset) {
-      recordMulFactors(batch, state, domain.inverseCosetPowers, vectorSize, vectorCount, "inverse-coset-scale");
-    }
-    if (outputRegular) {
-      recordElementwise(batch, fieldKernel, state, zeroAux, totalCount, Uint32Array.from([totalCount, FIELD_OP.FROM_MONT, 0, 0, 0, 0, 0, 0]), "from-mont");
+      recordMulFactors(batch, state, domain.inverseCosetPowers, domain.size, vectorCount, "inverse-coset-scale", outputRegular ? { value: 1n, inputMont: true, outputMont: false } : undefined);
     }
   }
 
@@ -361,35 +398,55 @@ export function createNTTModule(
       throw new Error(`${label}: Groth16 quotient input length must be a non-zero power of two`);
     }
     const domain = prepareDomain(count);
-    const mont = { vectorCount: 1, inputRegular: !inputMontgomery, outputRegular: false };
+    const mont = { vectorCount: 1, inputRegular: false, outputRegular: false };
     const fieldParams = (opcode: number): Uint32Array => Uint32Array.from([count, opcode, 0, 0, 0, 0, 0, 0]);
 
     return recordAndRead(device, context.bufferPool, `${label}-groth16-quotient`, (batch) => {
       const states = [a, b, c].map((values) => uploadState(batch, values));
       // Coefficients, then evaluations on the coset.
       for (const state of states) {
-        recordPipeline(batch, state, domain, { ...mont, inverse: true });
+        recordPipeline(batch, state, domain, { ...mont, inputRegular: !inputMontgomery, inverse: true });
         recordMulFactors(batch, state, domain.cosetPowers, count, 1, "coset-shift");
-        recordPipeline(batch, state, domain, { ...mont, inputRegular: false, inverse: false });
+        recordPipeline(batch, state, domain, { ...mont, inverse: false });
       }
       const [h, bCoset, cCoset] = states;
-      // h = (a * b - c) / (g^n - 1) on the coset.
+      // h = (a * b - c) / (g^n - 1) on the coset; the division is folded into
+      // the input scaling of the inverse transform.
       recordElementwise(batch, fieldKernel, h, bCoset.current, count, fieldParams(FIELD_OP.MUL), "ab");
       recordElementwise(batch, fieldKernel, h, cCoset.current, count, fieldParams(FIELD_OP.SUB), "ab-minus-c");
-      recordMulFactors(batch, h, domain.cosetDenInvFactors, count, 1, "coset-den-inv");
-      // Back to coefficients, undo the coset shift, regular form, bit-reversed order.
-      recordPipeline(batch, h, domain, { ...mont, inputRegular: false, inverse: true });
-      recordMulFactors(batch, h, domain.inverseCosetPowers, count, 1, "inverse-coset-shift");
-      if (!outputMontgomery) {
-        recordElementwise(batch, fieldKernel, h, batch.upload(new Uint8Array(4)), count, fieldParams(FIELD_OP.FROM_MONT), "from-mont");
-      }
-      recordElementwise(batch, vectorKernel, h, batch.upload(new Uint8Array(4)), count, Uint32Array.from([count, VECTOR_OP_BIT_REVERSE_COPY, domain.logN, 0, 0, 0, 0, 0]), "bit-reverse");
+      recordPipeline(batch, h, domain, { ...mont, inverse: true, loadFactor: domain.cosetDenInv });
+      // Undo the coset shift (converting to regular form in the same pass), then bit-reverse.
+      recordMulFactors(batch, h, domain.inverseCosetPowers, count, 1, "inverse-coset-shift", outputMontgomery ? undefined : { value: 1n, inputMont: true, outputMont: false });
+      recordElementwise(batch, vectorKernel, h, h.current, count, vectorParams(count, VECTOR_OP.BIT_REVERSE_COPY, { logCount: domain.logN }), "bit-reverse");
       return { buffer: h.current, size: a.byteLength };
     }, context.debug);
   }
 
   async function prewarmDomain(size: number): Promise<void> {
     prepareDomain(size);
+  }
+
+  // --- recording API (for callers that batch several passes into one submission) ---
+
+  /** Forward or inverse NTT of `vectorCount` Montgomery vectors; returns a batch temporary holding the result. */
+  function recordTransform(batch: CommandBatch, values: GPUBuffer, vectorSize: number, vectorCount: number, inverse: boolean): GPUBuffer {
+    const domain = prepareDomain(vectorSize);
+    const state: State = { current: values, next: batch.temp(vectorSize * vectorCount * elementBytes, STORAGE_RW_USAGE, inverse ? "ntt-inv" : "ntt-fwd") };
+    recordPipeline(batch, state, domain, { vectorCount, inverse, inputRegular: false, outputRegular: false });
+    if (state.current === values) {
+      // An even number of passes landed back in the input; copy so the input stays untouched.
+      batch.copy(values, state.next, vectorSize * vectorCount * elementBytes);
+      return state.next;
+    }
+    return state.current;
+  }
+
+  /** In place: `values[i] *= factors[i mod vectorSize]` (Montgomery). */
+  function recordMulVector(batch: CommandBatch, values: GPUBuffer, factors: BufferBinding, vectorSize: number, vectorCount: number): void {
+    const totalCount = vectorSize * vectorCount;
+    const product = batch.temp(totalCount * elementBytes, STORAGE_RW_USAGE, "mul-vector");
+    batch.dispatch(vectorKernel, [values, factors, product, batch.uniform(vectorParams(totalCount, VECTOR_OP.MUL_FACTORS, { vectorSize }))], Math.ceil(totalCount / vectorKernel.workgroupSize), "mul-vector");
+    batch.copy(product, values, totalCount * elementBytes);
   }
 
   return {
@@ -427,6 +484,26 @@ export function createNTTModule(
       runPipelinePacked({ values, inverse: true, inputRegular: true, outputRegular: true, inputBitReversed: true, inverseCoset: true }),
     forwardPackedRegular: (values) => runPipelinePacked({ values, inverse: false, inputRegular: true, outputRegular: true }),
     inversePackedRegular: (values) => runPipelinePacked({ values, inverse: true, inputRegular: true, outputRegular: true }),
+    transformPackedMont: (values, transform) => {
+      const count = ensurePackedElements(values, elementBytes, `${label}.transform.values`);
+      const vectorCount = transform.vectorCount ?? 1;
+      if (!Number.isInteger(vectorCount) || vectorCount <= 0 || count % vectorCount !== 0) {
+        throw new Error(`${label}: ${count} packed elements do not split into ${vectorCount} vectors`);
+      }
+      return runPipelinePackedBatch({
+        values,
+        vectorSize: count / vectorCount,
+        vectorCount,
+        inverse: transform.inverse,
+        inputRegular: false,
+        outputRegular: false,
+        inputBitReversed: transform.inputBitReversed,
+        inverseCoset: transform.inverseCoset,
+      });
+    },
+    recordForward: (batch, values, vectorSize, vectorCount) => recordTransform(batch, values, vectorSize, vectorCount, false),
+    recordInverse: (batch, values, vectorSize, vectorCount) => recordTransform(batch, values, vectorSize, vectorCount, true),
+    recordMulVector,
     prewarmDomain,
     prewarmGroth16QuotientDomain: prewarmDomain,
     computeGroth16QuotientPackedRegular: (a, b, c) => computeGroth16QuotientPacked(a, b, c, false),
