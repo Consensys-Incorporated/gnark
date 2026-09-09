@@ -1,4 +1,5 @@
-import { fetchShaderText } from "./shaders.js";
+import { getAdapterInfo } from "../../../../src/curvegpu/context.js";
+import { fetchShaderText } from "../../../../src/curvegpu/shaders.js";
 
 export function mustElement<T>(value: T | null, name: string): T {
   if (value === null) {
@@ -48,42 +49,6 @@ export async function fetchBytes(path: string): Promise<Uint8Array> {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-export async function getAdapterInfo(adapter: GPUAdapter): Promise<GPUAdapterInfo | null> {
-  const adapterWithInfo = adapter as GPUAdapter & {
-    info?: GPUAdapterInfo;
-    requestAdapterInfo?: () => Promise<GPUAdapterInfo>;
-  };
-  if (adapterWithInfo.info) {
-    return adapterWithInfo.info;
-  }
-  if (typeof adapterWithInfo.requestAdapterInfo === "function") {
-    try {
-      return await adapterWithInfo.requestAdapterInfo();
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-export async function appendAdapterDiagnostics(adapter: GPUAdapter, lines: string[]): Promise<void> {
-  const adapterWithFallback = adapter as GPUAdapter & { isFallbackAdapter?: boolean };
-  if ("isFallbackAdapter" in adapterWithFallback) {
-    lines.push(`adapter.isFallbackAdapter = ${String(adapterWithFallback.isFallbackAdapter)}`);
-  }
-  const info = await getAdapterInfo(adapter);
-  if (!info) {
-    lines.push("adapter.info = unavailable");
-    return;
-  }
-  if (info.vendor) {
-    lines.push(`adapter.vendor = ${info.vendor}`);
-  }
-  if (info.architecture) {
-    lines.push(`adapter.architecture = ${info.architecture}`);
-  }
-}
-
 export function hexToBytes(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) {
     throw new Error(`invalid hex length ${hex.length}`);
@@ -105,4 +70,48 @@ export async function yieldToBrowser(): Promise<void> {
       requestAnimationFrame(() => resolve());
     }, 0);
   });
+}
+
+/** Deterministic xorshift-based pseudo-random 32-byte scalars for benchmarks. */
+export function makeRandomScalars(count: number, salt = 0x9e3779b9): Uint8Array[] {
+  const out: Uint8Array[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const bytes = new Uint8Array(32);
+    let state = (salt ^ count ^ index) >>> 0;
+    for (let i = 0; i < bytes.length; i += 1) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      bytes[i] = state & 0xff;
+    }
+    out.push(bytes);
+  }
+  return out;
+}
+
+export function packBytes(values: readonly Uint8Array[], elementBytes: number): Uint8Array {
+  const out = new Uint8Array(values.length * elementBytes);
+  values.forEach((value, index) => out.set(value, index * elementBytes));
+  return out;
+}
+
+/** Human-readable adapter lines for pages that request their own adapter. */
+export async function getAdapterDiagnosticLines(adapter: GPUAdapter): Promise<string[]> {
+  const lines: string[] = [];
+  const adapterWithFallback = adapter as GPUAdapter & { isFallbackAdapter?: boolean };
+  if ("isFallbackAdapter" in adapterWithFallback) {
+    lines.push(`adapter.isFallbackAdapter = ${String(adapterWithFallback.isFallbackAdapter)}`);
+  }
+  const info = await getAdapterInfo(adapter);
+  if (!info) {
+    lines.push("adapter.info = unavailable");
+    return lines;
+  }
+  if (info.vendor) {
+    lines.push(`adapter.vendor = ${info.vendor}`);
+  }
+  if (info.architecture) {
+    lines.push(`adapter.architecture = ${info.architecture}`);
+  }
+  return lines;
 }

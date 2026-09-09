@@ -15,16 +15,13 @@ export type SupportedCurveID = "bn254" | "bls12_381" | "bls12_377";
  * in Montgomery form unless explicitly converted with
  * `toMontgomery` / `fromMontgomery`.
  *
- * For G1 scalar multiplication and MSM, scalars are little-endian 32-byte
+ * For scalar multiplication and MSM, scalars are little-endian 32-byte
  * scalar-field elements in regular form.
  */
 export type CurveGPUElementBytes = Uint8Array;
 
 /**
  * Affine G1 point represented as little-endian field-element byte strings.
- *
- * Coordinates use the same field representation as the curve fixtures and
- * shader interfaces for the selected curve.
  */
 export interface CurveGPUAffinePoint {
   x: Uint8Array;
@@ -42,9 +39,6 @@ export interface CurveGPUJacobianPoint {
 
 /**
  * Quadratic-extension field element represented as two base-field coordinates.
- *
- * Values are little-endian byte strings in the same base-field representation
- * used by the selected curve's `fp` module.
  */
 export interface CurveGPUFp2Element {
   c0: Uint8Array;
@@ -91,9 +85,9 @@ export type CurveGPUMSMOptions = {
    */
   window?: number;
   /**
-   * Maximum number of terms processed per GPU dispatch chunk. Smaller values
-   * reduce peak GPU memory usage at the cost of more dispatches. Defaults to
-   * `256`.
+   * Maximum number of terms processed per GPU bucket dispatch. Smaller values
+   * spread work across more threads at the cost of more bucket entries.
+   * Defaults to `256`.
    */
   maxChunkSize?: number;
 };
@@ -101,10 +95,10 @@ export type CurveGPUMSMOptions = {
 /**
  * Supported packed point encodings for bulk APIs.
  *
- * `"jacobian_x_y_z_le"` — Six consecutive little-endian field-element byte
- * strings in the order `x, y, z`. For affine points represented in Jacobian
- * form set `z` to the Montgomery-form one element; for the point at infinity
- * leave all six components zero-filled.
+ * `"jacobian_x_y_z_le"` — three consecutive little-endian coordinates in the
+ * order `x, y, z`. For affine points represented in Jacobian form set `z` to
+ * the Montgomery-form one element; for the point at infinity leave all
+ * components zero-filled.
  */
 export type CurveGPUPackedPointLayout = "jacobian_x_y_z_le";
 
@@ -179,6 +173,10 @@ export interface CurveGPUContext {
   readonly debug: boolean;
   /** Maximum compute workgroup size supported by the device. */
   readonly maxWorkgroupSize: number;
+  /** Largest storage buffer binding the device accepts, in bytes. */
+  readonly maxStorageBufferBindingSize: number;
+  /** Required alignment of storage buffer binding offsets, in bytes. */
+  readonly minStorageBufferOffsetAlignment: number;
   /** GPU buffer pool shared across all operations on this context. */
   readonly bufferPool: BufferPool;
   /**
@@ -266,131 +264,76 @@ export interface FieldModule {
 }
 
 /**
- * G1 point operations for a specific curve.
+ * Group arithmetic for a specific curve, generic over the point
+ * representation: `A` is the affine point type and `J` the Jacobian one.
  *
- * Affine inputs are passed as `x` and `y` byte strings. Jacobian outputs use
- * three coordinates in the same field representation as the selected curve.
+ * G1 points use base-field byte strings as coordinates; G2 points use
+ * `CurveGPUFp2Element` pairs. Results returned "in affine form" are Jacobian
+ * points normalized to `z = 1` with only `x` and `y` reported.
  */
-export interface G1Module {
+export interface GroupModule<A, J> {
   readonly context: CurveGPUContext;
   readonly curve: SupportedCurveID;
+  readonly group: "g1" | "g2";
+  /** Byte size of one coordinate (base field for G1, `Fp2` for G2). */
   readonly coordinateBytes: number;
+  /** Byte size of one Jacobian point (`3 * coordinateBytes`). */
   readonly pointBytes: number;
-  readonly zeroHex: string;
   /** Return the affine point at infinity (all-zero coordinates). */
-  affineInfinity(): CurveGPUAffinePoint;
+  affineInfinity(): A;
   /** Return the zero Jacobian point (all-zero coordinates) synchronously. */
-  jacobianZero(): CurveGPUJacobianPoint;
+  jacobianZero(): J;
   /** Copy a Jacobian point through the GPU implementation. */
-  copy(point: CurveGPUJacobianPoint): Promise<CurveGPUJacobianPoint>;
-  copyBatch(points: readonly CurveGPUJacobianPoint[]): Promise<CurveGPUJacobianPoint[]>;
+  copy(point: J): Promise<J>;
+  copyBatch(points: readonly J[]): Promise<J[]>;
   /** Construct the Jacobian point at infinity via the GPU. */
-  jacobianInfinity(): Promise<CurveGPUJacobianPoint>;
-  jacobianInfinityBatch(count: number): Promise<CurveGPUJacobianPoint[]>;
+  jacobianInfinity(): Promise<J>;
+  jacobianInfinityBatch(count: number): Promise<J[]>;
   /** Lift affine points into Jacobian coordinates. */
-  affineToJacobian(point: CurveGPUAffinePoint): Promise<CurveGPUJacobianPoint>;
-  affineToJacobianBatch(points: readonly CurveGPUAffinePoint[]): Promise<CurveGPUJacobianPoint[]>;
+  affineToJacobian(point: A): Promise<J>;
+  affineToJacobianBatch(points: readonly A[]): Promise<J[]>;
   /** Negate Jacobian points. */
-  negJacobian(point: CurveGPUJacobianPoint): Promise<CurveGPUJacobianPoint>;
-  negJacobianBatch(points: readonly CurveGPUJacobianPoint[]): Promise<CurveGPUJacobianPoint[]>;
+  negJacobian(point: J): Promise<J>;
+  negJacobianBatch(points: readonly J[]): Promise<J[]>;
   /** Double Jacobian points. */
-  doubleJacobian(point: CurveGPUJacobianPoint): Promise<CurveGPUJacobianPoint>;
-  doubleJacobianBatch(points: readonly CurveGPUJacobianPoint[]): Promise<CurveGPUJacobianPoint[]>;
+  doubleJacobian(point: J): Promise<J>;
+  doubleJacobianBatch(points: readonly J[]): Promise<J[]>;
   /** Add an affine point into a Jacobian accumulator (mixed addition). */
-  addMixed(point: CurveGPUJacobianPoint, affine: CurveGPUAffinePoint): Promise<CurveGPUJacobianPoint>;
-  addMixedBatch(points: readonly CurveGPUJacobianPoint[], affine: readonly CurveGPUAffinePoint[]): Promise<CurveGPUJacobianPoint[]>;
-  /**
-   * Convert Jacobian points to affine coordinates.
-   *
-   * The returned object keeps the `z` field for compatibility with existing
-   * fixtures; consumers that need a strict affine point should use `x` and `y`.
-   */
-  jacobianToAffine(point: CurveGPUJacobianPoint): Promise<CurveGPUAffinePoint>;
-  jacobianToAffineBatch(points: readonly CurveGPUJacobianPoint[]): Promise<CurveGPUAffinePoint[]>;
-  /** Add two affine points and return the result in Jacobian form. */
-  affineAdd(a: CurveGPUAffinePoint, b: CurveGPUAffinePoint): Promise<CurveGPUJacobianPoint>;
-  affineAddBatch(a: readonly CurveGPUAffinePoint[], b: readonly CurveGPUAffinePoint[]): Promise<CurveGPUJacobianPoint[]>;
-  /** Multiply an affine base by a scalar and return the result in Jacobian form. */
-  scalarMulAffine(base: CurveGPUAffinePoint, scalar: CurveGPUElementBytes): Promise<CurveGPUJacobianPoint>;
-  scalarMulAffineBatch(bases: readonly CurveGPUAffinePoint[], scalars: readonly CurveGPUElementBytes[]): Promise<CurveGPUJacobianPoint[]>;
+  addMixed(point: J, affine: A): Promise<J>;
+  addMixedBatch(points: readonly J[], affine: readonly A[]): Promise<J[]>;
+  /** Convert Jacobian points to affine coordinates. */
+  jacobianToAffine(point: J): Promise<A>;
+  jacobianToAffineBatch(points: readonly J[]): Promise<A[]>;
+  /** Add two affine points and return the result in Jacobian form (`z = 1`). */
+  affineAdd(a: A, b: A): Promise<J>;
+  affineAddBatch(a: readonly A[], b: readonly A[]): Promise<J[]>;
+  /** Multiply an affine base by a scalar and return the result in Jacobian form (`z = 1`). */
+  scalarMulAffine(base: A, scalar: CurveGPUElementBytes): Promise<J>;
+  scalarMulAffineBatch(bases: readonly A[], scalars: readonly CurveGPUElementBytes[]): Promise<J[]>;
   /** Add two affine points and return the result in affine form. */
-  addAffine(a: CurveGPUAffinePoint, b: CurveGPUAffinePoint): Promise<CurveGPUAffinePoint>;
-  addAffineBatch(a: readonly CurveGPUAffinePoint[], b: readonly CurveGPUAffinePoint[]): Promise<CurveGPUAffinePoint[]>;
+  addAffine(a: A, b: A): Promise<A>;
+  addAffineBatch(a: readonly A[], b: readonly A[]): Promise<A[]>;
   /** Negate an affine point and return the result in affine form. */
-  negAffine(point: CurveGPUAffinePoint): Promise<CurveGPUAffinePoint>;
-  negAffineBatch(points: readonly CurveGPUAffinePoint[]): Promise<CurveGPUAffinePoint[]>;
+  negAffine(point: A): Promise<A>;
+  negAffineBatch(points: readonly A[]): Promise<A[]>;
   /** Double an affine point and return the result in affine form. */
-  doubleAffine(point: CurveGPUAffinePoint): Promise<CurveGPUAffinePoint>;
-  doubleAffineBatch(points: readonly CurveGPUAffinePoint[]): Promise<CurveGPUAffinePoint[]>;
+  doubleAffine(point: A): Promise<A>;
+  doubleAffineBatch(points: readonly A[]): Promise<A[]>;
   /** Multiply an affine base by a scalar and return the result in affine form. */
-  scalarMulAffineResult(base: CurveGPUAffinePoint, scalar: CurveGPUElementBytes): Promise<CurveGPUAffinePoint>;
-  scalarMulAffineResultBatch(bases: readonly CurveGPUAffinePoint[], scalars: readonly CurveGPUElementBytes[]): Promise<CurveGPUAffinePoint[]>;
+  scalarMulAffineResult(base: A, scalar: CurveGPUElementBytes): Promise<A>;
+  scalarMulAffineResultBatch(bases: readonly A[], scalars: readonly CurveGPUElementBytes[]): Promise<A[]>;
 }
 
-/**
- * G2 point operations for a specific curve.
- *
- * Coordinates are represented over the quadratic extension field as `{c0, c1}`
- * byte-string pairs. The arithmetic rules mirror `G1Module` but operate on
- * `CurveGPUG2AffinePoint` and `CurveGPUG2JacobianPoint` types.
- */
-export interface G2Module {
-  readonly context: CurveGPUContext;
-  readonly curve: SupportedCurveID;
+/** G1 point operations. */
+export type G1Module = GroupModule<CurveGPUAffinePoint, CurveGPUJacobianPoint> & {
+  readonly zeroHex: string;
+};
+
+/** G2 point operations over the quadratic extension field. */
+export type G2Module = GroupModule<CurveGPUG2AffinePoint, CurveGPUG2JacobianPoint> & {
   /** Byte size of one base-field component (`c0` or `c1`). */
   readonly componentBytes: number;
-  /** Byte size of one G2 coordinate (two components: `2 * componentBytes`). */
-  readonly coordinateBytes: number;
-  /** Byte size of one G2 Jacobian point (six components: `6 * componentBytes`). */
-  readonly pointBytes: number;
-  /** Return the affine G2 point at infinity (all-zero components). */
-  affineInfinity(): CurveGPUG2AffinePoint;
-  /** Return the zero G2 Jacobian point (all-zero components) synchronously. */
-  jacobianZero(): CurveGPUG2JacobianPoint;
-  /** Copy a G2 Jacobian point through the GPU implementation. */
-  copy(point: CurveGPUG2JacobianPoint): Promise<CurveGPUG2JacobianPoint>;
-  copyBatch(points: readonly CurveGPUG2JacobianPoint[]): Promise<CurveGPUG2JacobianPoint[]>;
-  /** Construct the G2 Jacobian point at infinity via the GPU. */
-  jacobianInfinity(): Promise<CurveGPUG2JacobianPoint>;
-  jacobianInfinityBatch(count: number): Promise<CurveGPUG2JacobianPoint[]>;
-  /** Lift affine G2 points into Jacobian coordinates. */
-  affineToJacobian(point: CurveGPUG2AffinePoint): Promise<CurveGPUG2JacobianPoint>;
-  affineToJacobianBatch(points: readonly CurveGPUG2AffinePoint[]): Promise<CurveGPUG2JacobianPoint[]>;
-  /** Negate G2 Jacobian points. */
-  negJacobian(point: CurveGPUG2JacobianPoint): Promise<CurveGPUG2JacobianPoint>;
-  negJacobianBatch(points: readonly CurveGPUG2JacobianPoint[]): Promise<CurveGPUG2JacobianPoint[]>;
-  /** Double G2 Jacobian points. */
-  doubleJacobian(point: CurveGPUG2JacobianPoint): Promise<CurveGPUG2JacobianPoint>;
-  doubleJacobianBatch(points: readonly CurveGPUG2JacobianPoint[]): Promise<CurveGPUG2JacobianPoint[]>;
-  /** Add an affine G2 point into a Jacobian accumulator (mixed addition). */
-  addMixed(point: CurveGPUG2JacobianPoint, affine: CurveGPUG2AffinePoint): Promise<CurveGPUG2JacobianPoint>;
-  addMixedBatch(points: readonly CurveGPUG2JacobianPoint[], affine: readonly CurveGPUG2AffinePoint[]): Promise<CurveGPUG2JacobianPoint[]>;
-  /**
-   * Convert G2 Jacobian points to affine coordinates.
-   *
-   * Returns affine points; the `z` component is not present in the result type.
-   */
-  jacobianToAffine(point: CurveGPUG2JacobianPoint): Promise<CurveGPUG2AffinePoint>;
-  jacobianToAffineBatch(points: readonly CurveGPUG2JacobianPoint[]): Promise<CurveGPUG2AffinePoint[]>;
-  /** Add two affine G2 points and return the result in Jacobian form. */
-  affineAdd(a: CurveGPUG2AffinePoint, b: CurveGPUG2AffinePoint): Promise<CurveGPUG2JacobianPoint>;
-  affineAddBatch(a: readonly CurveGPUG2AffinePoint[], b: readonly CurveGPUG2AffinePoint[]): Promise<CurveGPUG2JacobianPoint[]>;
-  /** Multiply an affine G2 base by a scalar and return the result in Jacobian form. */
-  scalarMulAffine(base: CurveGPUG2AffinePoint, scalar: CurveGPUElementBytes): Promise<CurveGPUG2JacobianPoint>;
-  scalarMulAffineBatch(bases: readonly CurveGPUG2AffinePoint[], scalars: readonly CurveGPUElementBytes[]): Promise<CurveGPUG2JacobianPoint[]>;
-  /** Add two affine G2 points and return the result in affine form. */
-  addAffine(a: CurveGPUG2AffinePoint, b: CurveGPUG2AffinePoint): Promise<CurveGPUG2AffinePoint>;
-  addAffineBatch(a: readonly CurveGPUG2AffinePoint[], b: readonly CurveGPUG2AffinePoint[]): Promise<CurveGPUG2AffinePoint[]>;
-  /** Negate an affine G2 point and return the result in affine form. */
-  negAffine(point: CurveGPUG2AffinePoint): Promise<CurveGPUG2AffinePoint>;
-  negAffineBatch(points: readonly CurveGPUG2AffinePoint[]): Promise<CurveGPUG2AffinePoint[]>;
-  /** Double an affine G2 point and return the result in affine form. */
-  doubleAffine(point: CurveGPUG2AffinePoint): Promise<CurveGPUG2AffinePoint>;
-  doubleAffineBatch(points: readonly CurveGPUG2AffinePoint[]): Promise<CurveGPUG2AffinePoint[]>;
-  /** Multiply an affine G2 base by a scalar and return the result in affine form. */
-  scalarMulAffineResult(base: CurveGPUG2AffinePoint, scalar: CurveGPUElementBytes): Promise<CurveGPUG2AffinePoint>;
-  scalarMulAffineResultBatch(bases: readonly CurveGPUG2AffinePoint[], scalars: readonly CurveGPUElementBytes[]): Promise<CurveGPUG2AffinePoint[]>;
-}
+};
 
 /**
  * Scalar-field NTT module for a specific curve.
@@ -426,7 +369,7 @@ export interface NTTModule {
    * coset form to canonical regular form.
    */
   inverseCosetBitReversePackedRegular(values: Uint8Array): Promise<Uint8Array>;
-  /** Precompute and cache domain metadata for a power-of-two domain size. */
+  /** Precompute and cache domain data (twiddles, coset factors) on the GPU for a power-of-two size. */
   prewarmDomain(size: number): Promise<void>;
 }
 
@@ -443,164 +386,53 @@ export interface Groth16QuotientModule {
    * Compute the Groth16 quotient vector H from packed regular little-endian
    * A, B, and C witness polynomials already padded to the FFT domain size.
    *
-   * The returned packed vector is in regular little-endian coefficient form
-   * and has the same element count as the padded inputs.
-  */
+   * The returned packed vector is in regular little-endian form, bit-reversed
+   * order, and has the same element count as the padded inputs.
+   */
   computeGroth16QuotientPackedRegular(a: Uint8Array, b: Uint8Array, c: Uint8Array): Promise<Uint8Array>;
   /**
-   * Compute the Groth16 quotient vector H from packed Montgomery little-endian
-   * A, B, and C witness polynomials already padded to the FFT domain size.
-   *
-   * The returned packed vector is in regular little-endian coefficient form
-   * and has the same element count as the padded inputs.
+   * Same as `computeGroth16QuotientPackedRegular` for packed Montgomery
+   * little-endian inputs. The output is still regular little-endian.
    */
   computeGroth16QuotientPackedMont(a: Uint8Array, b: Uint8Array, c: Uint8Array): Promise<Uint8Array>;
+  /**
+   * Same as `computeGroth16QuotientPackedMont` but the result is also returned
+   * in Montgomery form (still bit-reversed), skipping the final conversion.
+   */
+  computeGroth16QuotientMont(a: Uint8Array, b: Uint8Array, c: Uint8Array): Promise<Uint8Array>;
   /** Precompute and cache Groth16 quotient-domain data for a power-of-two domain size. */
   prewarmGroth16QuotientDomain(size: number): Promise<void>;
 }
 
-export type Groth16ProvingKeyFormat = "serialized" | "dump";
-export type Groth16RuntimeKind = "webgpu" | "native";
-
-export type Groth16RuntimeOptions = {
-  /** Optional URL for Go's wasm_exec.js runtime shim. Defaults to the package asset. */
-  wasmExecURL?: string;
-  /** Optional URL for the WebGPU-accelerated Groth16 Go WASM runtime. Defaults to the package asset. */
-  webgpuWasmURL?: string;
-  /** Optional URL for the native gnark Groth16 Go WASM runtime. Defaults to the package asset. */
-  nativeWasmURL?: string;
-};
-
-export interface Groth16Handle {
-  /** Release the corresponding Go WASM runtime handle. */
-  dispose(): Promise<void>;
+/**
+ * A base vector uploaded once to the GPU in the shader point layout, possibly
+ * split into several buffers to respect `maxStorageBufferBindingSize`.
+ */
+export interface ResidentBases {
+  /** Total number of points. */
+  readonly count: number;
+  /** Byte size of one point in the GPU layout. */
+  readonly pointBytes: number;
+  /** Consecutive chunks; `first` is the index of the chunk's first point. */
+  readonly chunks: readonly { buffer: GPUBuffer; first: number; count: number }[];
+  /** Destroy the GPU buffers. */
+  release(): void;
 }
-
-export interface Groth16ConstraintSystem extends Groth16Handle {
-  /** Number of constraints reported by the deserialized constraint system. */
-  readonly constraints: number;
-}
-
-export type Groth16ProvingKey = Groth16Handle;
-export type Groth16VerificationKey = Groth16Handle;
 
 /**
- * Browser Groth16 proof helpers backed by a long-lived Go WASM runtime.
+ * Multi-scalar multiplication over affine bases, generic over the point
+ * representation (see `GroupModule`).
  */
-export interface Groth16Module extends Groth16QuotientModule {
-  /**
-   * Load the Go WASM Groth16 runtime.
-   *
-   * Defaults to the WebGPU runtime and package-shipped assets. Override URLs
-   * when serving the runtime from an application asset path or CDN.
-   */
-  loadRuntime(options?: Groth16RuntimeOptions & { kind?: Groth16RuntimeKind }): Promise<void>;
-  /** Deserialize a gnark Groth16 constraint system. */
-  readConstraintSystem(bytes: Uint8Array): Promise<Groth16ConstraintSystem>;
-  /** Deserialize a gnark Groth16 proving key. */
-  readProvingKey(bytes: Uint8Array, options?: { format?: Groth16ProvingKeyFormat }): Promise<Groth16ProvingKey>;
-  /** Deserialize a gnark Groth16 verification key. */
-  readVerificationKey(bytes: Uint8Array): Promise<Groth16VerificationKey>;
-  /** Precompute browser-side proving key caches. */
-  prepareProvingKey(pk: Groth16ProvingKey): Promise<void>;
-  /** Prove with a gnark binary witness and return gnark-serialized proof bytes. */
-  prove(ccs: Groth16ConstraintSystem, pk: Groth16ProvingKey, witness: Uint8Array): Promise<Uint8Array>;
-  /** Verify gnark-serialized proof bytes against a gnark binary public witness. */
-  verify(proof: Uint8Array, vk: Groth16VerificationKey, publicWitness: Uint8Array): Promise<boolean>;
-  /**
-   * Encode flat regular field values as a gnark binary witness.
-   *
-   * Values must be ordered `[public | private]`. The binary witness protocol
-   * stores field elements as fixed-width big-endian bytes.
-   */
-  encodeWitness(values: readonly bigint[], options: { publicCount: number }): Uint8Array;
-}
-
-export type PlonkProvingKeyFormat = "serialized" | "unsafe";
-export type PlonkRuntimeKind = "webgpu" | "native";
-
-export type PlonkRuntimeOptions = {
-  /** Optional URL for Go's wasm_exec.js runtime shim. Defaults to the package asset. */
-  wasmExecURL?: string;
-  /** Optional URL for the WebGPU-accelerated PLONK Go WASM runtime. Defaults to the package asset. */
-  webgpuWasmURL?: string;
-  /** Optional URL for the native gnark PLONK Go WASM runtime. Defaults to the package asset. */
-  nativeWasmURL?: string;
-};
-
-export interface PlonkHandle {
-  /** Release the corresponding Go WASM runtime handle. */
-  dispose(): Promise<void>;
-}
-
-export interface PlonkConstraintSystem extends PlonkHandle {
-  /** Number of constraints reported by the deserialized constraint system. */
-  readonly constraints: number;
-}
-
-export type PlonkProvingKey = PlonkHandle;
-export type PlonkVerificationKey = PlonkHandle;
-
-/**
- * Browser PLONK proof helpers backed by a long-lived Go WASM runtime.
- */
-export interface PlonkModule {
+export interface MSMModule<A, J> {
   readonly context: CurveGPUContext;
   readonly curve: SupportedCurveID;
-  /**
-   * Load the Go WASM PLONK runtime.
-   *
-   * Defaults to the WebGPU runtime and package-shipped assets. Override URLs
-   * when serving the runtime from an application asset path or CDN.
-   */
-  loadRuntime(options?: PlonkRuntimeOptions & { kind?: PlonkRuntimeKind }): Promise<void>;
-  /** Deserialize a gnark PLONK constraint system. */
-  readConstraintSystem(bytes: Uint8Array): Promise<PlonkConstraintSystem>;
-  /** Deserialize a gnark PLONK proving key. */
-  readProvingKey(bytes: Uint8Array, options?: { format?: PlonkProvingKeyFormat }): Promise<PlonkProvingKey>;
-  /** Deserialize a gnark PLONK verification key. */
-  readVerificationKey(bytes: Uint8Array): Promise<PlonkVerificationKey>;
-  /**
-   * Precompute browser-side proving key caches.
-   *
-   * Passing the constraint system lets the WebGPU runtime prepare PLONK
-   * trace-derived caches outside the timed prove path.
-   */
-  prepareProvingKey(pk: PlonkProvingKey, ccs?: PlonkConstraintSystem): Promise<void>;
-  /** Prove with a gnark binary witness and return gnark-serialized proof bytes. */
-  prove(ccs: PlonkConstraintSystem, pk: PlonkProvingKey, witness: Uint8Array): Promise<Uint8Array>;
-  /** Verify gnark-serialized proof bytes against a gnark binary public witness. */
-  verify(proof: Uint8Array, vk: PlonkVerificationKey, publicWitness: Uint8Array): Promise<boolean>;
-  /**
-   * Encode flat regular field values as a gnark binary witness.
-   *
-   * Values must be ordered `[public | private]`. The binary witness protocol
-   * stores field elements as fixed-width big-endian bytes.
-   */
-  encodeWitness(values: readonly bigint[], options: { publicCount: number }): Uint8Array;
-}
-
-/**
- * Multi-scalar multiplication module over G1 affine bases.
- */
-export interface G1MSMModule {
-  readonly context: CurveGPUContext;
-  readonly curve: SupportedCurveID;
-  readonly group: "g1";
+  readonly group: "g1" | "g2";
   /** Choose the default Pippenger window size for a given term count. */
   bestWindow(termCount: number): number;
-  /** Run a single affine-base Pippenger MSM and return the result in Jacobian form. */
-  pippengerAffine(
-    bases: readonly CurveGPUAffinePoint[],
-    scalars: readonly CurveGPUElementBytes[],
-    options?: CurveGPUMSMOptions,
-  ): Promise<CurveGPUJacobianPoint>;
+  /** Run a single affine-base Pippenger MSM and return the result in Jacobian form (`z = 1`). */
+  pippengerAffine(bases: readonly A[], scalars: readonly CurveGPUElementBytes[], options?: CurveGPUMSMOptions): Promise<J>;
   /** Run a single affine-base Pippenger MSM and return the result in affine form. */
-  pippengerAffineResult(
-    bases: readonly CurveGPUAffinePoint[],
-    scalars: readonly CurveGPUElementBytes[],
-    options?: CurveGPUMSMOptions,
-  ): Promise<CurveGPUAffinePoint>;
+  pippengerAffineResult(bases: readonly A[], scalars: readonly CurveGPUElementBytes[], options?: CurveGPUMSMOptions): Promise<A>;
   /**
    * Run a batched affine-base Pippenger MSM.
    *
@@ -608,92 +440,146 @@ export interface G1MSMModule {
    * belong to instance 0, the next `termsPerInstance` pairs to instance 1, etc.
    * `options.count` and `options.termsPerInstance` must both be provided.
    */
-  pippengerAffineBatch(
-    bases: readonly CurveGPUAffinePoint[],
-    scalars: readonly CurveGPUElementBytes[],
-    options: CurveGPUMSMOptions,
-  ): Promise<CurveGPUJacobianPoint[]>;
+  pippengerAffineBatch(bases: readonly A[], scalars: readonly CurveGPUElementBytes[], options: CurveGPUMSMOptions): Promise<J[]>;
   /**
-   * Run affine-base Pippenger MSM from packed bytes.
+   * Run Pippenger MSM from packed bytes.
    *
-   * `basesPacked` is currently expected in `jacobian_x_y_z_le` layout with one
-   * packed point per term. For ordinary affine points, `z` should be the
-   * Montgomery-form one element and infinity points should remain zero-filled.
-   *
-   * `scalarsPacked` is a packed sequence of regular-form 32-byte scalars.
-   *
-   * The result is returned in the same packed `jacobian_x_y_z_le` layout.
+   * `basesPacked` is expected in `jacobian_x_y_z_le` layout with one packed
+   * point per term (`z` = Montgomery one for affine inputs, all-zero for
+   * infinity). `scalarsPacked` is a packed sequence of regular-form 32-byte
+   * scalars. The result is returned in the same packed layout, one point per
+   * MSM instance.
    */
   pippengerPackedJacobianBases(
     basesPacked: Uint8Array,
     scalarsPacked: Uint8Array,
     options: CurveGPUMSMOptions & { layout?: CurveGPUPackedPointLayout },
+  ): Promise<Uint8Array>;
+  /**
+   * Upload a packed affine base vector (per point: the coordinates `x, y` in
+   * Montgomery little-endian form, infinity all-zero) once, expanding it to
+   * the shader layout on the way. The result stays on the GPU until released.
+   */
+  uploadAffineBases(packedAffine: Uint8Array): Promise<ResidentBases>;
+  /**
+   * MSM over `bases[start : start + scalarsPacked.length / 32]` using
+   * GPU-resident bases. Returns the affine result packed as `x, y`
+   * (`2 * coordinateBytes`), all-zero for the point at infinity.
+   */
+  msmResident(
+    bases: ResidentBases,
+    start: number,
+    scalarsPacked: Uint8Array,
+    options?: Pick<CurveGPUMSMOptions, "window" | "maxChunkSize">,
   ): Promise<Uint8Array>;
 }
 
+/** Multi-scalar multiplication over G1 affine bases. */
+export type G1MSMModule = MSMModule<CurveGPUAffinePoint, CurveGPUJacobianPoint>;
+/** Multi-scalar multiplication over G2 affine bases. */
+export type G2MSMModule = MSMModule<CurveGPUG2AffinePoint, CurveGPUG2JacobianPoint>;
+
+export type ProofRuntimeKind = "webgpu" | "native";
+
+export type ProofRuntimeOptions = {
+  /** Optional URL for Go's wasm_exec.js runtime shim. Defaults to the package asset. */
+  wasmExecURL?: string;
+  /** Optional URL for the WebGPU-accelerated Go WASM runtime. Defaults to the package asset. */
+  webgpuWasmURL?: string;
+  /** Optional URL for the native gnark Go WASM runtime. Defaults to the package asset. */
+  nativeWasmURL?: string;
+};
+
+export interface ProofHandle {
+  /** Release the corresponding Go WASM runtime handle. */
+  dispose(): Promise<void>;
+}
+
+export interface ProofConstraintSystem extends ProofHandle {
+  /** Number of constraints reported by the deserialized constraint system. */
+  readonly constraints: number;
+}
+
 /**
- * Multi-scalar multiplication module over G2 affine bases.
- *
- * The API mirrors `G1MSMModule` but operates on G2 points over the quadratic
- * extension field. Bases are supplied in affine form; results are returned in
- * Jacobian form unless an `AffineResult` variant is used.
+ * Browser proof helpers backed by a long-lived Go WASM runtime. `F` is the
+ * set of proving-key serialization formats the system accepts.
  */
-export interface G2MSMModule {
+export interface ProofModule<F extends string> {
   readonly context: CurveGPUContext;
   readonly curve: SupportedCurveID;
-  readonly group: "g2";
-  /** Choose the default Pippenger window size for a given term count. */
-  bestWindow(termCount: number): number;
-  /** Run a single affine-base G2 Pippenger MSM and return the result in Jacobian form. */
-  pippengerAffine(
-    bases: readonly CurveGPUG2AffinePoint[],
-    scalars: readonly CurveGPUElementBytes[],
-    options?: CurveGPUMSMOptions,
-  ): Promise<CurveGPUG2JacobianPoint>;
-  /** Run a single affine-base G2 Pippenger MSM and return the result in affine form. */
-  pippengerAffineResult(
-    bases: readonly CurveGPUG2AffinePoint[],
-    scalars: readonly CurveGPUElementBytes[],
-    options?: CurveGPUMSMOptions,
-  ): Promise<CurveGPUG2AffinePoint>;
   /**
-   * Run a batched affine-base G2 Pippenger MSM.
+   * Load the Go WASM runtime.
    *
-   * `bases` and `scalars` are interleaved: the first `termsPerInstance` pairs
-   * belong to instance 0, the next `termsPerInstance` pairs to instance 1, etc.
-   * `options.count` and `options.termsPerInstance` must both be provided.
+   * Defaults to the WebGPU runtime and package-shipped assets. Override URLs
+   * when serving the runtime from an application asset path or CDN.
    */
-  pippengerAffineBatch(
-    bases: readonly CurveGPUG2AffinePoint[],
-    scalars: readonly CurveGPUElementBytes[],
-    options: CurveGPUMSMOptions,
-  ): Promise<CurveGPUG2JacobianPoint[]>;
+  loadRuntime(options?: ProofRuntimeOptions & { kind?: ProofRuntimeKind }): Promise<void>;
+  /** Deserialize a gnark constraint system. */
+  readConstraintSystem(bytes: Uint8Array): Promise<ProofConstraintSystem>;
+  /** Deserialize a gnark proving key. */
+  readProvingKey(bytes: Uint8Array, options?: { format?: F }): Promise<ProofHandle>;
+  /** Deserialize a gnark verification key. */
+  readVerificationKey(bytes: Uint8Array): Promise<ProofHandle>;
   /**
-   * Run G2 Pippenger MSM from packed bytes.
+   * Precompute browser-side proving key caches (uploads the key bases to the
+   * GPU for the WebGPU runtime).
    *
-   * `basesPacked` must be in `jacobian_x_y_z_le` layout: six consecutive
-   * base-field components per point (`x.c0, x.c1, y.c0, y.c1, z.c0, z.c1`).
-   * Set `z.c0` to the Montgomery-form one element for affine inputs; leave all
-   * components zero for the point at infinity.
-   *
-   * `scalarsPacked` is a packed sequence of regular-form 32-byte scalars.
-   *
-   * The result is returned in the same packed `jacobian_x_y_z_le` layout,
-   * one Jacobian point per MSM instance.
+   * Passing the constraint system lets the PLONK WebGPU runtime prepare
+   * trace-derived caches outside the timed prove path.
    */
-  pippengerPackedJacobianBases(
-    basesPacked: Uint8Array,
-    scalarsPacked: Uint8Array,
-    options: CurveGPUMSMOptions & { layout?: CurveGPUPackedPointLayout },
-  ): Promise<Uint8Array>;
+  prepareProvingKey(pk: ProofHandle, ccs?: ProofConstraintSystem): Promise<void>;
+  /** Prove with a gnark binary witness and return gnark-serialized proof bytes. */
+  prove(ccs: ProofConstraintSystem, pk: ProofHandle, witness: Uint8Array): Promise<Uint8Array>;
+  /** Verify gnark-serialized proof bytes against a gnark binary public witness. */
+  verify(proof: Uint8Array, vk: ProofHandle, publicWitness: Uint8Array): Promise<boolean>;
+  /**
+   * Encode flat regular field values as a gnark binary witness.
+   *
+   * Values must be ordered `[public | private]`. The binary witness protocol
+   * stores field elements as fixed-width big-endian bytes.
+   */
+  encodeWitness(values: readonly bigint[], options: { publicCount: number }): Uint8Array;
 }
+
+export type Groth16ProvingKeyFormat = "serialized" | "dump";
+export type PlonkProvingKeyFormat = "serialized" | "unsafe";
+
+/** Groth16 proof helpers plus the quotient primitives the prover uses. */
+export type Groth16Module = ProofModule<Groth16ProvingKeyFormat> & Groth16QuotientModule;
+/** PLONK proof helpers. */
+export type PlonkModule = ProofModule<PlonkProvingKeyFormat>;
+
+/** @deprecated Use {@link ProofRuntimeKind}. */
+export type Groth16RuntimeKind = ProofRuntimeKind;
+/** @deprecated Use {@link ProofRuntimeKind}. */
+export type PlonkRuntimeKind = ProofRuntimeKind;
+/** @deprecated Use {@link ProofRuntimeOptions}. */
+export type Groth16RuntimeOptions = ProofRuntimeOptions;
+/** @deprecated Use {@link ProofRuntimeOptions}. */
+export type PlonkRuntimeOptions = ProofRuntimeOptions;
+/** @deprecated Use {@link ProofHandle}. */
+export type Groth16Handle = ProofHandle;
+/** @deprecated Use {@link ProofHandle}. */
+export type PlonkHandle = ProofHandle;
+/** @deprecated Use {@link ProofConstraintSystem}. */
+export type Groth16ConstraintSystem = ProofConstraintSystem;
+/** @deprecated Use {@link ProofConstraintSystem}. */
+export type PlonkConstraintSystem = ProofConstraintSystem;
+/** @deprecated Use {@link ProofHandle}. */
+export type Groth16ProvingKey = ProofHandle;
+/** @deprecated Use {@link ProofHandle}. */
+export type PlonkProvingKey = ProofHandle;
+/** @deprecated Use {@link ProofHandle}. */
+export type Groth16VerificationKey = ProofHandle;
+/** @deprecated Use {@link ProofHandle}. */
+export type PlonkVerificationKey = ProofHandle;
 
 /**
  * High-level curve module returned by the library.
  *
  * This groups the curve-specific submodules behind one stable object per
  * supported curve. Obtain an instance via `createCurveModule` (or the
- * curve-specific helpers `createBN254` / `createBLS12381`).
+ * curve-specific helpers `createBN254` / `createBLS12381` / `createBLS12377`).
  */
 export interface CurveModule {
   /** The curve this module was created for. */
@@ -710,7 +596,7 @@ export interface CurveModule {
   readonly g2: G2Module;
   /** Scalar-field NTT. */
   readonly ntt: NTTModule;
-  /** Groth16-specific scalar-field helpers. */
+  /** Groth16 proof helpers. */
   readonly groth16: Groth16Module;
   /** PLONK proof helpers. */
   readonly plonk: PlonkModule;

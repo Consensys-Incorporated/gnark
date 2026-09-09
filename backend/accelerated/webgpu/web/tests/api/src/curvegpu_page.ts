@@ -24,10 +24,10 @@ const BENCH_MAX_LOG = 12;
 const CURVES: SupportedCurveID[] = ["bn254", "bls12_377", "bls12_381"];
 
 const SMOKE_SUITES = [
-  { id: "fr_ops", label: "fr ops", kind: "smoke", script: "/dist/tests/api/src/fr_ops_page.js" },
+  { id: "fr_ops", label: "fr ops", kind: "smoke", script: "/dist/tests/api/src/field_ops_page.js" },
   { id: "fr_vector_ops", label: "fr vector ops", kind: "smoke", script: "/dist/tests/api/src/fr_vector_ops_page.js" },
   { id: "fr_ntt", label: "fr NTT", kind: "smoke", script: "/dist/tests/api/src/fr_ntt_page.js" },
-  { id: "fp_ops", label: "fp ops", kind: "smoke", script: "/dist/tests/api/src/fp_ops_page.js" },
+  { id: "fp_ops", label: "fp ops", kind: "smoke", script: "/dist/tests/api/src/field_ops_page.js" },
   { id: "g1_ops", label: "G1 ops", kind: "smoke", script: "/dist/tests/api/src/g1_ops_page.js" },
   { id: "g1_scalar_mul", label: "G1 scalar mul", kind: "smoke", script: "/dist/tests/api/src/g1_scalar_mul_page.js" },
   { id: "g1_msm", label: "G1 MSM", kind: "smoke", script: "/dist/tests/api/src/g1_msm_page.js" },
@@ -53,7 +53,8 @@ const SUITES: SuiteConfig[] = CURVES.flatMap((curve) => [
 ]);
 
 type SuiteRunner = {
-  runSuite: (module: CurveModule, log: (msg: string) => void) => Promise<{ passed: number; failed: number }>;
+  /** `suiteId` lets one page serve several suites (e.g. `fr_ops` / `fp_ops`). */
+  runSuite: (module: CurveModule, log: (msg: string) => void, suiteId: string) => Promise<{ passed: number; failed: number }>;
 };
 
 function getById<T extends HTMLElement>(id: string): T {
@@ -92,7 +93,7 @@ async function runAllSmoke(
   for (const suite of suites) {
     try {
       const mod = await import(suite.script) as SuiteRunner;
-      const result = await mod.runSuite(module, log);
+      const result = await mod.runSuite(module, log, suite.id);
       passed += result.passed;
       failed += result.failed;
     } catch (error) {
@@ -237,7 +238,7 @@ async function main(): Promise<void> {
     try {
       const module = await buildModule(curve, log);
       const mod = await import(selected.script) as SuiteRunner;
-      await mod.runSuite(module, log);
+      await mod.runSuite(module, log, selected.id);
       setStatus("Pass");
       setPageState("pass");
     } catch (error) {

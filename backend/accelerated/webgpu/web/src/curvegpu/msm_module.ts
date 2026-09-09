@@ -1,208 +1,246 @@
 import type {
-  CurveGPUAffinePoint,
   CurveGPUContext,
   CurveGPUElementBytes,
-  CurveGPUJacobianPoint,
+  CurveGPUMSMOptions,
   CurveGPUPackedPointLayout,
   FieldModule,
-  G1Module,
-  G1MSMModule,
+  GroupModule,
+  MSMModule,
+  ResidentBases,
   SupportedCurveID,
-  CurveGPUMSMOptions,
 } from "./api.js";
-import { splitBytesLEToU32 } from "./convert.js";
-import { bestPippengerWindow } from "./msm_shared.js";
-import { runSparseSignedPippengerMSM } from "./msm_pippenger.js";
-import type { PippengerRuntime } from "./msm_pippenger.js";
-import { cloneBytes, ensureByteLength, lazyAsync } from "./runtime_common.js";
+import { recordAndRead, STORAGE_IN_USAGE, uploadGPUBuffer } from "./gpu.js";
+import type { MSMKernels } from "./msm_pippenger.js";
+import { recordSparseSignedPippengerMSM } from "./msm_pippenger.js";
+import { bestPippengerWindow, scalarWordsFromPacked } from "./msm_shared.js";
+import type { PointCodec } from "./point_codec.js";
+import { packAffinePoints, unpackJacobianPoints } from "./point_codec.js";
 
-function clonePoint(point: CurveGPUJacobianPoint): CurveGPUJacobianPoint {
-  return { x: cloneBytes(point.x), y: cloneBytes(point.y), z: cloneBytes(point.z) };
-}
-
-function unpackJacobianPoints(bytes: Uint8Array, count: number, coordinateBytes: number, pointBytes: number): CurveGPUJacobianPoint[] {
-  const out: CurveGPUJacobianPoint[] = [];
-  for (let i = 0; i < count; i += 1) {
-    const base = i * pointBytes;
-    out.push({
-      x: cloneBytes(bytes.slice(base, base + coordinateBytes)),
-      y: cloneBytes(bytes.slice(base + coordinateBytes, base + 2 * coordinateBytes)),
-      z: cloneBytes(bytes.slice(base + 2 * coordinateBytes, base + 3 * coordinateBytes)),
-    });
+function positiveInteger(value: number, label: string): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
   }
-  return out;
+  return value;
 }
 
-function packAffineBases(
-  bases: readonly CurveGPUAffinePoint[],
-  coordinateBytes: number,
-  pointBytes: number,
-  oneMontZ: Uint8Array,
-): Uint8Array {
-  const out = new Uint8Array(bases.length * pointBytes);
-  bases.forEach((base, index) => {
-    ensureByteLength(base.x, coordinateBytes, `bases[${index}].x`);
-    ensureByteLength(base.y, coordinateBytes, `bases[${index}].y`);
-    const isInfinity = base.x.every((byte) => byte === 0) && base.y.every((byte) => byte === 0);
-    const offset = index * pointBytes;
-    out.set(base.x, offset);
-    out.set(base.y, offset + coordinateBytes);
-    out.set(isInfinity ? new Uint8Array(coordinateBytes) : oneMontZ, offset + 2 * coordinateBytes);
-  });
-  return out;
-}
-
-function packScalarWords(scalars: readonly Uint8Array[]): Uint32Array {
-  const out = new Uint32Array(scalars.length * 8);
-  scalars.forEach((scalar, index) => {
-    ensureByteLength(scalar, 32, `scalars[${index}]`);
-    out.set(splitBytesLEToU32(scalar), index * 8);
-  });
-  return out;
-}
-
-function ensurePackedScalars(scalarsPacked: Uint8Array, count: number, label: string): void {
-  const expected = count * 32;
-  if (scalarsPacked.byteLength !== expected) {
-    throw new Error(`${label}: expected ${expected} scalar bytes, got ${scalarsPacked.byteLength}`);
-  }
-}
-
-function packScalarWordsPacked(scalarsPacked: Uint8Array): Uint32Array {
-  if (scalarsPacked.byteLength % 32 !== 0) {
-    throw new Error(`packed scalars: expected a multiple of 32 bytes, got ${scalarsPacked.byteLength}`);
-  }
-  const count = scalarsPacked.byteLength / 32;
-  const out = new Uint32Array(count * 8);
-  const view = new DataView(scalarsPacked.buffer, scalarsPacked.byteOffset, scalarsPacked.byteLength);
-  for (let i = 0; i < out.length; i += 1) {
-    out[i] = view.getUint32(i * 4, true);
-  }
-  return out;
-}
-
-export function createG1MSMModule(
+/**
+ * Pippenger MSM (G1 or G2) over the shared Jacobian MSM kernels.
+ */
+export function createMSMModule<A, J>(
   context: CurveGPUContext,
   options: {
     curve: SupportedCurveID;
-    coordinateBytes: number;
-    pointBytes: number;
-    runtime: PippengerRuntime;
+    group: "g1" | "g2";
+    codec: PointCodec<A, J>;
+    kernels: MSMKernels;
   },
+  group: GroupModule<A, J>,
   fp: FieldModule,
-  g1: G1Module,
-): G1MSMModule {
-  const { curve, coordinateBytes, pointBytes, runtime } = options;
-  const label = `${curve}-g1-msm`;
+): MSMModule<A, J> {
+  const { curve, codec, kernels } = options;
+  const { coordinateBytes, pointBytes } = codec;
+  const affineBytes = 2 * coordinateBytes;
+  const label = `${curve}-${options.group}-msm`;
 
-  const getOneMontgomery = lazyAsync(async () => fp.montOne());
+  let oneMont: Promise<Uint8Array> | null = null;
+  const getOneMontgomery = (): Promise<Uint8Array> => {
+    oneMont ??= fp.montOne();
+    return oneMont;
+  };
 
-  async function runBatch(
-    bases: readonly CurveGPUAffinePoint[],
-    scalars: readonly CurveGPUElementBytes[],
-    options: CurveGPUMSMOptions = {},
-  ): Promise<CurveGPUJacobianPoint[]> {
+  function checkPackedScalars(scalarsPacked: Uint8Array, count: number): void {
+    if (scalarsPacked.byteLength !== count * 32) {
+      throw new Error(`${label}: expected ${count * 32} scalar bytes, got ${scalarsPacked.byteLength}`);
+    }
+  }
+
+  /** Upload `basesBytes` (shader layout) and run one batched MSM over it. */
+  async function runPackedMSM(basesBytes: Uint8Array, scalarWords: Uint32Array, count: number, termsPerInstance: number, msmOptions: CurveGPUMSMOptions): Promise<Uint8Array> {
+    return recordAndRead(
+      context.device,
+      context.bufferPool,
+      label,
+      (batch) =>
+        recordSparseSignedPippengerMSM(batch, {
+          kernels,
+          bases: batch.upload(basesBytes, STORAGE_IN_USAGE, "bases"),
+          pointBytes,
+          scalarWords,
+          count,
+          termsPerInstance,
+          window: msmOptions.window ?? bestPippengerWindow(termsPerInstance),
+          maxChunkSize: msmOptions.maxChunkSize,
+        }),
+      context.debug,
+    );
+  }
+
+  async function runBatch(bases: readonly A[], scalars: readonly CurveGPUElementBytes[], msmOptions: CurveGPUMSMOptions = {}): Promise<J[]> {
     if (bases.length !== scalars.length) {
       throw new Error(`${label}: bases and scalars length mismatch`);
     }
-    const count = options.count ?? 1;
-    const termsPerInstance = options.termsPerInstance ?? (count === 1 ? bases.length : 0);
-    if (!Number.isInteger(count) || count <= 0) {
-      throw new Error(`${label}: count must be a positive integer`);
-    }
-    if (!Number.isInteger(termsPerInstance) || termsPerInstance <= 0) {
-      throw new Error(`${label}: termsPerInstance must be a positive integer`);
-    }
+    const count = positiveInteger(msmOptions.count ?? 1, `${label}: count`);
+    const termsPerInstance = positiveInteger(msmOptions.termsPerInstance ?? (count === 1 ? bases.length : 0), `${label}: termsPerInstance`);
     if (bases.length !== count * termsPerInstance) {
       throw new Error(`${label}: expected ${count * termsPerInstance} bases/scalars for count=${count} termsPerInstance=${termsPerInstance}`);
     }
-
-    const oneMontZ = await getOneMontgomery();
-    const window = options.window ?? bestPippengerWindow(termsPerInstance);
-    const output = await runSparseSignedPippengerMSM({
-      device: context.device,
-      runtime,
-      basesBytes: packAffineBases(bases, coordinateBytes, pointBytes, oneMontZ),
-      pointBytes,
-      uniformBytes: 32,
-      zeroPointBytes: new Uint8Array(pointBytes),
-      scalarWords: packScalarWords(scalars),
-      count,
-      termsPerInstance,
-      window,
-      maxChunkSize: options.maxChunkSize,
-      labelPrefix: label,
-      debug: context.debug,
+    const scalarWords = new Uint32Array(scalars.length * 8);
+    scalars.forEach((scalar, index) => {
+      if (scalar.byteLength !== 32) {
+        throw new Error(`scalars[${index}]: expected 32 bytes, got ${scalar.byteLength}`);
+      }
+      scalarWords.set(scalarWordsFromPacked(scalar), index * 8);
     });
-    return unpackJacobianPoints(output, count, coordinateBytes, pointBytes).map(clonePoint);
+    const basesBytes = packAffinePoints(codec, bases, await getOneMontgomery(), `${label}.bases`);
+    const output = await runPackedMSM(basesBytes, scalarWords, count, termsPerInstance, msmOptions);
+    return unpackJacobianPoints(codec, output, count);
+  }
+
+  async function uploadAffineBases(packedAffine: Uint8Array): Promise<ResidentBases> {
+    if (packedAffine.byteLength % affineBytes !== 0) {
+      throw new Error(`${label}: packed affine bases must be a multiple of ${affineBytes} bytes, got ${packedAffine.byteLength}`);
+    }
+    const count = packedAffine.byteLength / affineBytes;
+    const pointsPerChunk = Math.floor(context.maxStorageBufferBindingSize / pointBytes);
+    if (pointsPerChunk <= 0) {
+      throw new Error(`${label}: device maxStorageBufferBindingSize ${context.maxStorageBufferBindingSize} cannot hold a single point`);
+    }
+    const one = await getOneMontgomery();
+    const chunks: { buffer: GPUBuffer; first: number; count: number }[] = [];
+    try {
+      for (let first = 0; first < count; first += pointsPerChunk) {
+        const chunkCount = Math.min(pointsPerChunk, count - first);
+        const expanded = new Uint8Array(chunkCount * pointBytes);
+        for (let i = 0; i < chunkCount; i += 1) {
+          const source = (first + i) * affineBytes;
+          const affine = packedAffine.subarray(source, source + affineBytes);
+          expanded.set(affine, i * pointBytes);
+          if (affine.some((byte) => byte !== 0)) {
+            codec.writeOne(expanded, i * pointBytes + affineBytes, one);
+          }
+        }
+        chunks.push({
+          first,
+          count: chunkCount,
+          buffer: uploadGPUBuffer(context.device, `${label}-resident-${chunks.length}`, expanded, STORAGE_IN_USAGE),
+        });
+      }
+    } catch (error) {
+      chunks.forEach((chunk) => chunk.buffer.destroy());
+      throw error;
+    }
+    let released = false;
+    return {
+      count,
+      pointBytes,
+      chunks,
+      release(): void {
+        if (released) {
+          return;
+        }
+        released = true;
+        chunks.forEach((chunk) => chunk.buffer.destroy());
+      },
+    };
+  }
+
+  async function msmResident(
+    bases: ResidentBases,
+    start: number,
+    scalarsPacked: Uint8Array,
+    msmOptions: Pick<CurveGPUMSMOptions, "window" | "maxChunkSize"> = {},
+  ): Promise<Uint8Array> {
+    if (bases.pointBytes !== pointBytes) {
+      throw new Error(`${label}: resident bases belong to a different group (pointBytes=${bases.pointBytes})`);
+    }
+    if (scalarsPacked.byteLength % 32 !== 0) {
+      throw new Error(`${label}: scalars must be a multiple of 32 bytes, got ${scalarsPacked.byteLength}`);
+    }
+    const termCount = scalarsPacked.byteLength / 32;
+    if (!Number.isInteger(start) || start < 0 || start + termCount > bases.count) {
+      throw new Error(`${label}: MSM range [${start}, ${start + termCount}) exceeds ${bases.count} resident bases`);
+    }
+    if (termCount === 0) {
+      return new Uint8Array(affineBytes);
+    }
+
+    // The range may straddle several resident chunks; each piece is one MSM
+    // whose affine results are then summed on the GPU.
+    const partials: A[] = [];
+    let cursor = start;
+    const end = start + termCount;
+    for (const chunk of bases.chunks) {
+      const chunkEnd = chunk.first + chunk.count;
+      if (cursor >= end || chunkEnd <= cursor) {
+        continue;
+      }
+      const pieceEnd = Math.min(end, chunkEnd);
+      const pieceCount = pieceEnd - cursor;
+      const scalarWords = scalarWordsFromPacked(scalarsPacked.subarray((cursor - start) * 32, (pieceEnd - start) * 32));
+      const output = await recordAndRead(
+        context.device,
+        context.bufferPool,
+        label,
+        (batch) =>
+          recordSparseSignedPippengerMSM(batch, {
+            kernels,
+            bases: chunk.buffer,
+            baseIndexOffset: cursor - chunk.first,
+            pointBytes,
+            scalarWords,
+            count: 1,
+            termsPerInstance: pieceCount,
+            window: msmOptions.window ?? bestPippengerWindow(pieceCount),
+            maxChunkSize: msmOptions.maxChunkSize,
+          }),
+        context.debug,
+      );
+      if (partials.length === 0 && pieceEnd === end) {
+        // Common case: a single piece. The combine kernel output is already affine.
+        return output.slice(0, affineBytes);
+      }
+      partials.push(codec.affineOf(codec.readJacobian(output, 0)));
+      cursor = pieceEnd;
+    }
+    let sum = partials[0];
+    for (let i = 1; i < partials.length; i += 1) {
+      sum = await group.addAffine(sum, partials[i]);
+    }
+    const out = new Uint8Array(pointBytes);
+    codec.writeAffine(out, 0, sum, await getOneMontgomery(), `${label}.result`);
+    return out.slice(0, affineBytes);
   }
 
   return {
     context,
     curve,
-    group: "g1",
-    bestWindow(termCount: number): number {
-      return bestPippengerWindow(termCount);
+    group: options.group,
+    bestWindow: bestPippengerWindow,
+    async pippengerAffine(bases, scalars, msmOptions = {}) {
+      return (await runBatch(bases, scalars, { ...msmOptions, count: msmOptions.count ?? 1 }))[0];
     },
-    async pippengerAffine(
-      bases: readonly CurveGPUAffinePoint[],
-      scalars: readonly CurveGPUElementBytes[],
-      options: CurveGPUMSMOptions = {},
-    ): Promise<CurveGPUJacobianPoint> {
-      return (await runBatch(bases, scalars, { ...options, count: options.count ?? 1 }))[0];
+    async pippengerAffineResult(bases, scalars, msmOptions = {}) {
+      return group.jacobianToAffine((await runBatch(bases, scalars, { ...msmOptions, count: msmOptions.count ?? 1 }))[0]);
     },
-    async pippengerAffineResult(
-      bases: readonly CurveGPUAffinePoint[],
-      scalars: readonly CurveGPUElementBytes[],
-      options: CurveGPUMSMOptions = {},
-    ): Promise<CurveGPUAffinePoint> {
-      return g1.jacobianToAffine(await this.pippengerAffine(bases, scalars, options));
-    },
-    async pippengerAffineBatch(
-      bases: readonly CurveGPUAffinePoint[],
-      scalars: readonly CurveGPUElementBytes[],
-      options: CurveGPUMSMOptions,
-    ): Promise<CurveGPUJacobianPoint[]> {
-      return runBatch(bases, scalars, options);
-    },
+    pippengerAffineBatch: runBatch,
     async pippengerPackedJacobianBases(
       basesPacked: Uint8Array,
       scalarsPacked: Uint8Array,
-      options: CurveGPUMSMOptions & { layout?: CurveGPUPackedPointLayout },
+      msmOptions: CurveGPUMSMOptions & { layout?: CurveGPUPackedPointLayout },
     ): Promise<Uint8Array> {
-      const count = options.count ?? 1;
-      const termsPerInstance = options.termsPerInstance ?? 0;
-      if (!Number.isInteger(count) || count <= 0) {
-        throw new Error(`${label}: count must be a positive integer`);
-      }
-      if (!Number.isInteger(termsPerInstance) || termsPerInstance <= 0) {
-        throw new Error(`${label}: termsPerInstance must be a positive integer`);
-      }
-      if ((options.layout ?? "jacobian_x_y_z_le") !== "jacobian_x_y_z_le") {
-        throw new Error(`${label}: unsupported packed point layout ${options.layout}`);
+      const count = positiveInteger(msmOptions.count ?? 1, `${label}: count`);
+      const termsPerInstance = positiveInteger(msmOptions.termsPerInstance ?? 0, `${label}: termsPerInstance`);
+      if ((msmOptions.layout ?? "jacobian_x_y_z_le") !== "jacobian_x_y_z_le") {
+        throw new Error(`${label}: unsupported packed point layout ${msmOptions.layout}`);
       }
       const expectedPointBytes = count * termsPerInstance * pointBytes;
       if (basesPacked.byteLength !== expectedPointBytes) {
         throw new Error(`${label}: expected ${expectedPointBytes} base bytes, got ${basesPacked.byteLength}`);
       }
-      ensurePackedScalars(scalarsPacked, count * termsPerInstance, `${label}.scalarsPacked`);
-      const window = options.window ?? bestPippengerWindow(termsPerInstance);
-      return runSparseSignedPippengerMSM({
-        device: context.device,
-        pool: context.bufferPool,
-        runtime,
-        basesBytes: basesPacked,
-        pointBytes,
-        uniformBytes: 32,
-        zeroPointBytes: new Uint8Array(pointBytes),
-        scalarWords: packScalarWordsPacked(scalarsPacked),
-        count,
-        termsPerInstance,
-        window,
-        maxChunkSize: options.maxChunkSize,
-        labelPrefix: label,
-        debug: context.debug,
-      });
+      checkPackedScalars(scalarsPacked, count * termsPerInstance);
+      return runPackedMSM(basesPacked, scalarWordsFromPacked(scalarsPacked), count, termsPerInstance, msmOptions);
     },
+    uploadAffineBases,
+    msmResident,
   };
 }

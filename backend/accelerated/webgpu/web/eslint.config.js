@@ -7,12 +7,7 @@ const tsconfigRootDir = dirname(fileURLToPath(import.meta.url));
 
 export default tseslint.config(
   {
-    ignores: [
-      "dist/**",
-      "src/curvegpu/shader_bundle.generated.ts",
-      "tests/groth16/main.js",
-      "tests/plonk/main.js",
-    ],
+    ignores: ["dist/**", "src/curvegpu/shader_bundle.generated.ts"],
   },
   js.configs.recommended,
   {
@@ -20,6 +15,20 @@ export default tseslint.config(
     languageOptions: {
       globals: {
         console: "readonly",
+      },
+    },
+  },
+  {
+    files: ["tests/**/*.js"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        document: "readonly",
+        fetch: "readonly",
+        performance: "readonly",
+        window: "readonly",
+        URLSearchParams: "readonly",
+        Uint8Array: "readonly",
       },
     },
   },

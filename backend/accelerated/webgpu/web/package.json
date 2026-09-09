@@ -4,7 +4,10 @@
   "description": "WebGPU/WASM implementation of gnark Groth16 and PLONK backend over BN254, BLS12-377 and BLS12-381 curves.",
   "private": true,
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/src/curvegpu/shader_bundle.generated.js",
+    "./src/curvegpu/shader_bundle.generated.ts"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

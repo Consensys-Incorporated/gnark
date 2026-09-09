@@ -1,10 +1,3 @@
-import { bytesToHex } from "./browser_utils.js";
-
-export type ScalarBatch = {
-  hexes: string[];
-  words: Uint32Array;
-};
-
 export type SparseSignedBucketMetadata = {
   baseIndices: Uint32Array;
   bucketPointers: Uint32Array;
@@ -32,35 +25,32 @@ export function bestPippengerWindow(count: number): number {
   return best;
 }
 
-export function hexesToScalarWords(hexes: readonly string[]): Uint32Array {
-  const words = new Uint32Array(hexes.length * 8);
-  for (let i = 0; i < hexes.length; i += 1) {
-    const hex = hexes[i];
-    for (let byteIndex = 0; byteIndex < 32; byteIndex += 1) {
-      const value = Number.parseInt(hex.slice(byteIndex * 2, byteIndex * 2 + 2), 16);
-      words[i * 8 + (byteIndex >>> 2)] |= value << ((byteIndex & 3) * 8);
-    }
+/** Reinterpret packed little-endian 32-byte scalars as u32 words. */
+export function scalarWordsFromPacked(scalarsPacked: Uint8Array): Uint32Array {
+  if (scalarsPacked.byteLength % 32 !== 0) {
+    throw new Error(`packed scalars: expected a multiple of 32 bytes, got ${scalarsPacked.byteLength}`);
   }
-  return words;
+  const out = new Uint32Array(scalarsPacked.byteLength / 4);
+  const view = new DataView(scalarsPacked.buffer, scalarsPacked.byteOffset, scalarsPacked.byteLength);
+  for (let i = 0; i < out.length; i += 1) {
+    out[i] = view.getUint32(i * 4, true);
+  }
+  return out;
 }
 
-export function makeRandomScalarBatch(count: number, salt = 0x9e3779b9): ScalarBatch {
-  const hexes = new Array<string>(count);
-  const words = new Uint32Array(count * 8);
-  for (let index = 0; index < count; index += 1) {
-    const scalar = makeRandomScalarData((salt ^ count ^ index) >>> 0);
-    hexes[index] = scalar.hex;
-    words.set(scalar.words, index * 8);
-  }
-  return { hexes, words };
-}
-
+/**
+ * Build the sparse signed-digit bucket layout consumed by the MSM kernels.
+ *
+ * `baseIndexOffset` is added to every base index written to `baseIndices`, so
+ * the kernels can address a sub-range of a larger GPU-resident base buffer.
+ */
 export function buildSparseSignedBucketMetadataWords(
   scalarWords: Uint32Array,
   count: number,
   termsPerInstance: number,
   window: number,
   maxChunkSize = 256,
+  baseIndexOffset = 0,
 ): SparseSignedBucketMetadata {
   const numWindows = Math.ceil(256 / window) + 1;
   const bucketCount = 1 << (window - 1);
@@ -69,28 +59,31 @@ export function buildSparseSignedBucketMetadataWords(
   const half = 1 << (window - 1);
   const full = 1 << window;
 
-  for (let instance = 0; instance < count; instance += 1) {
-    const baseOffset = instance * termsPerInstance;
-    for (let term = 0; term < termsPerInstance; term += 1) {
-      const idx = baseOffset + term;
-      const scalarBase = idx * 8;
-      let carry = 0;
-      for (let win = 0; win < numWindows; win += 1) {
-        const unsigned = win < numWindows - 1 ? extractWindowDigitWords(scalarWords, scalarBase, win * window, window) : 0;
-        let value = unsigned + carry;
-        carry = 0;
-        if (value >= half) {
-          value = full - value;
-          if (value !== 0) {
-            const slot = (instance * numWindows + win) * bucketCount + (value - 1);
-            logicalBucketSizes[slot] += 1;
-          }
-          carry = 1;
-        } else if (value !== 0) {
-          const slot = (instance * numWindows + win) * bucketCount + (value - 1);
-          logicalBucketSizes[slot] += 1;
-        }
+  // Signed digit decomposition of one scalar; calls `visit(win, value, neg)` for each non-zero digit.
+  const forEachDigit = (idx: number, visit: (win: number, value: number, neg: boolean) => void): void => {
+    const scalarBase = idx * 8;
+    let carry = 0;
+    for (let win = 0; win < numWindows; win += 1) {
+      const unsigned = win < numWindows - 1 ? extractWindowDigitWords(scalarWords, scalarBase, win * window, window) : 0;
+      let value = unsigned + carry;
+      carry = 0;
+      let neg = false;
+      if (value >= half) {
+        value = full - value;
+        neg = value !== 0;
+        carry = 1;
       }
+      if (value !== 0) {
+        visit(win, value, neg);
+      }
+    }
+  };
+
+  for (let instance = 0; instance < count; instance += 1) {
+    for (let term = 0; term < termsPerInstance; term += 1) {
+      forEachDigit(instance * termsPerInstance + term, (win, value) => {
+        logicalBucketSizes[(instance * numWindows + win) * bucketCount + (value - 1)] += 1;
+      });
     }
   }
 
@@ -104,29 +97,14 @@ export function buildSparseSignedBucketMetadataWords(
   const writeOffsets = logicalBucketPointers.slice();
 
   for (let instance = 0; instance < count; instance += 1) {
-    const baseOffset = instance * termsPerInstance;
     for (let term = 0; term < termsPerInstance; term += 1) {
-      const idx = baseOffset + term;
-      const scalarBase = idx * 8;
-      let carry = 0;
-      for (let win = 0; win < numWindows; win += 1) {
-        const unsigned = win < numWindows - 1 ? extractWindowDigitWords(scalarWords, scalarBase, win * window, window) : 0;
-        let value = unsigned + carry;
-        carry = 0;
-        let neg = false;
-        if (value >= half) {
-          value = full - value;
-          neg = value !== 0;
-          carry = 1;
-        }
-        if (value === 0) {
-          continue;
-        }
+      const idx = instance * termsPerInstance + term;
+      forEachDigit(idx, (win, value, neg) => {
         const slot = (instance * numWindows + win) * bucketCount + (value - 1);
-        const raw = neg ? ((idx | INDEX_SIGN_BIT) >>> 0) : idx;
-        baseIndices[writeOffsets[slot]] = raw;
+        const shifted = idx + baseIndexOffset;
+        baseIndices[writeOffsets[slot]] = neg ? ((shifted | INDEX_SIGN_BIT) >>> 0) : shifted;
         writeOffsets[slot] += 1;
-      }
+      });
     }
   }
 
@@ -186,19 +164,4 @@ function extractWindowDigitWords(words: Uint32Array, scalarBase: number, bitOffs
   const hiMask = (1 << highWidth) - 1;
   const hi = words[scalarBase + word + 1] & hiMask;
   return (lo | (hi << (32 - shift))) & mask;
-}
-
-function makeRandomScalarData(seed: number): { hex: string; words: Uint32Array } {
-  const bytes = new Uint8Array(32);
-  const words = new Uint32Array(8);
-  let state = seed >>> 0;
-  for (let i = 0; i < bytes.length; i += 1) {
-    state ^= state << 13;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    const value = state & 0xff;
-    bytes[i] = value;
-    words[i >>> 2] |= value << ((i & 3) * 8);
-  }
-  return { hex: bytesToHex(bytes), words };
 }

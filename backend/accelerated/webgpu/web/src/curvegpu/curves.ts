@@ -1,16 +1,52 @@
-import type { CurveModule, CurveGPUContext, SupportedCurveID } from "./api.js";
+import type { CurveModule, CurveGPUContext, G1Module, G2Module, SupportedCurveID } from "./api.js";
+import type { CurveID, FieldID, FieldShape } from "./types.js";
 import { createFieldModule } from "./field_module.js";
-import { createG1Module } from "./g1_module.js";
-import { createG2Module } from "./g2_module.js";
-import { createG2MSMModule } from "./g2_msm_module.js";
-import { createGroth16Module } from "./groth16_module.js";
-import { createPlonkModule } from "./plonk_module.js";
-import { createPlonkQuotientModule } from "./plonk_quotient_module.js";
-import { createG1MSMModule } from "./msm_module.js";
-import { buildJacPippengerRuntime } from "./msm_pippenger.js";
+import { createGroupModule } from "./group_module.js";
+import { g1Codec, g2Codec } from "./point_codec.js";
+import { createMSMModule } from "./msm_module.js";
 import { createNTTModule } from "./ntt_module.js";
+import { createPlonkQuotientModule } from "./plonk_quotient_module.js";
+import { createGroth16Module, createPlonkModule } from "./proof_module.js";
 import { buildPipelineRegistry } from "./pipeline_registry.js";
-import { shapeFor } from "./types.js";
+
+/**
+ * Curve-specific constants. Everything else (byte sizes, shader paths, limb
+ * counts) is derived from this table.
+ */
+const CURVE_PARAMS: Record<SupportedCurveID, {
+  /** Base-field element size in bytes (scalar field is always 32 bytes). */
+  fpBytes: 32 | 48;
+  frModulusHex: string;
+  /** Multiplicative generator of Fr, also used as the FFT coset generator. */
+  frGeneratorHex: string;
+  /** Workgroup size hard-coded in the G1 / G2 MSM shaders. */
+  g1MSMWorkgroupSize: number;
+  g2MSMWorkgroupSize: number;
+}> = {
+  bn254: {
+    fpBytes: 32,
+    frModulusHex: "0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001",
+    frGeneratorHex: "5",
+    g1MSMWorkgroupSize: 64,
+    g2MSMWorkgroupSize: 32,
+  },
+  bls12_381: {
+    fpBytes: 48,
+    frModulusHex: "0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001",
+    frGeneratorHex: "7",
+    g1MSMWorkgroupSize: 64,
+    g2MSMWorkgroupSize: 32,
+  },
+  bls12_377: {
+    fpBytes: 48,
+    frModulusHex: "0x12ab655e9a2ca55660b44d1e5c37b00159aa76fed00000010a11800000000001",
+    frGeneratorHex: "16",
+    g1MSMWorkgroupSize: 64,
+    g2MSMWorkgroupSize: 32,
+  },
+};
+
+const FR_BYTES = 32;
 
 /**
  * Runtime metadata for a supported curve.
@@ -20,129 +56,76 @@ export interface CurveDefinition {
   readonly frArithShaderPath: string;
   readonly frVectorShaderPath: string;
   readonly frNTTShaderPath: string;
-  readonly frModulusHex?: string;
-  readonly frMultiplicativeGeneratorHex?: string;
-  readonly frCosetGeneratorHex?: string;
+  readonly frPlonkQuotientShaderParts: readonly string[];
+  readonly frModulusHex: string;
+  readonly frMultiplicativeGeneratorHex: string;
+  readonly frCosetGeneratorHex: string;
   readonly fpArithShaderPath: string;
   readonly g1ArithShaderParts: readonly string[];
   readonly g1MSMShaderParts: readonly string[];
   readonly g2ArithShaderParts: readonly string[];
   readonly g2MSMShaderParts: readonly string[];
+  /** Base-field element size in bytes. */
+  readonly fpBytes: number;
+  /** Scalar-field element size in bytes. */
+  readonly frBytes: number;
+  /** G1 coordinate size in bytes (`fpBytes`). */
   readonly coordinateBytes: number;
+  /** G1 Jacobian point size in bytes (`3 * fpBytes`). */
   readonly pointBytes: number;
+  /** G2 coordinate size in bytes (`2 * fpBytes`). */
   readonly g2CoordinateBytes: number;
+  /** G2 Jacobian point size in bytes (`6 * fpBytes`). */
   readonly g2PointBytes: number;
+  readonly g1MSMWorkgroupSize: number;
+  readonly g2MSMWorkgroupSize: number;
   readonly zeroHex: string;
 }
 
-function g1OpsShaderParts(fpArithShaderPath: string, g1IOPath: string): readonly string[] {
-  return [
-    `${fpArithShaderPath}#section=fp-types`,
-    `${fpArithShaderPath}#section=fp-consts`,
-    `${fpArithShaderPath}#section=fp-core`,
-    "/shaders/common/g1_core.wgsl",
-    "/shaders/common/g1_ops_bindings.wgsl",
-    g1IOPath,
-    "/shaders/common/g1_ops_main.wgsl",
-  ];
-}
-
-function g1MSMShaderParts(fpArithShaderPath: string, g1IOPath: string): readonly string[] {
-  return [
-    `${fpArithShaderPath}#section=fp-types`,
-    `${fpArithShaderPath}#section=fp-consts`,
-    `${fpArithShaderPath}#section=fp-core`,
-    "/shaders/common/g1_core.wgsl",
-    "/shaders/common/g1_msm_bindings.wgsl",
-    g1IOPath,
-    "/shaders/common/g1_msm_jac.wgsl",
-  ];
-}
-
-function g2OpsShaderParts(fpArithShaderPath: string, g2ArithPath: string, g2IOPath: string): readonly string[] {
-  return [
-    `${fpArithShaderPath}#section=fp-types`,
-    `${fpArithShaderPath}#section=fp-consts`,
-    `${fpArithShaderPath}#section=fp-core`,
-    "/shaders/common/g2_ops_bindings.wgsl",
-    g2ArithPath,
-    g2IOPath,
-    "/shaders/common/g2_ops_main.wgsl",
-  ];
-}
-
-function g2MSMShaderParts(fpArithShaderPath: string, g2ArithPath: string, g2IOPath: string): readonly string[] {
-  return [
-    `${fpArithShaderPath}#section=fp-types`,
-    `${fpArithShaderPath}#section=fp-consts`,
-    `${fpArithShaderPath}#section=fp-core`,
-    "/shaders/common/g2_msm_bindings.wgsl",
-    g2ArithPath,
-    g2IOPath,
-    "/shaders/common/g2_msm_jac.wgsl",
-  ];
+function buildDefinition(id: SupportedCurveID): CurveDefinition {
+  const params = CURVE_PARAMS[id];
+  const dir = `/shaders/curves/${id}`;
+  const fp = `${dir}/fp_arith.wgsl`;
+  const fr = `${dir}/fr_arith.wgsl`;
+  const fpSections = [`${fp}#section=fp-types`, `${fp}#section=fp-consts`, `${fp}#section=fp-core`];
+  const g2Arith = `${dir}/g2_arith.wgsl`;
+  const g1IO = `${dir}/g1_io.wgsl`;
+  const g2IO = `${dir}/g2_io.wgsl`;
+  return {
+    id,
+    frArithShaderPath: fr,
+    frVectorShaderPath: `${dir}/fr_vector.wgsl`,
+    frNTTShaderPath: `${dir}/fr_ntt.wgsl`,
+    frPlonkQuotientShaderParts: [
+      `${fr}#section=fr_types`,
+      `${fr}#section=fr_constants`,
+      `${fr}#section=fr_core`,
+      `${dir}/fr_plonk_quotient.wgsl`,
+    ],
+    frModulusHex: params.frModulusHex,
+    frMultiplicativeGeneratorHex: params.frGeneratorHex,
+    frCosetGeneratorHex: params.frGeneratorHex,
+    fpArithShaderPath: fp,
+    g1ArithShaderParts: [...fpSections, "/shaders/common/g1_core.wgsl", "/shaders/common/g1_ops_bindings.wgsl", g1IO, "/shaders/common/g1_ops_main.wgsl"],
+    g1MSMShaderParts: [...fpSections, "/shaders/common/g1_core.wgsl", "/shaders/common/g1_msm_bindings.wgsl", g1IO, "/shaders/common/g1_msm_jac.wgsl"],
+    g2ArithShaderParts: [...fpSections, "/shaders/common/g2_ops_bindings.wgsl", g2Arith, g2IO, "/shaders/common/g2_ops_main.wgsl"],
+    g2MSMShaderParts: [...fpSections, "/shaders/common/g2_msm_bindings.wgsl", g2Arith, g2IO, "/shaders/common/g2_msm_jac.wgsl"],
+    fpBytes: params.fpBytes,
+    frBytes: FR_BYTES,
+    coordinateBytes: params.fpBytes,
+    pointBytes: 3 * params.fpBytes,
+    g2CoordinateBytes: 2 * params.fpBytes,
+    g2PointBytes: 6 * params.fpBytes,
+    g1MSMWorkgroupSize: params.g1MSMWorkgroupSize,
+    g2MSMWorkgroupSize: params.g2MSMWorkgroupSize,
+    zeroHex: "00".repeat(params.fpBytes),
+  };
 }
 
 const CURVE_DEFINITIONS: Record<SupportedCurveID, CurveDefinition> = {
-  bn254: {
-    id: "bn254",
-    frArithShaderPath: "/shaders/curves/bn254/fr_arith.wgsl",
-    frVectorShaderPath: "/shaders/curves/bn254/fr_vector.wgsl",
-    frNTTShaderPath: "/shaders/curves/bn254/fr_ntt.wgsl",
-    frModulusHex: "0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001",
-    frMultiplicativeGeneratorHex: "5",
-    frCosetGeneratorHex: "5",
-    fpArithShaderPath: "/shaders/curves/bn254/fp_arith.wgsl",
-    g1ArithShaderParts: g1OpsShaderParts("/shaders/curves/bn254/fp_arith.wgsl", "/shaders/curves/bn254/g1_io.wgsl"),
-    g1MSMShaderParts: g1MSMShaderParts("/shaders/curves/bn254/fp_arith.wgsl", "/shaders/curves/bn254/g1_io.wgsl"),
-    g2ArithShaderParts: g2OpsShaderParts("/shaders/curves/bn254/fp_arith.wgsl", "/shaders/curves/bn254/g2_arith.wgsl", "/shaders/curves/bn254/g2_io.wgsl"),
-    g2MSMShaderParts: g2MSMShaderParts("/shaders/curves/bn254/fp_arith.wgsl", "/shaders/curves/bn254/g2_arith.wgsl", "/shaders/curves/bn254/g2_io.wgsl"),
-    coordinateBytes: 32,
-    pointBytes: 96,
-    g2CoordinateBytes: 64,
-    g2PointBytes: 192,
-    zeroHex: "0000000000000000000000000000000000000000000000000000000000000000",
-  },
-  bls12_381: {
-    id: "bls12_381",
-    frArithShaderPath: "/shaders/curves/bls12_381/fr_arith.wgsl",
-    frVectorShaderPath: "/shaders/curves/bls12_381/fr_vector.wgsl",
-    frNTTShaderPath: "/shaders/curves/bls12_381/fr_ntt.wgsl",
-    frModulusHex: "0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001",
-    frMultiplicativeGeneratorHex: "7",
-    frCosetGeneratorHex: "7",
-    fpArithShaderPath: "/shaders/curves/bls12_381/fp_arith.wgsl",
-    g1ArithShaderParts: g1OpsShaderParts("/shaders/curves/bls12_381/fp_arith.wgsl", "/shaders/curves/bls12_381/g1_io.wgsl"),
-    g1MSMShaderParts: g1MSMShaderParts("/shaders/curves/bls12_381/fp_arith.wgsl", "/shaders/curves/bls12_381/g1_io.wgsl"),
-    g2ArithShaderParts: g2OpsShaderParts("/shaders/curves/bls12_381/fp_arith.wgsl", "/shaders/curves/bls12_381/g2_arith.wgsl", "/shaders/curves/bls12_381/g2_io.wgsl"),
-    g2MSMShaderParts: g2MSMShaderParts("/shaders/curves/bls12_381/fp_arith.wgsl", "/shaders/curves/bls12_381/g2_arith.wgsl", "/shaders/curves/bls12_381/g2_io.wgsl"),
-    coordinateBytes: 48,
-    pointBytes: 144,
-    g2CoordinateBytes: 96,
-    g2PointBytes: 288,
-    zeroHex:
-      "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-  },
-  bls12_377: {
-    id: "bls12_377",
-    frArithShaderPath: "/shaders/curves/bls12_377/fr_arith.wgsl",
-    frVectorShaderPath: "/shaders/curves/bls12_377/fr_vector.wgsl",
-    frNTTShaderPath: "/shaders/curves/bls12_377/fr_ntt.wgsl",
-    frModulusHex: "0x12ab655e9a2ca55660b44d1e5c37b00159aa76fed00000010a11800000000001",
-    frMultiplicativeGeneratorHex: "16",
-    frCosetGeneratorHex: "16",
-    fpArithShaderPath: "/shaders/curves/bls12_377/fp_arith.wgsl",
-    g1ArithShaderParts: g1OpsShaderParts("/shaders/curves/bls12_377/fp_arith.wgsl", "/shaders/curves/bls12_377/g1_io.wgsl"),
-    g1MSMShaderParts: g1MSMShaderParts("/shaders/curves/bls12_377/fp_arith.wgsl", "/shaders/curves/bls12_377/g1_io.wgsl"),
-    g2ArithShaderParts: g2OpsShaderParts("/shaders/curves/bls12_377/fp_arith.wgsl", "/shaders/curves/bls12_377/g2_arith.wgsl", "/shaders/curves/bls12_377/g2_io.wgsl"),
-    g2MSMShaderParts: g2MSMShaderParts("/shaders/curves/bls12_377/fp_arith.wgsl", "/shaders/curves/bls12_377/g2_arith.wgsl", "/shaders/curves/bls12_377/g2_io.wgsl"),
-    coordinateBytes: 48,
-    pointBytes: 144,
-    g2CoordinateBytes: 96,
-    g2PointBytes: 288,
-    zeroHex:
-      "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-  },
+  bn254: buildDefinition("bn254"),
+  bls12_381: buildDefinition("bls12_381"),
+  bls12_377: buildDefinition("bls12_377"),
 };
 
 /**
@@ -154,14 +137,33 @@ export const supportedCurveIds = Object.freeze(Object.keys(CURVE_DEFINITIONS)) a
  * Return the runtime metadata for a supported curve.
  */
 export function curveDefinition(curve: SupportedCurveID): CurveDefinition {
-  return CURVE_DEFINITIONS[curve];
+  const definition = CURVE_DEFINITIONS[curve];
+  if (!definition) {
+    throw new Error(`unsupported curve ${curve}`);
+  }
+  return definition;
+}
+
+/**
+ * Return the host/GPU layout of a field element for a curve.
+ */
+export function shapeFor(curve: CurveID, field: FieldID): FieldShape {
+  const definition = curveDefinition(curve);
+  if (field !== "fr" && field !== "fp") {
+    throw new Error(`unsupported field ${field} for curve ${curve}`);
+  }
+  const byteSize = (field === "fr" ? FR_BYTES : definition.fpBytes) as 32 | 48;
+  return {
+    curve,
+    field,
+    byteSize,
+    hostWords: (byteSize / 8) as 4 | 6,
+    gpuLimbs: (byteSize / 4) as 8 | 12,
+  };
 }
 
 /**
  * Create the high-level curve module for a supported curve.
- *
- * This establishes the stable public object shape that later steps populate
- * with concrete field, NTT, group, and MSM operations.
  */
 export async function createCurveModule(context: CurveGPUContext, curve: SupportedCurveID): Promise<CurveModule> {
   const definition = curveDefinition(curve);
@@ -173,152 +175,115 @@ export async function createCurveModule(context: CurveGPUContext, curve: Support
     device: context.device,
     opsWorkgroupSize,
     opsShaders: [
-      { shaderParts: [definition.frArithShaderPath], entryPoint: "fr_ops_main", useWorkgroupOverride: true },
-      { shaderParts: [definition.fpArithShaderPath], entryPoint: "fp_ops_main", useWorkgroupOverride: true },
-      { shaderParts: definition.g1ArithShaderParts, entryPoint: "g1_ops_main", useWorkgroupOverride: true },
-      { shaderParts: definition.g2ArithShaderParts, entryPoint: "g2_ops_main", useWorkgroupOverride: true },
-      { shaderParts: [definition.frVectorShaderPath], entryPoint: "fr_vector_main", useWorkgroupOverride: true },
-      { shaderParts: [definition.frNTTShaderPath], entryPoint: "fr_ntt_stage_main", useWorkgroupOverride: true },
+      { shaderParts: [definition.frArithShaderPath], entryPoint: "fr_ops_main" },
+      { shaderParts: [definition.fpArithShaderPath], entryPoint: "fp_ops_main" },
+      { shaderParts: definition.g1ArithShaderParts, entryPoint: "g1_ops_main" },
+      { shaderParts: definition.g2ArithShaderParts, entryPoint: "g2_ops_main" },
+      { shaderParts: [definition.frVectorShaderPath], entryPoint: "fr_vector_main" },
+      { shaderParts: [definition.frNTTShaderPath], entryPoint: "fr_ntt_stage_main" },
     ],
     msmShaders: [
       {
         shaderParts: definition.g1MSMShaderParts,
+        workgroupSize: definition.g1MSMWorkgroupSize,
         entryPoints: ["g1_msm_bucket_jac_main", "g1_msm_weight_jac_main", "g1_msm_subsum_jac_main", "g1_msm_combine_jac_main"],
       },
       {
         shaderParts: definition.g2MSMShaderParts,
+        workgroupSize: definition.g2MSMWorkgroupSize,
         entryPoints: ["g2_msm_bucket_jac_main", "g2_msm_weight_jac_main", "g2_msm_subsum_jac_main", "g2_msm_combine_jac_main"],
       },
     ],
     debug: context.debug,
   });
 
-  const g1MsmRuntime = buildJacPippengerRuntime({
-    bucket: registry.getMSMKernel("g1_msm_bucket_jac_main"),
-    weightJac: registry.getMSMKernel("g1_msm_weight_jac_main"),
-    subsumJac: registry.getMSMKernel("g1_msm_subsum_jac_main"),
-    combine: registry.getMSMKernel("g1_msm_combine_jac_main"),
-  }, 64, context.debug);
+  const fr = createFieldModule(context, { curve, field: "fr", shape: frShape, kernel: registry.getKernel("fr_ops_main") });
+  const fp = createFieldModule(context, { curve, field: "fp", shape: fpShape, kernel: registry.getKernel("fp_ops_main") });
 
-  const g2MsmRuntime = buildJacPippengerRuntime({
-    bucket: registry.getMSMKernel("g2_msm_bucket_jac_main"),
-    weightJac: registry.getMSMKernel("g2_msm_weight_jac_main"),
-    subsumJac: registry.getMSMKernel("g2_msm_subsum_jac_main"),
-    combine: registry.getMSMKernel("g2_msm_combine_jac_main"),
-  }, 32, context.debug);
+  const g1Points = g1Codec(definition.coordinateBytes);
+  const g2Points = g2Codec(fpShape.byteSize);
 
-  const fr = createFieldModule(context, curve, "fr", {
-    byteSize: frShape.byteSize,
-    entryPoint: "fr_ops_main",
-    label: `${curve}-fr`,
-    shape: frShape,
-    kernel: registry.getOpsKernel("fr_ops_main"),
-  });
-  const fp = createFieldModule(context, curve, "fp", {
-    byteSize: fpShape.byteSize,
-    entryPoint: "fp_ops_main",
-    label: `${curve}-fp`,
-    shape: fpShape,
-    kernel: registry.getOpsKernel("fp_ops_main"),
-  });
-  const g1 = createG1Module(
-    context,
-    {
-      curve: definition.id,
-      coordinateBytes: definition.coordinateBytes,
-      pointBytes: definition.pointBytes,
-      zeroHex: definition.zeroHex,
-      kernel: registry.getOpsKernel("g1_ops_main"),
-    },
-    fp,
-  );
-  const g2 = createG2Module(
-    context,
-    {
-      curve: definition.id,
-      componentBytes: fpShape.byteSize,
-      coordinateBytes: definition.g2CoordinateBytes,
-      pointBytes: definition.g2PointBytes,
-      kernel: registry.getOpsKernel("g2_ops_main"),
-    },
-    fp,
-  );
+  const g1: G1Module = {
+    ...createGroupModule(context, { curve, group: "g1", codec: g1Points, kernel: registry.getKernel("g1_ops_main") }, fp),
+    zeroHex: definition.zeroHex,
+  };
+  const g2: G2Module = {
+    ...createGroupModule(context, { curve, group: "g2", codec: g2Points, kernel: registry.getKernel("g2_ops_main") }, fp),
+    componentBytes: fpShape.byteSize,
+  };
   const ntt = createNTTModule(
     context,
     {
-      curve: definition.id,
-      modulusHex: definition.frModulusHex ?? "",
-      multiplicativeGeneratorHex: definition.frMultiplicativeGeneratorHex ?? "",
-      cosetGeneratorHex: definition.frCosetGeneratorHex ?? "",
-      vectorKernel: registry.getOpsKernel("fr_vector_main"),
-      fieldKernel: registry.getOpsKernel("fr_ops_main"),
-      nttKernel: registry.getOpsKernel("fr_ntt_stage_main"),
+      curve,
+      modulusHex: definition.frModulusHex,
+      multiplicativeGeneratorHex: definition.frMultiplicativeGeneratorHex,
+      cosetGeneratorHex: definition.frCosetGeneratorHex,
+      vectorKernel: registry.getKernel("fr_vector_main"),
+      fieldKernel: registry.getKernel("fr_ops_main"),
+      nttKernel: registry.getKernel("fr_ntt_stage_main"),
     },
     fr,
   );
-  const g1msm = createG1MSMModule(
+  const g1msm = createMSMModule(
     context,
     {
-      curve: definition.id,
-      coordinateBytes: definition.coordinateBytes,
-      pointBytes: definition.pointBytes,
-      runtime: g1MsmRuntime,
+      curve,
+      group: "g1",
+      codec: g1Points,
+      kernels: {
+        bucket: registry.getKernel("g1_msm_bucket_jac_main"),
+        weight: registry.getKernel("g1_msm_weight_jac_main"),
+        subsum: registry.getKernel("g1_msm_subsum_jac_main"),
+        combine: registry.getKernel("g1_msm_combine_jac_main"),
+      },
     },
-    fp,
     g1,
+    fp,
   );
-  const g2msm = createG2MSMModule(
+  const g2msm = createMSMModule(
     context,
     {
-      curve: definition.id,
-      componentBytes: fpShape.byteSize,
-      pointBytes: definition.g2PointBytes,
-      runtime: g2MsmRuntime,
+      curve,
+      group: "g2",
+      codec: g2Points,
+      kernels: {
+        bucket: registry.getKernel("g2_msm_bucket_jac_main"),
+        weight: registry.getKernel("g2_msm_weight_jac_main"),
+        subsum: registry.getKernel("g2_msm_subsum_jac_main"),
+        combine: registry.getKernel("g2_msm_combine_jac_main"),
+      },
     },
     g2,
     fp,
   );
   const groth16 = createGroth16Module({
     context,
-    curve: definition.id,
-    modulusHex: definition.frModulusHex ?? "",
+    curve,
+    modulusHex: definition.frModulusHex,
     frBytes: frShape.byteSize,
+    fr,
     quotient: ntt,
-    g1,
-    g2,
     g1msm,
     g2msm,
   });
   const plonkQuotient = createPlonkQuotientModule({
     context,
-    curve: definition.id,
+    curve,
+    shaderParts: definition.frPlonkQuotientShaderParts,
     fr,
     ntt,
   });
   const plonk = createPlonkModule({
     context,
-    curve: definition.id,
-    modulusHex: definition.frModulusHex ?? "",
+    curve,
+    modulusHex: definition.frModulusHex,
     frBytes: frShape.byteSize,
     fr,
     ntt,
     quotient: plonkQuotient,
-    g1,
     g1msm,
   });
-  return {
-    id: curve,
-    context,
-    fr,
-    fp,
-    g1,
-    g2,
-    ntt,
-    groth16,
-    plonk,
-    g1msm,
-    g2msm,
-  };
+  return { id: curve, context, fr, fp, g1, g2, ntt, groth16, plonk, g1msm, g2msm };
 }
 
 /**
