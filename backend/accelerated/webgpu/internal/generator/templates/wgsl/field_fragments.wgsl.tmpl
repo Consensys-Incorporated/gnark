@@ -1,0 +1,359 @@
+{{/*
+  Shared fragments for a prime field over 32-bit limbs. Dot is a wgslField.
+
+  field_types  : the limb structs ({{.Type}} and {{.Type16}}).
+  field_consts : 16-bit limb constants used by the Montgomery multiplication
+                 (and q-2 when .Inverse is set).
+  field_core   : the arithmetic (zero/one/modulus, adc/sbb, add/sub/neg,
+                 normalize, Montgomery mul via 16-bit limbs, square, and
+                 optionally Fermat inverse).
+  adc_sbb      : the two carry/borrow helpers (unprefixed, shared by Fp and Fr).
+*/}}
+
+{{- define "field_types" -}}
+struct {{.Type}} {
+  limbs: array<u32, {{.Limbs}}>,
+}
+
+struct {{.Type16}} {
+  limbs: array<u32, {{.Limbs16}}>,
+}
+{{- end -}}
+
+{{- define "field_consts" -}}
+const {{.UPrefix}}_LIMB16_MASK: u32 = 0xffffu;
+const {{.UPrefix}}_QINV_NEG_16: u32 = {{hex16 .QInvNeg16}};
+
+const {{.UPrefix}}_MODULUS16: array<u32, {{.Limbs16}}> = array<u32, {{.Limbs16}}>(
+{{- range pairs .Modulus16}}
+  {{hex16 (index . 0)}}, {{hex16 (index . 1)}},
+{{- end}}
+);
+{{- if .Inverse}}
+
+const {{.UPrefix}}_MODULUS_MINUS_TWO: array<u32, {{.Limbs}}> = array<u32, {{.Limbs}}>(
+{{- range .ModulusMinusTwo}}
+  {{hex32 .}},
+{{- end}}
+);
+{{- end}}
+{{- end -}}
+
+{{- define "adc_sbb" -}}
+fn adc(a: u32, b: u32, carry: u32) -> vec2<u32> {
+  let sum0 = a + b;
+  let carry0 = select(0u, 1u, sum0 < a);
+  let sum1 = sum0 + carry;
+  let carry1 = select(0u, 1u, sum1 < sum0);
+  return vec2<u32>(sum1, carry0 | carry1);
+}
+
+fn sbb(a: u32, b: u32, borrow: u32) -> vec2<u32> {
+  let diff0 = a - b;
+  let borrow0 = select(0u, 1u, a < b);
+  let diff1 = diff0 - borrow;
+  let borrow1 = select(0u, 1u, diff1 > diff0);
+  return vec2<u32>(diff1, borrow0 | borrow1);
+}
+{{- end -}}
+
+{{- define "field_core" -}}
+{{- $p := .Prefix -}}
+{{- $P := .UPrefix -}}
+{{- $T := .Type -}}
+{{- $T16 := .Type16 -}}
+{{- $n := .Limbs -}}
+{{- $n16 := .Limbs16 -}}
+{{- $last := sub .Limbs 1 -}}
+fn {{$p}}_zero() -> {{$T}} {
+  var z: {{$T}};
+{{- range $i := iterate 0 $n}}
+  z.limbs[{{$i}}] = 0u;
+{{- end}}
+  return z;
+}
+
+fn {{$p}}_one() -> {{$T}} {
+  var z: {{$T}};
+{{- range $i, $v := .One}}
+  z.limbs[{{$i}}] = {{hex32 $v}};
+{{- end}}
+  return z;
+}
+
+fn {{$p}}_one_regular() -> {{$T}} {
+  var z = {{$p}}_zero();
+  z.limbs[0] = 1u;
+  return z;
+}
+
+fn {{$p}}_rsquare_regular() -> {{$T}} {
+  var z: {{$T}};
+{{- range $i, $v := .RSquare}}
+  z.limbs[{{$i}}] = {{hex32 $v}};
+{{- end}}
+  return z;
+}
+
+fn {{$p}}_modulus() -> {{$T}} {
+  var z: {{$T}};
+{{- range $i, $v := .Modulus}}
+  z.limbs[{{$i}}] = {{hex32 $v}};
+{{- end}}
+  return z;
+}
+
+fn {{$p}}_predicate(value: bool) -> {{$T}} {
+  var z = {{$p}}_zero();
+  if (value) {
+    z = {{$p}}_one();
+  }
+  return z;
+}
+
+{{template "adc_sbb" .}}
+
+fn {{$p}}_is_zero(x: {{$T}}) -> bool {
+  return ({{range $i := iterate 0 $n}}{{if $i}}{{if eq (mod $i 4) 0}} |
+    {{else}} | {{end}}{{end}}x.limbs[{{$i}}]{{end}}) == 0u;
+}
+
+fn {{$p}}_equal(x: {{$T}}, y: {{$T}}) -> bool {
+  return {{range $i := iterate 0 $n}}{{if $i}} &&
+    {{end}}(x.limbs[{{$i}}] == y.limbs[{{$i}}]){{end}};
+}
+
+fn {{$p}}_gte(x: {{$T}}, y: {{$T}}) -> bool {
+{{- range $i := reverse (iterate 1 $n)}}
+  if (x.limbs[{{$i}}] != y.limbs[{{$i}}]) {
+    return x.limbs[{{$i}}] > y.limbs[{{$i}}];
+  }
+{{- end}}
+  return x.limbs[0] >= y.limbs[0];
+}
+
+fn {{$p}}_add_modulus(x: {{$T}}) -> {{$T}} {
+  let q = {{$p}}_modulus();
+  var z: {{$T}};
+  var carry = 0u;
+{{- range $i := iterate 0 $n}}
+  {{if eq $i 0}}var {{end}}lane = adc(x.limbs[{{$i}}], q.limbs[{{$i}}], carry);
+  z.limbs[{{$i}}] = lane.x;
+{{- if lt $i $last}}
+  carry = lane.y;
+{{- end}}
+{{- end}}
+  return z;
+}
+
+fn {{$p}}_sub_modulus(x: {{$T}}) -> {{$T}} {
+  let q = {{$p}}_modulus();
+  var z: {{$T}};
+  var borrow = 0u;
+{{- range $i := iterate 0 $n}}
+  {{if eq $i 0}}var {{end}}lane = sbb(x.limbs[{{$i}}], q.limbs[{{$i}}], borrow);
+  z.limbs[{{$i}}] = lane.x;
+{{- if lt $i $last}}
+  borrow = lane.y;
+{{- end}}
+{{- end}}
+  return z;
+}
+
+fn {{$p}}_add(x: {{$T}}, y: {{$T}}) -> {{$T}} {
+  var z: {{$T}};
+  var carry = 0u;
+{{- range $i := iterate 0 $n}}
+  {{if eq $i 0}}var {{end}}lane = adc(x.limbs[{{$i}}], y.limbs[{{$i}}], carry);
+  z.limbs[{{$i}}] = lane.x;
+{{- if lt $i $last}}
+  carry = lane.y;
+{{- end}}
+{{- end}}
+  if ((lane.y != 0u) || {{$p}}_gte(z, {{$p}}_modulus())) {
+    return {{$p}}_sub_modulus(z);
+  }
+  return z;
+}
+
+fn {{$p}}_sub(x: {{$T}}, y: {{$T}}) -> {{$T}} {
+  var z: {{$T}};
+  var borrow = 0u;
+{{- range $i := iterate 0 $n}}
+  {{if eq $i 0}}var {{end}}lane = sbb(x.limbs[{{$i}}], y.limbs[{{$i}}], borrow);
+  z.limbs[{{$i}}] = lane.x;
+{{- if lt $i $last}}
+  borrow = lane.y;
+{{- end}}
+{{- end}}
+  if (lane.y != 0u) {
+    return {{$p}}_add_modulus(z);
+  }
+  return z;
+}
+
+fn {{$p}}_neg(x: {{$T}}) -> {{$T}} {
+  if ({{$p}}_is_zero(x)) {
+    return {{$p}}_zero();
+  }
+  return {{$p}}_sub({{$p}}_modulus(), x);
+}
+
+fn {{$p}}_double(x: {{$T}}) -> {{$T}} {
+  return {{$p}}_add(x, x);
+}
+
+fn {{$p}}_normalize(x: {{$T}}) -> {{$T}} {
+  if ({{$p}}_gte(x, {{$p}}_modulus())) {
+    return {{$p}}_sub_modulus(x);
+  }
+  return x;
+}
+
+fn {{$p}}_unpack16(x: {{$T}}) -> {{$T16}} {
+  var z: {{$T16}};
+  for (var i = 0u; i < {{$n}}u; i = i + 1u) {
+    z.limbs[2u * i] = x.limbs[i] & {{$P}}_LIMB16_MASK;
+    z.limbs[2u * i + 1u] = x.limbs[i] >> 16u;
+  }
+  return z;
+}
+
+fn {{$p}}_pack16(x: {{$T16}}) -> {{$T}} {
+  var z: {{$T}};
+  for (var i = 0u; i < {{$n}}u; i = i + 1u) {
+    z.limbs[i] = x.limbs[2u * i] | (x.limbs[2u * i + 1u] << 16u);
+  }
+  return z;
+}
+
+fn {{$p}}{{$n16}}_gte_modulus(x: {{$T16}}) -> bool {
+  for (var i: i32 = {{sub $n16 1}}; i >= 0; i = i - 1) {
+    let idx = u32(i);
+    let xLimb = x.limbs[idx];
+    let qLimb = {{$P}}_MODULUS16[idx];
+    if (xLimb != qLimb) {
+      return xLimb > qLimb;
+    }
+  }
+  return true;
+}
+
+fn {{$p}}{{$n16}}_sub_modulus(x: {{$T16}}) -> {{$T16}} {
+  var z: {{$T16}};
+  var borrow = 0u;
+  for (var i = 0u; i < {{$n16}}u; i = i + 1u) {
+    let lane = sbb(x.limbs[i], {{$P}}_MODULUS16[i], borrow);
+    z.limbs[i] = lane.x & {{$P}}_LIMB16_MASK;
+    borrow = lane.y;
+  }
+  return z;
+}
+
+// Montgomery multiplication (CIOS) over 16-bit limbs: R = 2^(16*{{$n16}}).
+// Each 16x16 partial product plus carries fits in a u32 without overflow.
+fn {{$p}}_mul(x: {{$T}}, y: {{$T}}) -> {{$T}} {
+  let a = {{$p}}_unpack16(x);
+  let b = {{$p}}_unpack16(y);
+  var t: array<u32, {{add $n16 1}}>;
+
+  for (var i = 0u; i < {{$n16}}u; i = i + 1u) {
+    var carry = 0u;
+    let bi = b.limbs[i];
+    for (var j = 0u; j < {{$n16}}u; j = j + 1u) {
+      let aLimb = a.limbs[j];
+      let uv = t[j] + (aLimb * bi) + carry;
+      t[j] = uv & {{$P}}_LIMB16_MASK;
+      carry = uv >> 16u;
+    }
+    t[{{$n16}}] = carry;
+
+    let m = (t[0] * {{$P}}_QINV_NEG_16) & {{$P}}_LIMB16_MASK;
+    carry = 0u;
+    for (var j = 0u; j < {{$n16}}u; j = j + 1u) {
+      let qLimb = {{$P}}_MODULUS16[j];
+      let uv = t[j] + (m * qLimb) + carry;
+      if (j > 0u) {
+        t[j - 1u] = uv & {{$P}}_LIMB16_MASK;
+      }
+      carry = uv >> 16u;
+    }
+    let uv = t[{{$n16}}] + carry;
+    t[{{sub $n16 1}}] = uv & {{$P}}_LIMB16_MASK;
+    t[{{$n16}}] = uv >> 16u;
+  }
+
+  var z{{$n16}}: {{$T16}};
+  for (var i = 0u; i < {{$n16}}u; i = i + 1u) {
+    z{{$n16}}.limbs[i] = t[i];
+  }
+  if ((t[{{$n16}}] != 0u) || {{$p}}{{$n16}}_gte_modulus(z{{$n16}})) {
+    z{{$n16}} = {{$p}}{{$n16}}_sub_modulus(z{{$n16}});
+  }
+  return {{$p}}_pack16(z{{$n16}});
+}
+
+fn {{$p}}_square(x: {{$T}}) -> {{$T}} {
+  return {{$p}}_mul(x, x);
+}
+{{- if .Inverse}}
+
+// Fermat inversion: x^(q-2). Returns zero for zero.
+fn {{$p}}_inverse(x: {{$T}}) -> {{$T}} {
+  if ({{$p}}_is_zero(x)) {
+    return {{$p}}_zero();
+  }
+  var acc = {{$p}}_one();
+  for (var word_index: i32 = {{$last}}; word_index >= 0; word_index = word_index - 1) {
+    let word = {{$P}}_MODULUS_MINUS_TWO[u32(word_index)];
+    for (var bit_index: i32 = 31; bit_index >= 0; bit_index = bit_index - 1) {
+      acc = {{$p}}_square(acc);
+      if (((word >> u32(bit_index)) & 1u) != 0u) {
+        acc = {{$p}}_mul(acc, x);
+      }
+    }
+  }
+  return acc;
+}
+{{- end}}
+{{- end -}}
+
+{{/*
+  load_limbs / store_limbs: unrolled copies between a flat u32 storage buffer
+  and a field element. Dot is a dict with Buffer, Limbs, Indent (string),
+  and Var (the element variable name).
+*/}}
+{{- define "load_limbs" -}}
+{{- $buf := .Buffer -}}{{- $ind := .Indent -}}{{- $v := .Var -}}
+{{- range $i := iterate 0 .Limbs}}
+{{$ind}}{{$v}}.limbs[{{$i}}] = {{$buf}}[base + {{$i}}u];
+{{- end}}
+{{- end -}}
+
+{{- define "store_limbs" -}}
+{{- $buf := .Buffer -}}{{- $ind := .Indent -}}{{- $v := .Var -}}
+{{- range $i := iterate 0 .Limbs}}
+{{$ind}}{{$buf}}[base + {{$i}}u] = {{$v}}.limbs[{{$i}}];
+{{- end}}
+{{- end -}}
+
+{{/*
+  field_io_ab: load/store helpers for the group shaders, which read points from
+  input_a / input_b (selected by buffer_kind) and write to output. Dot is a
+  wgslField.
+*/}}
+{{- define "field_io_ab" -}}
+fn {{.Prefix}}_load_from(buffer_kind: u32, base: u32) -> {{.Type}} {
+  var z: {{.Type}};
+  if (buffer_kind == 0u) {
+{{- template "load_limbs" (dict "Buffer" "input_a" "Limbs" .Limbs "Indent" "    " "Var" "z")}}
+    return z;
+  }
+{{- template "load_limbs" (dict "Buffer" "input_b" "Limbs" .Limbs "Indent" "  " "Var" "z")}}
+  return z;
+}
+
+fn {{.Prefix}}_store(base: u32, value: {{.Type}}) {
+{{- template "store_limbs" (dict "Buffer" "output" "Limbs" .Limbs "Indent" "  " "Var" "value")}}
+}
+{{- end -}}

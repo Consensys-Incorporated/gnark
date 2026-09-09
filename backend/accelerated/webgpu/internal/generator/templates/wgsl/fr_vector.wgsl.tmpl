@@ -1,0 +1,85 @@
+{{- /* Element-wise vector operations over Fr. Dot is the Fr wgslField. */ -}}
+{{- $p := .Prefix -}}{{- $T := .Type -}}
+{{template "field_types" .}}
+
+struct Params {
+  count: u32,
+  opcode: u32,
+  log_count: u32,
+  _pad0: u32,
+}
+
+const FR_VECTOR_OP_COPY: u32 = 0u;
+const FR_VECTOR_OP_ADD: u32 = 1u;
+const FR_VECTOR_OP_SUB: u32 = 2u;
+const FR_VECTOR_OP_MUL_FACTORS: u32 = 3u;
+const FR_VECTOR_OP_BIT_REVERSE_COPY: u32 = 4u;
+
+{{template "field_consts" .}}
+
+@group(0) @binding(0) var<storage, read> input_values: array<u32>;
+@group(0) @binding(1) var<storage, read> input_aux: array<u32>;
+@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+{{template "field_core" .}}
+
+fn reverse_bits(index: u32, log_count: u32) -> u32 {
+  var out = 0u;
+  for (var bit = 0u; bit < log_count; bit = bit + 1u) {
+    out = (out << 1u) | ((index >> bit) & 1u);
+  }
+  return out;
+}
+
+fn {{$p}}_load_from(buffer_kind: u32, index: u32) -> {{$T}} {
+  let base = index * {{.Limbs}}u;
+  var z: {{$T}};
+  if (buffer_kind == 0u) {
+{{- template "load_limbs" (dict "Buffer" "input_values" "Limbs" .Limbs "Indent" "    " "Var" "z")}}
+    return z;
+  }
+{{- template "load_limbs" (dict "Buffer" "input_aux" "Limbs" .Limbs "Indent" "  " "Var" "z")}}
+  return z;
+}
+
+fn {{$p}}_store(index: u32, value: {{$T}}) {
+  let base = index * {{.Limbs}}u;
+{{- template "store_limbs" (dict "Buffer" "output" "Limbs" .Limbs "Indent" "  " "Var" "value")}}
+}
+
+fn {{$p}}_dispatch(index: u32) -> {{$T}} {
+  if (params.opcode == FR_VECTOR_OP_COPY) {
+    return {{$p}}_load_from(0u, index);
+  }
+  if (params.opcode == FR_VECTOR_OP_ADD) {
+    return {{$p}}_add({{$p}}_load_from(0u, index), {{$p}}_load_from(1u, index));
+  }
+  if (params.opcode == FR_VECTOR_OP_SUB) {
+    return {{$p}}_sub({{$p}}_load_from(0u, index), {{$p}}_load_from(1u, index));
+  }
+  if (params.opcode == FR_VECTOR_OP_MUL_FACTORS) {
+    return {{$p}}_mul({{$p}}_load_from(0u, index), {{$p}}_load_from(1u, index));
+  }
+  if (params.opcode == FR_VECTOR_OP_BIT_REVERSE_COPY) {
+    if (params._pad0 != 0u) {
+      let vector_size = params._pad0;
+      let vector_base = (index / vector_size) * vector_size;
+      let lane = index % vector_size;
+      return {{$p}}_load_from(0u, vector_base + reverse_bits(lane, params.log_count));
+    }
+    return {{$p}}_load_from(0u, reverse_bits(index, params.log_count));
+  }
+  return {{$p}}_zero();
+}
+
+override WORKGROUP_SIZE: u32 = 64;
+
+@compute @workgroup_size(WORKGROUP_SIZE)
+fn fr_vector_main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let i = id.x;
+  if (i >= params.count) {
+    return;
+  }
+  {{$p}}_store(i, {{$p}}_dispatch(i));
+}

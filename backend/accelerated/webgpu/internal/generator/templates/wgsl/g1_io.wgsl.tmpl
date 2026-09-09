@@ -1,0 +1,20 @@
+{{- /* G1 point load/store for the g1 ops and MSM pipelines. Dot is the Fp wgslField.
+       Points are 3 coordinates (Jacobian, or affine with z as the infinity flag). */ -}}
+{{- $n := .Limbs -}}
+{{template "field_io_ab" .}}
+
+fn g1_load_from(buffer_kind: u32, index: u32) -> G1Point {
+  let base = index * {{mul 3 $n}}u;
+  var p: G1Point;
+  p.x = {{.Prefix}}_load_from(buffer_kind, base + 0u);
+  p.y = {{.Prefix}}_load_from(buffer_kind, base + {{$n}}u);
+  p.z = {{.Prefix}}_load_from(buffer_kind, base + {{mul 2 $n}}u);
+  return p;
+}
+
+fn g1_store(index: u32, value: G1Point) {
+  let base = index * {{mul 3 $n}}u;
+  {{.Prefix}}_store(base + 0u, value.x);
+  {{.Prefix}}_store(base + {{$n}}u, value.y);
+  {{.Prefix}}_store(base + {{mul 2 $n}}u, value.z);
+}

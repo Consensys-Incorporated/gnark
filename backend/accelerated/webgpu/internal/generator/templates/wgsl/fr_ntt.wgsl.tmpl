@@ -1,0 +1,62 @@
+{{- /* One radix-2 NTT butterfly stage over Fr. Dot is the Fr wgslField. */ -}}
+{{- $p := .Prefix -}}{{- $T := .Type -}}
+{{template "field_types" .}}
+
+struct Params {
+  count: u32,
+  m: u32,
+  _pad0: u32,
+  _pad1: u32,
+}
+
+{{template "field_consts" .}}
+
+@group(0) @binding(0) var<storage, read> input_values: array<u32>;
+@group(0) @binding(1) var<storage, read> input_twiddles: array<u32>;
+@group(0) @binding(2) var<storage, read_write> output: array<u32>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+{{template "field_core" .}}
+
+fn {{$p}}_load_from(buffer_kind: u32, index: u32) -> {{$T}} {
+  let base = index * {{.Limbs}}u;
+  var z: {{$T}};
+  if (buffer_kind == 0u) {
+{{- template "load_limbs" (dict "Buffer" "input_values" "Limbs" .Limbs "Indent" "    " "Var" "z")}}
+    return z;
+  }
+{{- template "load_limbs" (dict "Buffer" "input_twiddles" "Limbs" .Limbs "Indent" "  " "Var" "z")}}
+  return z;
+}
+
+fn {{$p}}_store(index: u32, value: {{$T}}) {
+  let base = index * {{.Limbs}}u;
+{{- template "store_limbs" (dict "Buffer" "output" "Limbs" .Limbs "Indent" "  " "Var" "value")}}
+}
+
+override WORKGROUP_SIZE: u32 = 64;
+
+@compute @workgroup_size(WORKGROUP_SIZE)
+fn fr_ntt_stage_main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let pair = id.x;
+  let vector = id.y;
+  let half_count = params.count / 2u;
+  let batch_count = max(params._pad0, 1u);
+  if (pair >= half_count || vector >= batch_count) {
+    return;
+  }
+
+  let m = params.m;
+  let j = pair % m;
+  let block = pair / m;
+  let vector_base = vector * params.count;
+  let left_index = vector_base + block * 2u * m + j;
+  let right_index = left_index + m;
+
+  let left = {{$p}}_load_from(0u, left_index);
+  let twiddle = {{$p}}_load_from(1u, j);
+  let right = {{$p}}_mul({{$p}}_load_from(0u, right_index), twiddle);
+
+  {{$p}}_store(left_index, {{$p}}_add(left, right));
+  {{$p}}_store(right_index, {{$p}}_sub(left, right));
+}
