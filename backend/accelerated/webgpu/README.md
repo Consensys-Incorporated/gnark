@@ -48,8 +48,9 @@ not duplicated here.
   with all field constants computed from gnark-crypto) and the Go test-vector
   builders. Run `go run .` in that directory after editing a template.
 - `shaders/`: WGSL kernels. `shaders/curves/*` are generated, `shaders/common/*`
-  are hand-written and curve-agnostic.
-- `web/`: TypeScript runtime, browser test pages and the npm build.
+  are hand-written and curve-agnostic (MSM bucket sort, Pippenger stages).
+- `web/`: TypeScript runtime, browser test pages, the npm build and
+  `scripts/e2e.mjs`, which runs the test pages headlessly with Playwright.
 
 The Go packages build only for `GOOS=js GOARCH=wasm`.
 
@@ -62,6 +63,18 @@ npm run build:all        # lint, shaders bundle, TypeScript, Go wasm assets
 ```
 
 Narrower targets: `npm run build`, `build:shaders`, `build:wasm`,
-`build:wasm:groth16`, `build:wasm:plonk`, `lint`. Test fixtures for the browser
-pages are produced with `npm run build:test-fixtures:<suite>` and served from
-`web/` (see `web/tests/index.html`).
+`build:wasm:groth16`, `build:wasm:plonk`, `lint`.
+
+## Test
+
+Test fixtures for the browser pages are produced with
+`npm run build:test-fixtures:<suite>` (api, groth16, plonk). The pages can be
+served from `web/` and opened at `tests/index.html`, or run headlessly:
+
+```sh
+npm run test:e2e     # API suites + one verified proof per system and curve
+npm run bench:e2e    # prover benchmark matrix (2^15 and 2^18 fixtures)
+```
+
+Set `PW_CHANNEL=chrome` to use the system Chrome instead of Playwright's
+Chromium. `.github/workflows/webgpu.yml` runs `test:e2e` on pull requests.
