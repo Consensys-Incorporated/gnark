@@ -63,6 +63,20 @@ fn g2_load_from(buffer_kind: u32, index: u32) -> G2Point {
   return p;
 }
 
+// Load affine base `index` (x, y) from input_a; z becomes the infinity flag
+// (one for a finite point, zero for the all-zero encoding of infinity).
+fn g2_load_affine(index: u32) -> G2Point {
+  let base = index * 48u;
+  var p: G2Point;
+  p.x = fp2_load_from(0u, base + 0u);
+  p.y = fp2_load_from(0u, base + 24u);
+  p.z = fp2_zero();
+  if (!(fp2_is_zero(p.x) && fp2_is_zero(p.y))) {
+    p.z = fp2_one();
+  }
+  return p;
+}
+
 fn fp2_store(base: u32, value: Fp2) {
   fp_store(base, value.c0);
   fp_store(base + 12u, value.c1);

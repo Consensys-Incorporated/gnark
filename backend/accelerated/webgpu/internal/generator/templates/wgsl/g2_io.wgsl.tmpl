@@ -1,5 +1,6 @@
 {{- /* G2 point load/store for the g2 ops and MSM pipelines. Dot is the Fp wgslField.
-       An Fp2 element is (c0, c1); a point is 3 Fp2 coordinates. */ -}}
+       An Fp2 element is (c0, c1); a Jacobian point is 3 Fp2 coordinates and an
+       MSM base is stored affine as 2 Fp2 coordinates (infinity all zero). */ -}}
 {{- $n := .Limbs -}}
 {{template "field_io_ab" .}}
 
@@ -16,6 +17,20 @@ fn g2_load_from(buffer_kind: u32, index: u32) -> G2Point {
   p.x = fp2_load_from(buffer_kind, base + 0u);
   p.y = fp2_load_from(buffer_kind, base + {{mul 2 $n}}u);
   p.z = fp2_load_from(buffer_kind, base + {{mul 4 $n}}u);
+  return p;
+}
+
+// Load affine base `index` (x, y) from input_a; z becomes the infinity flag
+// (one for a finite point, zero for the all-zero encoding of infinity).
+fn g2_load_affine(index: u32) -> G2Point {
+  let base = index * {{mul 4 $n}}u;
+  var p: G2Point;
+  p.x = fp2_load_from(0u, base + 0u);
+  p.y = fp2_load_from(0u, base + {{mul 2 $n}}u);
+  p.z = fp2_zero();
+  if (!(fp2_is_zero(p.x) && fp2_is_zero(p.y))) {
+    p.z = fp2_one();
+  }
   return p;
 }
 

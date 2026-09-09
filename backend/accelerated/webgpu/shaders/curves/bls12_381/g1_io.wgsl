@@ -56,6 +56,20 @@ fn g1_load_from(buffer_kind: u32, index: u32) -> G1Point {
   return p;
 }
 
+// Load affine base `index` (x, y) from input_a; z becomes the infinity flag
+// (one for a finite point, zero for the all-zero encoding of infinity).
+fn g1_load_affine(index: u32) -> G1Point {
+  let base = index * 24u;
+  var p: G1Point;
+  p.x = fp_load_from(0u, base + 0u);
+  p.y = fp_load_from(0u, base + 12u);
+  p.z = fp_zero();
+  if (!(fp_is_zero(p.x) && fp_is_zero(p.y))) {
+    p.z = fp_one();
+  }
+  return p;
+}
+
 fn g1_store(index: u32, value: G1Point) {
   let base = index * 36u;
   fp_store(base + 0u, value.x);

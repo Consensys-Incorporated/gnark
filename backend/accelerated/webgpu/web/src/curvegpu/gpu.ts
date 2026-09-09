@@ -161,6 +161,12 @@ export class CommandBatch {
     }
   }
 
+  /** Record a fill of the first `size` bytes of `buffer` with zeros. */
+  clear(buffer: GPUBuffer, size: number): void {
+    this.assertOpen();
+    this.encoder.clearBuffer(buffer, 0, alignBytes(size));
+  }
+
   /** Record a buffer-to-buffer copy. */
   copy(source: GPUBuffer, destination: GPUBuffer, size: number, sourceOffset = 0, destinationOffset = 0): void {
     this.assertOpen();

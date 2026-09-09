@@ -7,7 +7,10 @@ import { createMSMModule } from "./msm_module.js";
 import { createNTTModule } from "./ntt_module.js";
 import { createPlonkQuotientModule } from "./plonk_quotient_module.js";
 import { createGroth16Module, createPlonkModule } from "./proof_module.js";
+import type { MSMSortShaderSpec } from "./pipeline_registry.js";
 import { buildPipelineRegistry } from "./pipeline_registry.js";
+import type { MSMKernels, MSMSortKernels } from "./msm_pippenger.js";
+import { MSM_STAGES } from "./msm_pippenger.js";
 
 /**
  * Curve-specific constants. Everything else (byte sizes, shader paths, limb
@@ -47,6 +50,18 @@ const CURVE_PARAMS: Record<SupportedCurveID, {
 };
 
 const FR_BYTES = 32;
+
+/** The group-independent MSM bucket-sort shader (shared by all curves and groups). */
+export const MSM_SORT_SHADER_SPEC: MSMSortShaderSpec = {
+  shaderParts: ["/shaders/common/msm_sort.wgsl"],
+  entryPoints: ["msm_sort_count_main", "msm_sort_scan_main", "msm_sort_scatter_main", "msm_sort_chunks_main"],
+  workgroupSize: 256,
+};
+
+/** Entry points of one group's MSM shader, in `MSM_STAGES` order. */
+function msmEntryPoints(group: "g1" | "g2"): string[] {
+  return MSM_STAGES.map((stage) => `${group}_msm_${stage}_jac_main`);
+}
 
 /**
  * Runtime metadata for a supported curve.
@@ -180,20 +195,21 @@ export async function createCurveModule(context: CurveGPUContext, curve: Support
       { shaderParts: definition.g1ArithShaderParts, entryPoint: "g1_ops_main" },
       { shaderParts: definition.g2ArithShaderParts, entryPoint: "g2_ops_main" },
       { shaderParts: [definition.frVectorShaderPath], entryPoint: "fr_vector_main" },
-      { shaderParts: [definition.frNTTShaderPath], entryPoint: "fr_ntt_stage_main" },
+      { shaderParts: [definition.frNTTShaderPath], entryPoint: "fr_ntt_fused_main" },
     ],
     msmShaders: [
       {
         shaderParts: definition.g1MSMShaderParts,
         workgroupSize: definition.g1MSMWorkgroupSize,
-        entryPoints: ["g1_msm_bucket_jac_main", "g1_msm_weight_jac_main", "g1_msm_subsum_jac_main", "g1_msm_combine_jac_main"],
+        entryPoints: msmEntryPoints("g1"),
       },
       {
         shaderParts: definition.g2MSMShaderParts,
         workgroupSize: definition.g2MSMWorkgroupSize,
-        entryPoints: ["g2_msm_bucket_jac_main", "g2_msm_weight_jac_main", "g2_msm_subsum_jac_main", "g2_msm_combine_jac_main"],
+        entryPoints: msmEntryPoints("g2"),
       },
     ],
+    sortShaders: [MSM_SORT_SHADER_SPEC],
     debug: context.debug,
   });
 
@@ -220,42 +236,16 @@ export async function createCurveModule(context: CurveGPUContext, curve: Support
       cosetGeneratorHex: definition.frCosetGeneratorHex,
       vectorKernel: registry.getKernel("fr_vector_main"),
       fieldKernel: registry.getKernel("fr_ops_main"),
-      nttKernel: registry.getKernel("fr_ntt_stage_main"),
+      nttKernel: registry.getKernel("fr_ntt_fused_main"),
     },
     fr,
   );
-  const g1msm = createMSMModule(
-    context,
-    {
-      curve,
-      group: "g1",
-      codec: g1Points,
-      kernels: {
-        bucket: registry.getKernel("g1_msm_bucket_jac_main"),
-        weight: registry.getKernel("g1_msm_weight_jac_main"),
-        subsum: registry.getKernel("g1_msm_subsum_jac_main"),
-        combine: registry.getKernel("g1_msm_combine_jac_main"),
-      },
-    },
-    g1,
-    fp,
-  );
-  const g2msm = createMSMModule(
-    context,
-    {
-      curve,
-      group: "g2",
-      codec: g2Points,
-      kernels: {
-        bucket: registry.getKernel("g2_msm_bucket_jac_main"),
-        weight: registry.getKernel("g2_msm_weight_jac_main"),
-        subsum: registry.getKernel("g2_msm_subsum_jac_main"),
-        combine: registry.getKernel("g2_msm_combine_jac_main"),
-      },
-    },
-    g2,
-    fp,
-  );
+  const msmKernels = (group: "g1" | "g2"): MSMKernels =>
+    Object.fromEntries(MSM_STAGES.map((stage, i) => [stage, registry.getKernel(msmEntryPoints(group)[i])])) as MSMKernels;
+  const [count, scan, scatter, chunks] = MSM_SORT_SHADER_SPEC.entryPoints.map((entryPoint) => registry.getKernel(entryPoint));
+  const sortKernels: MSMSortKernels = { count, scan, scatter, chunks };
+  const g1msm = createMSMModule(context, { curve, group: "g1", codec: g1Points, kernels: msmKernels("g1"), sortKernels }, g1, fp);
+  const g2msm = createMSMModule(context, { curve, group: "g2", codec: g2Points, kernels: msmKernels("g2"), sortKernels }, g2, fp);
   const groth16 = createGroth16Module({
     context,
     curve,
