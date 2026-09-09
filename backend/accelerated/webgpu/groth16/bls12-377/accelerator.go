@@ -10,7 +10,6 @@ package bls12377
 import (
 	"errors"
 	"fmt"
-	"math/big"
 	"sync"
 
 	curve "github.com/consensys/gnark-crypto/ecc/bls12-377"
@@ -28,10 +27,9 @@ var client = bridge.Client{GlobalName: "gnarkGroth16WebGPU", ErrorPrefix: "webgp
 // Accelerator implements native.Accelerator by running the MSMs and the
 // quotient computation of the Groth16 prover on the browser WebGPU runtime.
 type Accelerator struct {
-	pk     *native.ProvingKey
-	mu     sync.Mutex
-	handle string
-	bases  bridge.BasisRegistry
+	pk  *native.ProvingKey
+	mu  sync.Mutex
+	key bridge.Key
 }
 
 // Attach uploads the bases of pk to the GPU and attaches a WebGPU accelerator
@@ -51,35 +49,20 @@ func Attach(pk *native.ProvingKey) (*Accelerator, error) {
 func (a *Accelerator) prepare() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.handle != "" {
-		return nil
-	}
-	if err := client.Init(curveKey); err != nil {
-		return err
-	}
 	pk := a.pk
-	g1 := map[string][]byte{}
-	g2 := map[string][]byte{}
-	addG1 := func(name string, s []curve.G1Affine) {
-		g1[name] = bridge.Bytes(s)
-		bridge.RegisterSlice(&a.bases, name, s)
-	}
-	addG1("A", pk.G1.A)
-	addG1("B", pk.G1.B)
-	addG1("K", pk.G1.K)
-	addG1("Z", pk.G1.Z)
+	a.key.Client = client
+	bridge.AddBases(&a.key, "g1", "A", pk.G1.A)
+	bridge.AddBases(&a.key, "g1", "B", pk.G1.B)
+	bridge.AddBases(&a.key, "g1", "K", pk.G1.K)
+	bridge.AddBases(&a.key, "g1", "Z", pk.G1.Z)
 	for i := range pk.CommitmentKeys {
-		addG1(fmt.Sprintf("commitmentBasis%d", i), pk.CommitmentKeys[i].Basis)
-		addG1(fmt.Sprintf("commitmentBasisExpSigma%d", i), pk.CommitmentKeys[i].BasisExpSigma)
+		bridge.AddBases(&a.key, "g1", fmt.Sprintf("commitmentBasis%d", i), pk.CommitmentKeys[i].Basis)
+		bridge.AddBases(&a.key, "g1", fmt.Sprintf("commitmentBasisExpSigma%d", i), pk.CommitmentKeys[i].BasisExpSigma)
 	}
-	g2["B"] = bridge.Bytes(pk.G2.B)
-	bridge.RegisterSlice(&a.bases, "B", pk.G2.B)
-
-	handle, err := client.PrepareKey(curveKey, g1, g2)
-	if err != nil {
+	bridge.AddBases(&a.key, "g2", "B", pk.G2.B)
+	if err := a.key.Upload(curveKey); err != nil {
 		return err
 	}
-	a.handle = handle
 	return client.PrewarmQuotientDomain(curveKey, int(pk.Domain.Cardinality))
 }
 
@@ -90,12 +73,7 @@ func (a *Accelerator) Release() error {
 	if a.pk.Accelerator() == native.Accelerator(a) {
 		a.pk.SetAccelerator(nil)
 	}
-	if a.handle == "" {
-		return nil
-	}
-	err := client.ReleaseKey(a.handle)
-	a.handle = ""
-	return err
+	return a.key.Release()
 }
 
 // MultiExpG1 implements native.Accelerator.
@@ -104,15 +82,8 @@ func (a *Accelerator) MultiExpG1(bases []curve.G1Affine, scalars []fr.Element) (
 	if len(scalars) > len(bases) {
 		return res, errors.New(client.ErrorPrefix + ": more scalars than bases")
 	}
-	if len(scalars) == 0 {
-		return res, nil
-	}
-	name, start, ok := bridge.ResolveSlice(&a.bases, bases[:len(scalars)])
-	if !ok {
-		return res, errors.New(client.ErrorPrefix + ": G1 bases are not part of the proving key")
-	}
-	packed, err := client.MSMG1(a.handle, name, start, scalarsRegularLE(scalars))
-	if err != nil {
+	packed, err := bridge.MSM(&a.key, "g1", bases[:len(scalars)], scalarsRegularLE(scalars))
+	if err != nil || packed == nil {
 		return res, err
 	}
 	return decodeG1(packed)
@@ -124,15 +95,8 @@ func (a *Accelerator) MultiExpG2(bases []curve.G2Affine, scalars []fr.Element) (
 	if len(scalars) > len(bases) {
 		return res, errors.New(client.ErrorPrefix + ": more scalars than bases")
 	}
-	if len(scalars) == 0 {
-		return res, nil
-	}
-	name, start, ok := bridge.ResolveSlice(&a.bases, bases[:len(scalars)])
-	if !ok {
-		return res, errors.New(client.ErrorPrefix + ": G2 bases are not part of the proving key")
-	}
-	packed, err := client.MSMG2(a.handle, name, start, scalarsRegularLE(scalars))
-	if err != nil {
+	packed, err := bridge.MSM(&a.key, "g2", bases[:len(scalars)], scalarsRegularLE(scalars))
+	if err != nil || packed == nil {
 		return res, err
 	}
 	return decodeG2(packed)
@@ -161,27 +125,15 @@ func scalarsRegularLE(scalars []fr.Element) []byte {
 	return out
 }
 
-var fpModulusLimbs = func() (m [fp.Limbs]uint64) {
-	words := new(big.Int).Set(fp.Modulus()).Bits()
-	for i := range words {
-		m[i] = uint64(words[i])
-	}
-	return
-}()
+var fpModulusLimbs = bridge.ModulusLimbs(fp.Modulus(), fp.Limbs)
 
 // decodeFp reads a Montgomery-form little-endian base field element and checks
 // that it is reduced.
 func decodeFp(z *fp.Element, b []byte) error {
-	copy(bridge.Bytes(z[:]), b)
-	for i := fp.Limbs - 1; i >= 0; i-- {
-		if z[i] < fpModulusLimbs[i] {
-			return nil
-		}
-		if z[i] > fpModulusLimbs[i] {
-			break
-		}
+	if err := bridge.DecodeLimbs(z[:], b, fpModulusLimbs); err != nil {
+		return fmt.Errorf("%s: %w", client.ErrorPrefix, err)
 	}
-	return errors.New(client.ErrorPrefix + ": GPU returned a non reduced field element")
+	return nil
 }
 
 func decodeG1(b []byte) (curve.G1Affine, error) {

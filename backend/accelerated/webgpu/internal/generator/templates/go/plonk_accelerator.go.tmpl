@@ -2,7 +2,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"math/bits"
 	"sync"
 
 	curve "{{.CurveImport}}"
@@ -19,7 +18,7 @@ const curveKey = "{{.CurveKey}}"
 
 var client = bridge.Client{GlobalName: "gnarkPlonkWebGPU", ErrorPrefix: "webgpu plonk " + curveKey}
 
-// Layout of the fused numerator kernel inputs (see web/src/curvegpu/bridge.ts).
+// Layout of the numerator kernel inputs (see web/src/curvegpu/bridge.ts).
 const (
 	numeratorDynamicVectors = 5 // L, R, O, Z, Qk, followed by the BSB22 committed values
 	numeratorStaticVectors  = 7 // Ql, Qr, Qm, Qo, S1, S2, S3, followed by the BSB22 selectors
@@ -30,11 +29,10 @@ const (
 // numerator and the large inverse FFT of the PLONK prover on the browser WebGPU
 // runtime.
 type Accelerator struct {
-	pk     *native.ProvingKey
-	mu     sync.Mutex
-	handle string
-	bases  bridge.BasisRegistry
-	cache  *numeratorCache
+	pk    *native.ProvingKey
+	mu    sync.Mutex
+	key   bridge.Key
+	cache *numeratorCache
 }
 
 // Attach uploads the SRS of pk to the GPU and attaches a WebGPU accelerator to
@@ -54,24 +52,10 @@ func Attach(pk *native.ProvingKey) (*Accelerator, error) {
 func (a *Accelerator) prepare() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.handle != "" {
-		return nil
-	}
-	if err := client.Init(curveKey); err != nil {
-		return err
-	}
-	g1 := map[string][]byte{
-		"kzg":         bridge.Bytes(a.pk.Kzg.G1),
-		"kzgLagrange": bridge.Bytes(a.pk.KzgLagrange.G1),
-	}
-	bridge.RegisterSlice(&a.bases, "kzg", a.pk.Kzg.G1)
-	bridge.RegisterSlice(&a.bases, "kzgLagrange", a.pk.KzgLagrange.G1)
-	handle, err := client.PrepareKey(curveKey, g1, nil)
-	if err != nil {
-		return err
-	}
-	a.handle = handle
-	return nil
+	a.key.Client = client
+	bridge.AddBases(&a.key, "g1", "kzg", a.pk.Kzg.G1)
+	bridge.AddBases(&a.key, "g1", "kzgLagrange", a.pk.KzgLagrange.G1)
+	return a.key.Upload(curveKey)
 }
 
 // Release frees the GPU resources and detaches the accelerator from its proving key.
@@ -81,19 +65,20 @@ func (a *Accelerator) Release() error {
 	if a.pk.Accelerator() == native.Accelerator(a) {
 		a.pk.SetAccelerator(nil)
 	}
-	a.cache = nil
-	if a.handle == "" {
-		return nil
+	var err error
+	if a.cache != nil {
+		err = client.ReleaseQuotientStatics(curveKey, a.cache.key)
+		a.cache = nil
 	}
-	err := client.ReleaseKey(a.handle)
-	a.handle = ""
+	if e := a.key.Release(); err == nil {
+		err = e
+	}
 	return err
 }
 
-// Prewarm builds the circuit-dependent caches (canonical and coset forms of the
-// circuit polynomials, FFT tables, compiled kernels) so that the first proof
-// does not pay for them. A proving key is bound to a single circuit, which
-// must be spr.
+// Prewarm builds the circuit-dependent state (canonical circuit polynomials,
+// GPU-resident tables, compiled kernels) so that the first proof does not pay
+// for it. A proving key is bound to a single circuit, which must be spr.
 func (a *Accelerator) Prewarm(spr *cs.SparseR1CS) error {
 	domain0, domain1 := domains(spr)
 	trace := native.NewTrace(spr, domain0)
@@ -102,21 +87,11 @@ func (a *Accelerator) Prewarm(spr *cs.SparseR1CS) error {
 		s1: trace.S1, s2: trace.S2, s3: trace.S3,
 		qcp: trace.Qcp,
 	}
-	cache, err := a.numeratorCache(domain0, domain1, statics)
-	if err != nil {
+	if _, err := a.numeratorCache(domain0, domain1, statics); err != nil {
 		return err
 	}
-	if err := a.uploadStatics(cache); err != nil {
-		return err
-	}
-	n := int(domain0.Cardinality)
-	if err := client.PrewarmQuotientTransformDomain(curveKey, n); err != nil {
-		return err
-	}
-	if err := client.PrewarmQuotientEvaluateKernel(curveKey, len(trace.Qcp)); err != nil {
-		return err
-	}
-	return client.PrewarmQuotientCanonicalizeDomain(curveKey, int(domain1.Cardinality))
+	rho := int(domain1.Cardinality / domain0.Cardinality)
+	return client.PrewarmQuotient(curveKey, int(domain0.Cardinality), rho, len(trace.Qcp))
 }
 
 // domains mirrors the FFT domain selection of the native prover.
@@ -135,15 +110,8 @@ func (a *Accelerator) MultiExp(bases []curve.G1Affine, scalars []fr.Element) (cu
 	if len(scalars) > len(bases) {
 		return res, errors.New(client.ErrorPrefix + ": more scalars than bases")
 	}
-	if len(scalars) == 0 {
-		return res, nil
-	}
-	name, start, ok := bridge.ResolveSlice(&a.bases, bases[:len(scalars)])
-	if !ok {
-		return res, errors.New(client.ErrorPrefix + ": bases are not part of the proving key SRS")
-	}
-	packed, err := client.MSMG1(a.handle, name, start, scalarsRegularLE(scalars))
-	if err != nil {
+	packed, err := bridge.MSM(&a.key, "g1", bases[:len(scalars)], scalarsRegularLE(scalars))
+	if err != nil || packed == nil {
 		return res, err
 	}
 	return decodeG1(packed)
@@ -174,83 +142,55 @@ func (a *Accelerator) ComputeNumerator(in *native.NumeratorInput) (*iop.Polynomi
 	// point them at the cached canonical copies (read-only from here on).
 	cache.canonical.applyTo(statics)
 
+	// witness vectors, Lagrange basis, in one contiguous buffer
 	dynamic := append([]*iop.Polynomial{in.L, in.R, in.O, in.Z, in.Qk}, in.Pi...)
-	commitmentCount := len(in.Pi)
-	vectorBytes := n * fr.Bytes
-	dynamicPacked := make([]byte, len(dynamic)*vectorBytes)
+	dynamicValues := make([]fr.Element, len(dynamic)*n)
 	for i, p := range dynamic {
 		if p == nil || len(p.Coefficients()) != n {
 			return nil, fmt.Errorf("%s: numerator input %d is missing or has the wrong size", client.ErrorPrefix, i)
 		}
-		packRegularLE(dynamicPacked[i*vectorBytes:(i+1)*vectorBytes], p.Coefficients())
+		copy(dynamicValues[i*n:], p.Coefficients())
 	}
 
 	// blinding polynomials, scaled per coset: bl(X) · ((s·ωⁱ)ⁿ − 1) with the
-	// power of the coset shifter folded into the coefficients.
+	// power of the coset shifter folded into the coefficients
 	blinds := [][]fr.Element{in.Bl.Coefficients(), in.Br.Coefficients(), in.Bo.Coefficients(), in.Bz.Coefficients()}
 	blindCoeffCount := 0
 	for _, b := range blinds {
 		blindCoeffCount = max(blindCoeffCount, len(b))
 	}
-	blindBytes := len(blinds) * blindCoeffCount * fr.Bytes
-	blindsPacked := make([]byte, rho*blindBytes)
-	scalarsPacked := make([]byte, rho*numeratorScalars*fr.Bytes)
+	blindValues := make([]fr.Element, rho*len(blinds)*blindCoeffCount)
+	scalarValues := make([]fr.Element, rho*numeratorScalars)
 	aux := &cache.aux
 	for i := 0; i < rho; i++ {
 		for j, b := range blinds {
-			start := i*blindBytes + j*blindCoeffCount*fr.Bytes
+			out := blindValues[(i*len(blinds)+j)*blindCoeffCount:]
 			acc := aux.cosetExpMinusOnes[i]
 			for k := range b {
-				var scaled fr.Element
-				scaled.Mul(&b[k], &acc)
-				fr.LittleEndian.PutElement((*[fr.Bytes]byte)(blindsPacked[start+k*fr.Bytes:start+(k+1)*fr.Bytes]), scaled)
+				out[k].Mul(&b[k], &acc)
 				acc.Mul(&acc, &aux.cosets[i])
 			}
 		}
-		packRegularLE(scalarsPacked[i*numeratorScalars*fr.Bytes:(i+1)*numeratorScalars*fr.Bytes], []fr.Element{
+		copy(scalarValues[i*numeratorScalars:], []fr.Element{
 			aux.cosets[i], aux.lagrangeScales[i], aux.cs, aux.css, in.Beta, in.Gamma, in.Alpha,
 		})
 	}
 
-	a.mu.Lock()
-	uploaded := cache.uploaded
-	a.mu.Unlock()
-	var staticPacked, twiddles, scaling, denominators []byte
-	if !uploaded {
-		staticPacked = cache.packCosets()
-		twiddles, scaling, denominators = aux.twiddlesPacked, aux.scalingPacked, aux.denominatorsPacked
-	}
-	out, err := client.TransformAndEvaluateQuotientCosets(curveKey,
-		dynamicPacked, scaling, staticPacked, cache.staticKeysPacked(), twiddles, denominators, blindsPacked, scalarsPacked,
-		n, blindCoeffCount, commitmentCount, int(nextCacheKey()), rho, int(cache.auxKey))
-	if err != nil {
+	// the numerator comes back directly in the bit-reversed layout of the
+	// large domain, and the witness vectors in canonical form
+	numerator := make([]fr.Element, in.Domain1.Cardinality)
+	canonical := make([]fr.Element, len(dynamicValues))
+	if err := client.EvaluateQuotient(curveKey, cache.key,
+		bridge.Bytes(dynamicValues), bridge.Bytes(blindValues), bridge.Bytes(scalarValues),
+		n, blindCoeffCount, len(in.Pi), rho,
+		bridge.Bytes(numerator), bridge.Bytes(canonical)); err != nil {
 		return nil, err
 	}
-	if len(out) != rho*vectorBytes {
-		return nil, fmt.Errorf("%s: numerator kernel returned %d bytes, expected %d", client.ErrorPrefix, len(out), rho*vectorBytes)
+	for i, p := range dynamic {
+		copy(p.Coefficients(), canonical[i*n:(i+1)*n])
+		p.Basis, p.Layout = iop.Canonical, iop.Regular
 	}
-	a.mu.Lock()
-	cache.uploaded = true
-	a.mu.Unlock()
-
-	// the result is built in bit reverse order on the large domain
-	cres := make([]fr.Element, in.Domain1.Cardinality)
-	buf := make([]fr.Element, n)
-	mm := uint64(64 - bits.TrailingZeros64(in.Domain1.Cardinality))
-	for i := 0; i < rho; i++ {
-		if err := unpackRegularLE(buf, out[i*vectorBytes:(i+1)*vectorBytes]); err != nil {
-			return nil, err
-		}
-		for j := 0; j < n; j++ {
-			cres[bits.Reverse64(uint64(rho*j+i))>>mm] = buf[j]
-		}
-	}
-
-	// the prover opens L, R, O, Z and the committed values later: back to canonical form
-	if err := canonicalize(append([]*iop.Polynomial{in.L, in.R, in.O, in.Z}, in.Pi...)); err != nil {
-		return nil, err
-	}
-	return iop.NewPolynomial(&cres, iop.Form{Basis: iop.LagrangeCoset, Layout: iop.BitReverse}), nil
+	return iop.NewPolynomial(&numerator, iop.Form{Basis: iop.LagrangeCoset, Layout: iop.BitReverse}), nil
 }
 
 // staticPolys are the circuit polynomials of the trace.
@@ -285,23 +225,19 @@ func (p staticPolys) applyTo(dst staticPolys) {
 }
 
 // numeratorCache holds, for one circuit, the circuit polynomials in canonical
-// form and evaluated on each of the ρ cosets, plus the per-coset tables the
-// kernel needs. The static vectors are uploaded to the GPU once and referenced
-// by cache keys afterwards.
+// form (the prover reads them after the numerator is computed) and the small
+// per-coset tables. The canonical polynomials and the tables are uploaded once
+// to the GPU under key, where the coset evaluations are recomputed at each proof.
 type numeratorCache struct {
 	n, rho, qcpCount int
 	canonical        staticPolys
-	cosets           []staticPolys
 	aux              numeratorAux
-	staticKeys       []uint32
-	auxKey           uint32
-	uploaded         bool
+	key              uint32
 }
 
 type numeratorAux struct {
-	twiddlesPacked, scalingPacked, denominatorsPacked []byte
-	cosets, cosetExpMinusOnes, lagrangeScales         []fr.Element
-	cs, css                                           fr.Element
+	cosets, cosetExpMinusOnes, lagrangeScales []fr.Element
+	cs, css                                   fr.Element
 }
 
 var (
@@ -328,126 +264,70 @@ func (a *Accelerator) numeratorCache(domain0, domain1 *fft.Domain, statics stati
 	if c := a.cache; c != nil && c.n == n && c.rho == rho && c.qcpCount == len(statics.qcp) {
 		return c, nil
 	}
+	if a.cache != nil {
+		if err := client.ReleaseQuotientStatics(curveKey, a.cache.key); err != nil {
+			return nil, err
+		}
+		a.cache = nil
+	}
 
 	canonical := statics.clone()
 	if err := canonicalize(canonical.all()); err != nil {
 		return nil, err
 	}
-	cosetTable, err := domain0.CosetTable()
+	all := canonical.all()
+	staticValues := make([]fr.Element, len(all)*n)
+	for i, p := range all {
+		copy(staticValues[i*n:], p.Coefficients())
+	}
+	aux, scaling, twiddles, denominators, err := buildNumeratorAux(domain0, domain1)
 	if err != nil {
 		return nil, err
 	}
-	scaling := cosetTable
-	working := canonical.clone()
-	cosets := make([]staticPolys, rho)
-	for i := 0; i < rho; i++ {
-		if i == 1 {
-			// from the second coset on, shift by the generator of the large domain
-			scaling = make([]fr.Element, n)
-			fft.BuildExpTable(domain1.Generator, scaling)
-		}
-		if err := toCoset(working.all(), scaling); err != nil {
-			return nil, err
-		}
-		cosets[i] = working.clone()
-	}
-	aux, err := buildNumeratorAux(domain0, domain1)
-	if err != nil {
+	c := &numeratorCache{n: n, rho: rho, qcpCount: len(statics.qcp), canonical: canonical, aux: aux, key: nextCacheKey()}
+	if err := client.PreloadQuotientStatics(curveKey, c.key,
+		bridge.Bytes(staticValues), bridge.Bytes(scaling), bridge.Bytes(twiddles), bridge.Bytes(denominators),
+		n, len(all), rho); err != nil {
 		return nil, err
-	}
-	c := &numeratorCache{
-		n: n, rho: rho, qcpCount: len(statics.qcp),
-		canonical: canonical, cosets: cosets, aux: aux,
-		staticKeys: make([]uint32, rho), auxKey: nextCacheKey(),
-	}
-	for i := range c.staticKeys {
-		c.staticKeys[i] = nextCacheKey()
 	}
 	a.cache = c
 	return c, nil
 }
 
-// uploadStatics sends the static kernel inputs to the runtime ahead of the first proof.
-func (a *Accelerator) uploadStatics(c *numeratorCache) error {
-	a.mu.Lock()
-	uploaded := c.uploaded
-	a.mu.Unlock()
-	if uploaded {
-		return nil
-	}
-	if err := client.PreloadQuotientStaticAndAux(curveKey,
-		c.packCosets(), c.staticKeysPacked(), c.aux.scalingPacked, c.aux.twiddlesPacked, c.aux.denominatorsPacked,
-		c.n, numeratorStaticVectors+c.qcpCount, c.rho, int(c.auxKey)); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	c.uploaded = true
-	a.mu.Unlock()
-	return nil
-}
-
-func (c *numeratorCache) staticKeysPacked() []byte {
-	out := make([]byte, 4*len(c.staticKeys))
-	for i, k := range c.staticKeys {
-		out[4*i], out[4*i+1], out[4*i+2], out[4*i+3] = byte(k), byte(k>>8), byte(k>>16), byte(k>>24)
-	}
-	return out
-}
-
-// packCosets packs, coset after coset, the static vectors in regular little-endian form.
-func (c *numeratorCache) packCosets() []byte {
-	vectorBytes := c.n * fr.Bytes
-	perCoset := (numeratorStaticVectors + c.qcpCount) * vectorBytes
-	out := make([]byte, c.rho*perCoset)
-	for i, coset := range c.cosets {
-		for j, p := range coset.all() {
-			start := i*perCoset + j*vectorBytes
-			packRegularLE(out[start:start+vectorBytes], p.Coefficients())
-		}
-	}
-	return out
-}
-
 // buildNumeratorAux computes the per-coset tables of the CPU prover's
-// computeNumerator: twiddles of the small domain, coset scaling vectors, the
-// inverses of (s·ωⁱ − 1) used by L₁, and the per-coset scalars.
-func buildNumeratorAux(domain0, domain1 *fft.Domain) (numeratorAux, error) {
+// computeNumerator: the twiddles of the small domain, the coset scaling
+// vectors, the inverses of (s·ωⁱ − 1) used by L₁, and the per-coset scalars.
+func buildNumeratorAux(domain0, domain1 *fft.Domain) (aux numeratorAux, scaling, twiddles, denominators []fr.Element, err error) {
 	n := int(domain0.Cardinality)
 	rho := int(domain1.Cardinality / domain0.Cardinality)
-	twiddles0 := make([]fr.Element, n)
+	twiddles = make([]fr.Element, n)
 	if n == 1 {
-		twiddles0[0].SetOne()
+		twiddles[0].SetOne()
 	} else {
-		twiddles, err := domain0.Twiddles()
+		tw, err := domain0.Twiddles()
 		if err != nil {
-			return numeratorAux{}, err
+			return aux, nil, nil, nil, err
 		}
-		copy(twiddles0, twiddles[0])
-		w := twiddles0[1]
-		for i := len(twiddles[0]); i < n; i++ {
-			twiddles0[i].Mul(&twiddles0[i-1], &w)
+		copy(twiddles, tw[0])
+		w := twiddles[1]
+		for i := len(tw[0]); i < n; i++ {
+			twiddles[i].Mul(&twiddles[i-1], &w)
 		}
 	}
 	cosetTable, err := domain0.CosetTable()
 	if err != nil {
-		return numeratorAux{}, err
+		return aux, nil, nil, nil, err
 	}
-	vectorBytes := n * fr.Bytes
-	aux := numeratorAux{
-		twiddlesPacked:     make([]byte, vectorBytes),
-		scalingPacked:      make([]byte, rho*vectorBytes),
-		denominatorsPacked: make([]byte, rho*vectorBytes),
-		cosets:             make([]fr.Element, rho),
-		cosetExpMinusOnes:  make([]fr.Element, rho),
-		lagrangeScales:     make([]fr.Element, rho),
+	aux = numeratorAux{
+		cosets:            make([]fr.Element, rho),
+		cosetExpMinusOnes: make([]fr.Element, rho),
+		lagrangeScales:    make([]fr.Element, rho),
 	}
-	packRegularLE(aux.twiddlesPacked, twiddles0)
 	aux.cs.Set(&domain1.FrMultiplicativeGen)
 	aux.css.Square(&aux.cs)
-
-	denominators := make([]fr.Element, n)
+	scaling = make([]fr.Element, rho*n)
+	denominators = make([]fr.Element, rho*n)
 	buf := make([]fr.Element, n)
-	scaling := make([]fr.Element, n)
 	var coset, one fr.Element
 	coset.SetOne()
 	one.SetOne()
@@ -461,19 +341,18 @@ func buildNumeratorAux(domain0, domain1 *fft.Domain) (numeratorAux, error) {
 		aux.cosets[i] = coset
 		aux.cosetExpMinusOnes[i].Exp(coset, bn).Sub(&aux.cosetExpMinusOnes[i], &one)
 		aux.lagrangeScales[i].Mul(&aux.cosetExpMinusOnes[i], &domain0.CardinalityInv)
+		den := denominators[i*n : (i+1)*n]
 		for j := 0; j < n; j++ {
-			denominators[j].Mul(&coset, &twiddles0[j]).Sub(&denominators[j], &one)
+			den[j].Mul(&coset, &twiddles[j]).Sub(&den[j], &one)
 		}
-		batchInvert(denominators, buf)
-		packRegularLE(aux.denominatorsPacked[i*vectorBytes:(i+1)*vectorBytes], denominators)
+		batchInvert(den, buf)
 		if i == 0 {
-			packRegularLE(aux.scalingPacked[:vectorBytes], cosetTable)
+			copy(scaling[:n], cosetTable)
 		} else {
-			fft.BuildExpTable(coset, scaling)
-			packRegularLE(aux.scalingPacked[i*vectorBytes:(i+1)*vectorBytes], scaling)
+			fft.BuildExpTable(coset, scaling[i*n:(i+1)*n])
 		}
 	}
-	return aux, nil
+	return aux, scaling, twiddles, denominators, nil
 }
 
 // batchInvert inverts vec in place with the Montgomery trick, using buf as scratch.
@@ -489,21 +368,6 @@ func batchInvert(vec, buf []fr.Element) {
 		acc.Mul(&acc, &buf[i])
 	}
 	vec[0].Set(&acc)
-}
-
-// toCoset moves canonical polynomials to the Lagrange basis of the coset
-// described by scaling (evaluation at scaling[j]·ωʲ).
-func toCoset(polys []*iop.Polynomial, scaling []fr.Element) error {
-	if err := canonicalize(polys); err != nil {
-		return err
-	}
-	for _, p := range polys {
-		c := p.Coefficients()
-		for j := range c {
-			c[j].Mul(&c[j], &scaling[j])
-		}
-	}
-	return toLagrange(polys)
 }
 
 type canonicalizeKey struct{ bitReversed, coset bool }
@@ -536,85 +400,16 @@ func canonicalize(polys []*iop.Polynomial) error {
 		groups[k] = append(groups[k], p)
 	}
 	for k, group := range groups {
-		if err := transform(group, n, func(packed []byte) ([]byte, error) {
-			return client.CanonicalizeQuotientVectors(curveKey, packed, len(group), n, k.bitReversed, k.coset)
-		}, iop.Form{Basis: iop.Canonical, Layout: iop.Regular}); err != nil {
+		values := make([]fr.Element, len(group)*n)
+		for i, p := range group {
+			copy(values[i*n:], p.Coefficients())
+		}
+		if err := client.CanonicalizeVectors(curveKey, bridge.Bytes(values), len(group), n, k.bitReversed, k.coset, bridge.Bytes(values)); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-// toLagrange converts canonical Regular polynomials in place to Lagrange basis.
-func toLagrange(polys []*iop.Polynomial) error {
-	var group []*iop.Polynomial
-	n := -1
-	for _, p := range polys {
-		if p == nil {
-			continue
-		}
-		if p.Basis == iop.Lagrange {
-			p.ToRegular()
-			continue
-		}
-		if p.Basis != iop.Canonical || p.Layout != iop.Regular {
-			return fmt.Errorf("%s: expected canonical regular polynomial, got basis %d layout %d", client.ErrorPrefix, p.Basis, p.Layout)
-		}
-		if n < 0 {
-			n = len(p.Coefficients())
-		} else if len(p.Coefficients()) != n {
-			return errors.New(client.ErrorPrefix + ": toLagrange: polynomials of different sizes")
-		}
-		group = append(group, p)
-	}
-	if len(group) == 0 {
-		return nil
-	}
-	return transform(group, n, func(packed []byte) ([]byte, error) {
-		return client.LagrangeQuotientVectors(curveKey, packed, len(group), n)
-	}, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
-}
-
-// transform packs the coefficients of group, runs fn on the GPU and unpacks the
-// result back in place, setting the polynomials' form to out.
-func transform(group []*iop.Polynomial, n int, fn func([]byte) ([]byte, error), out iop.Form) error {
-	vectorBytes := n * fr.Bytes
-	packed := make([]byte, len(group)*vectorBytes)
-	for i, p := range group {
-		packRegularLE(packed[i*vectorBytes:(i+1)*vectorBytes], p.Coefficients())
-	}
-	res, err := fn(packed)
-	if err != nil {
-		return err
-	}
-	if len(res) != len(packed) {
-		return fmt.Errorf("%s: transform returned %d bytes, expected %d", client.ErrorPrefix, len(res), len(packed))
-	}
-	for i, p := range group {
-		if err := unpackRegularLE(p.Coefficients(), res[i*vectorBytes:(i+1)*vectorBytes]); err != nil {
-			return err
-		}
-		p.Basis, p.Layout = out.Basis, out.Layout
-	}
-	return nil
-}
-
-// packRegularLE writes values in regular (non Montgomery) little-endian form.
-func packRegularLE(dst []byte, values []fr.Element) {
-	for i := range values {
-		fr.LittleEndian.PutElement((*[fr.Bytes]byte)(dst[i*fr.Bytes:(i+1)*fr.Bytes]), values[i])
-	}
-}
-
-// unpackRegularLE reads regular little-endian elements, rejecting non reduced values.
-func unpackRegularLE(dst []fr.Element, src []byte) error {
-	if len(src) != len(dst)*fr.Bytes {
-		return fmt.Errorf("%s: expected %d bytes, got %d", client.ErrorPrefix, len(dst)*fr.Bytes, len(src))
-	}
-	for i := range dst {
-		var err error
-		if dst[i], err = fr.LittleEndian.Element((*[fr.Bytes]byte)(src[i*fr.Bytes : (i+1)*fr.Bytes])); err != nil {
-			return fmt.Errorf("%s: %w", client.ErrorPrefix, err)
+		for i, p := range group {
+			copy(p.Coefficients(), values[i*n:(i+1)*n])
+			p.Basis, p.Layout = iop.Canonical, iop.Regular
 		}
 	}
 	return nil
@@ -622,31 +417,21 @@ func unpackRegularLE(dst []fr.Element, src []byte) error {
 
 func scalarsRegularLE(scalars []fr.Element) []byte {
 	out := make([]byte, len(scalars)*fr.Bytes)
-	packRegularLE(out, scalars)
+	for i := range scalars {
+		fr.LittleEndian.PutElement((*[fr.Bytes]byte)(out[i*fr.Bytes:(i+1)*fr.Bytes]), scalars[i])
+	}
 	return out
 }
 
-var fpModulusLimbs = func() (m [fp.Limbs]uint64) {
-	words := new(big.Int).Set(fp.Modulus()).Bits()
-	for i := range words {
-		m[i] = uint64(words[i])
-	}
-	return
-}()
+var fpModulusLimbs = bridge.ModulusLimbs(fp.Modulus(), fp.Limbs)
 
 // decodeFp reads a Montgomery-form little-endian base field element and checks
 // that it is reduced.
 func decodeFp(z *fp.Element, b []byte) error {
-	copy(bridge.Bytes(z[:]), b)
-	for i := fp.Limbs - 1; i >= 0; i-- {
-		if z[i] < fpModulusLimbs[i] {
-			return nil
-		}
-		if z[i] > fpModulusLimbs[i] {
-			break
-		}
+	if err := bridge.DecodeLimbs(z[:], b, fpModulusLimbs); err != nil {
+		return fmt.Errorf("%s: %w", client.ErrorPrefix, err)
 	}
-	return errors.New(client.ErrorPrefix + ": GPU returned a non reduced field element")
+	return nil
 }
 
 func decodeG1(b []byte) (curve.G1Affine, error) {

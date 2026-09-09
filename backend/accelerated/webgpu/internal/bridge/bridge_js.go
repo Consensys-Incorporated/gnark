@@ -214,55 +214,71 @@ func (c Client) PrewarmQuotientDomain(curve string, n int) error {
 	return err
 }
 
-// CanonicalizeQuotientVectors converts vectorCount vectors of n regular
-// elements from Lagrange (or Lagrange-coset) basis to canonical basis.
-func (c Client) CanonicalizeQuotientVectors(curve string, valuesRegularLE []byte, vectorCount, n int, inputBitReversed, inverseCoset bool) ([]byte, error) {
-	return c.callBytes("canonicalizeQuotientVectors", curve, Uint8Array(valuesRegularLE), vectorCount, n, inputBitReversed, inverseCoset)
+// CanonicalizeVectors converts, in place semantics, vectorCount vectors of n
+// Montgomery elements from Lagrange (or Lagrange-coset, inverseCoset) basis in
+// Regular (or BitReverse, inputBitReversed) layout to canonical basis, Regular
+// layout, copying the result into dst.
+func (c Client) CanonicalizeVectors(curve string, values []byte, vectorCount, n int, inputBitReversed, inverseCoset bool, dst []byte) error {
+	return c.callBytesInto(dst, "canonicalizeVectors", curve, Uint8Array(values), vectorCount, n, inputBitReversed, inverseCoset)
 }
 
-// LagrangeQuotientVectors converts vectorCount canonical vectors of n regular
-// elements to Lagrange basis.
-func (c Client) LagrangeQuotientVectors(curve string, valuesRegularLE []byte, vectorCount, n int) ([]byte, error) {
-	return c.callBytes("lagrangeQuotientVectors", curve, Uint8Array(valuesRegularLE), vectorCount, n)
-}
-
-// TransformAndEvaluateQuotientCosets runs the fused PLONK numerator kernel.
-func (c Client) TransformAndEvaluateQuotientCosets(
-	curve string,
-	dynamic, scaling, static, staticKeys, twiddles, denominators, blinds, scalars []byte,
-	n, blindCoeffCount, commitmentCount, dynamicKey, cosetCount, auxKey int,
-) ([]byte, error) {
-	return c.callBytes("transformAndEvaluateQuotientCosets", curve,
-		Uint8Array(dynamic), Uint8Array(scaling), Uint8Array(static), Uint8Array(staticKeys),
-		Uint8Array(twiddles), Uint8Array(denominators), Uint8Array(blinds), Uint8Array(scalars),
-		n, blindCoeffCount, commitmentCount, dynamicKey, cosetCount, auxKey)
-}
-
-// PreloadQuotientStaticAndAux uploads the static PLONK numerator inputs.
-func (c Client) PreloadQuotientStaticAndAux(
-	curve string,
-	static, staticKeys, scaling, twiddles, denominators []byte,
-	n, staticVectorCount, cosetCount, auxKey int,
-) error {
-	_, err := c.call("preloadQuotientStaticAndAux", curve,
-		Uint8Array(static), Uint8Array(staticKeys), Uint8Array(scaling), Uint8Array(twiddles), Uint8Array(denominators),
-		n, staticVectorCount, cosetCount, auxKey)
+// PreloadQuotientStatics uploads, under key, the circuit polynomials of a PLONK
+// proving key in canonical form (staticVectorCount vectors of n Montgomery
+// elements) together with the per-coset tables the numerator kernel needs:
+// scaling (cosetCount vectors: the coset shift powers), twiddles (one vector:
+// the powers of the small domain generator) and denominators (cosetCount
+// vectors: 1/(s·ωⁱ−1)). They stay resident on the GPU until ReleaseQuotientStatics.
+func (c Client) PreloadQuotientStatics(curve string, key uint32, statics, scaling, twiddles, denominators []byte, n, staticVectorCount, cosetCount int) error {
+	_, err := c.call("preloadQuotientStatics", curve, key,
+		Uint8Array(statics), Uint8Array(scaling), Uint8Array(twiddles), Uint8Array(denominators),
+		n, staticVectorCount, cosetCount)
 	return err
 }
 
-// PrewarmQuotientTransformDomain, PrewarmQuotientEvaluateKernel and
-// PrewarmQuotientCanonicalizeDomain compile and cache the PLONK kernels.
-func (c Client) PrewarmQuotientTransformDomain(curve string, n int) error {
-	_, err := c.call("prewarmQuotientTransformDomain", curve, n)
+// ReleaseQuotientStatics frees the buffers uploaded by PreloadQuotientStatics.
+func (c Client) ReleaseQuotientStatics(curve string, key uint32) error {
+	_, err := c.call("releaseQuotientStatics", curve, key)
 	return err
 }
 
-func (c Client) PrewarmQuotientEvaluateKernel(curve string, commitmentCount int) error {
-	_, err := c.call("prewarmQuotientEvaluateKernel", curve, commitmentCount)
-	return err
+// EvaluateQuotient evaluates the PLONK numerator on the cosetCount cosets of
+// the large domain. dynamic holds the witness vectors (L, R, O, Z, Qk, then the
+// committed values) in Lagrange basis, blinds the blinding coefficients scaled
+// per coset and scalars the per-coset challenges, all Montgomery. The numerator
+// (cosetCount·n elements, already in the bit-reversed layout of the large
+// domain) is copied into numerator and the canonical form of the dynamic
+// vectors into canonical.
+func (c Client) EvaluateQuotient(curve string, key uint32, dynamic, blinds, scalars []byte, n, blindCoeffCount, commitmentCount, cosetCount int, numerator, canonical []byte) error {
+	value, err := c.call("evaluateQuotient", curve, key,
+		Uint8Array(dynamic), Uint8Array(blinds), Uint8Array(scalars),
+		n, blindCoeffCount, commitmentCount, cosetCount)
+	if err != nil {
+		return err
+	}
+	if err := c.copyField(value, "numerator", numerator); err != nil {
+		return err
+	}
+	return c.copyField(value, "canonical", canonical)
 }
 
-func (c Client) PrewarmQuotientCanonicalizeDomain(curve string, n int) error {
-	_, err := c.call("prewarmQuotientCanonicalizeDomain", curve, n)
+func (c Client) copyField(obj js.Value, field string, dst []byte) error {
+	v := obj.Get(field)
+	n, err := c.byteLength(v)
+	if err != nil {
+		return err
+	}
+	if n != len(dst) {
+		return fmt.Errorf("%s: %s has %d bytes, expected %d", c.ErrorPrefix, field, n, len(dst))
+	}
+	if n > 0 {
+		js.CopyBytesToGo(dst, v)
+	}
+	return nil
+}
+
+// PrewarmQuotient compiles the PLONK kernels and FFT tables for a small domain
+// of size n, cosetCount cosets and commitmentCount BSB22 commitments.
+func (c Client) PrewarmQuotient(curve string, n, cosetCount, commitmentCount int) error {
+	_, err := c.call("prewarmQuotient", curve, n, cosetCount, commitmentCount)
 	return err
 }

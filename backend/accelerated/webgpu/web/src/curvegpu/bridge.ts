@@ -38,14 +38,16 @@
  *   them straight into `[]fr.Element`.
  * - `prewarmQuotientDomain(curve, n)`.
  *
- * PLONK only (all vectors are regular little-endian unless noted):
+ * PLONK only (all vectors are Montgomery little-endian):
  *
- * - `canonicalizeQuotientVectors(curve, values, vectorCount, elementCount, inputBitReversed, inverseCoset)`
- * - `lagrangeQuotientVectors(curve, values, vectorCount, elementCount)`
- * - `transformAndEvaluateQuotientCosets(curve, dynamic, scaling, static, staticMontCacheKeys, twiddles, denominators, blinds, scalars, elementCount, blindCoeffCount, commitmentCount, dynamicTransformCacheKey, cosetCount, auxMontCacheKey)`
- * - `preloadQuotientStaticAndAux(curve, static, staticMontCacheKeys, scaling, twiddles, denominators, elementCount, staticVectorCount, cosetCount, auxMontCacheKey)`
- * - `prewarmQuotientTransformDomain(curve, n)`, `prewarmQuotientCanonicalizeDomain(curve, n)`,
- *   `prewarmQuotientEvaluateKernel(curve, commitmentCount)`.
+ * - `canonicalizeVectors(curve, values, vectorCount, elementCount, inputBitReversed, inverseCoset)`:
+ *   Lagrange (or Lagrange-coset) to canonical basis, Regular layout.
+ * - `preloadQuotientStatics(curve, key, statics, scaling, twiddles, denominators, elementCount, staticVectorCount, cosetCount)`:
+ *   uploads the canonical circuit polynomials and the per-coset tables once; `releaseQuotientStatics(curve, key)` frees them.
+ * - `evaluateQuotient(curve, key, dynamic, blinds, scalars, elementCount, blindCoeffCount, commitmentCount, cosetCount)`
+ *   -> `{ numerator, canonical }`: the numerator on all cosets in the bit-reversed layout of the large
+ *   domain, and the canonical form of the dynamic vectors.
+ * - `prewarmQuotient(curve, elementCount, cosetCount, commitmentCount)`.
  */
 import type {
   CurveGPUContext,
@@ -253,158 +255,68 @@ export function installGroth16WebGPUBridge(dependencies: Groth16BridgeDependenci
 
 const plonkRegistry = new BridgeRegistry<PlonkBridgeDependencies>("PLONK");
 
-/**
- * Apply `transform` to each of `vectorCount` consecutive vectors of
- * `elementCount` elements and concatenate the results.
- */
-async function mapVectors(
-  deps: PlonkBridgeDependencies,
-  valuesPacked: Uint8Array,
-  vectorCount: number,
-  elementCount: number,
-  label: string,
-  transform: (vector: Uint8Array) => Promise<Uint8Array>,
-): Promise<Uint8Array> {
-  const vectorBytes = elementCount * deps.fr.byteSize;
-  assertPositive(vectorCount, `invalid PLONK quotient ${label} vector count`);
-  assertPowerOfTwo(elementCount, `invalid PLONK quotient ${label} element count`);
-  if (valuesPacked.byteLength !== vectorCount * vectorBytes) {
-    throw new Error(`PLONK quotient ${label} expected ${vectorCount * vectorBytes} value bytes, got ${valuesPacked.byteLength}`);
-  }
-  const out = new Uint8Array(valuesPacked.byteLength);
-  await Promise.all(
-    Array.from({ length: vectorCount }, async (_, i) => {
-      const start = i * vectorBytes;
-      out.set(await transform(cloneBytes(valuesPacked.subarray(start, start + vectorBytes))), start);
-    }),
-  );
-  return out;
-}
-
-async function canonicalizeQuotientVectors(
-  curve: SupportedCurveID,
-  valuesPacked: Uint8Array,
-  vectorCount: number,
-  elementCount: number,
-  inputBitReversed: boolean,
-  inverseCoset: boolean,
-): Promise<Uint8Array> {
-  const deps = plonkRegistry.deps(curve);
-  const { ntt } = deps;
-  const transform = inverseCoset
-    ? inputBitReversed
-      ? ntt.inverseCosetBitReversePackedRegular
-      : ntt.inverseCosetPackedRegular
-    : inputBitReversed
-      ? ntt.inverseBitReversePackedRegular
-      : ntt.inversePackedRegular;
-  return mapVectors(deps, valuesPacked, vectorCount, elementCount, "canonicalize", transform);
-}
-
-async function lagrangeQuotientVectors(curve: SupportedCurveID, valuesPacked: Uint8Array, vectorCount: number, elementCount: number): Promise<Uint8Array> {
-  const deps = plonkRegistry.deps(curve);
-  return mapVectors(deps, valuesPacked, vectorCount, elementCount, "lagrange", deps.ntt.forwardPackedRegular);
-}
-
-/** Evaluate `vectorCount` polynomials (given by evaluations) on the coset described by `scalingPacked`. */
-async function transformQuotientCoset(
-  curve: SupportedCurveID,
-  valuesPacked: Uint8Array,
-  scalingPacked: Uint8Array,
-  vectorCount: number,
-  elementCount: number,
-): Promise<Uint8Array> {
-  const deps = plonkRegistry.deps(curve);
-  const { fr, ntt } = deps;
-  if (scalingPacked.byteLength !== elementCount * fr.byteSize) {
-    throw new Error(`PLONK quotient transform expected ${elementCount * fr.byteSize} scaling bytes, got ${scalingPacked.byteLength}`);
-  }
-  const scalingMont = await fr.toMontgomeryPacked(cloneBytes(scalingPacked));
-  return mapVectors(deps, valuesPacked, vectorCount, elementCount, "transform", async (values) => {
-    const coeffMont = await ntt.inversePackedMont(await fr.toMontgomeryPacked(values));
-    const shiftedEvalMont = await ntt.forwardPackedMont(await fr.mulPackedMont(coeffMont, scalingMont));
-    return fr.fromMontgomeryPacked(shiftedEvalMont);
-  });
-}
-
 export function installPlonkWebGPUBridge(dependencies: PlonkBridgeDependencies): void {
   plonkRegistry.register(dependencies);
   installGlobal("gnarkPlonkWebGPU", {
     ...plonkRegistry.commonMethods(),
-    canonicalizeQuotientVectors,
-    lagrangeQuotientVectors,
-    transformAndEvaluateQuotientCosets: async (
+    canonicalizeVectors: async (
       curve: SupportedCurveID,
-      dynamicValuesPacked: Uint8Array,
-      scalingPacked: Uint8Array,
-      staticValuesPacked: Uint8Array,
-      staticMontCacheKeysPacked: Uint8Array,
-      twiddlesPacked: Uint8Array,
-      denominatorsPacked: Uint8Array,
-      blindsPacked: Uint8Array,
-      scalarsPacked: Uint8Array,
+      values: Uint8Array,
+      vectorCount: number,
       elementCount: number,
-      blindCoeffCount: number,
-      commitmentCount: number,
-      dynamicTransformCacheKey: number,
-      cosetCount: number,
-      auxMontCacheKey: number,
-    ) =>
-      plonkRegistry.deps(curve).quotient.transformAndEvaluateQuotientCosets({
-        dynamicValuesPacked,
-        scalingPacked,
-        staticValuesPacked,
-        staticMontCacheKeysPacked,
-        twiddlesPacked,
-        denominatorsPacked,
-        blindsPacked,
-        scalarsPacked,
-        elementCount,
-        blindCoeffCount,
-        commitmentCount,
-        dynamicTransformCacheKey,
-        cosetCount,
-        auxMontCacheKey,
-      }),
-    preloadQuotientStaticAndAux: async (
+      inputBitReversed: boolean,
+      inverseCoset: boolean,
+    ) => {
+      const { fr, ntt } = plonkRegistry.deps(curve);
+      assertPositive(vectorCount, "invalid PLONK canonicalize vector count");
+      assertPowerOfTwo(elementCount, "invalid PLONK canonicalize element count");
+      if (values.byteLength !== vectorCount * elementCount * fr.byteSize) {
+        throw new Error(`PLONK canonicalize expected ${vectorCount * elementCount * fr.byteSize} bytes, got ${values.byteLength}`);
+      }
+      return ntt.transformPackedMont(cloneBytes(values), { inverse: true, vectorCount, inputBitReversed, inverseCoset });
+    },
+    preloadQuotientStatics: async (
       curve: SupportedCurveID,
-      staticValuesPacked: Uint8Array,
-      staticMontCacheKeysPacked: Uint8Array,
-      scalingPacked: Uint8Array,
-      twiddlesPacked: Uint8Array,
-      denominatorsPacked: Uint8Array,
+      key: number,
+      statics: Uint8Array,
+      scaling: Uint8Array,
+      twiddles: Uint8Array,
+      denominators: Uint8Array,
       elementCount: number,
       staticVectorCount: number,
       cosetCount: number,
-      auxMontCacheKey: number,
     ) =>
-      plonkRegistry.deps(curve).quotient.preloadQuotientStaticAndAux({
-        staticValuesPacked,
-        staticMontCacheKeysPacked,
-        scalingPacked,
-        twiddlesPacked,
-        denominatorsPacked,
-        elementCount,
+      plonkRegistry.deps(curve).quotient.preloadStatics(key, {
+        statics: cloneBytes(statics),
+        scaling: cloneBytes(scaling),
+        twiddles: cloneBytes(twiddles),
+        denominators: cloneBytes(denominators),
+        n: elementCount,
         staticVectorCount,
         cosetCount,
-        auxMontCacheKey,
       }),
-    prewarmQuotientTransformDomain: async (curve: SupportedCurveID, elementCount: number) => {
-      const { fr, ntt } = plonkRegistry.deps(curve);
-      assertPowerOfTwo(elementCount, "invalid PLONK quotient prewarm element count");
-      await ntt.prewarmDomain(elementCount);
-      // Run the exact transform path once so the first prove does not pay lazy initialization.
-      const zeroVector = new Uint8Array(elementCount * fr.byteSize);
-      await transformQuotientCoset(curve, zeroVector, zeroVector, 1, elementCount);
-    },
-    prewarmQuotientCanonicalizeDomain: async (curve: SupportedCurveID, elementCount: number) => {
-      const { fr, ntt } = plonkRegistry.deps(curve);
-      assertPowerOfTwo(elementCount, "invalid PLONK quotient canonicalize prewarm element count");
-      await ntt.prewarmDomain(elementCount);
-      await canonicalizeQuotientVectors(curve, new Uint8Array(elementCount * fr.byteSize), 1, elementCount, true, true);
-    },
-    prewarmQuotientEvaluateKernel: async (curve: SupportedCurveID, commitmentCount = 0) => {
-      await plonkRegistry.deps(curve).quotient.prewarmPlonkQuotientEvaluateKernel(commitmentCount);
-    },
+    releaseQuotientStatics: async (curve: SupportedCurveID, key: number) => plonkRegistry.deps(curve).quotient.releaseStatics(key),
+    evaluateQuotient: async (
+      curve: SupportedCurveID,
+      key: number,
+      dynamic: Uint8Array,
+      blinds: Uint8Array,
+      scalars: Uint8Array,
+      elementCount: number,
+      blindCoeffCount: number,
+      commitmentCount: number,
+      cosetCount: number,
+    ) =>
+      plonkRegistry.deps(curve).quotient.evaluate(key, {
+        dynamic: cloneBytes(dynamic),
+        blinds: cloneBytes(blinds),
+        scalars: cloneBytes(scalars),
+        n: elementCount,
+        blindCoeffCount,
+        commitmentCount,
+        cosetCount,
+      }),
+    prewarmQuotient: async (curve: SupportedCurveID, elementCount: number, cosetCount: number, commitmentCount: number) =>
+      plonkRegistry.deps(curve).quotient.prewarm(elementCount, cosetCount, commitmentCount),
   });
 }
