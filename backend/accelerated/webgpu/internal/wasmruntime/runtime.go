@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"sync"
 	"syscall/js"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -31,8 +32,11 @@ type Config[PK, VK, Proof any] struct {
 	// Prepare, if set, is called once per proving key before its first proof,
 	// with the constraint system when the caller provided one.
 	Prepare func(constraint.ConstraintSystem, PK) error
-	Prove   func(constraint.ConstraintSystem, PK, witness.Witness, ...backend.ProverOption) (Proof, error)
-	Verify  func(Proof, VK, witness.Witness, ...backend.VerifierOption) error
+	// ReleasePK, if set, is called when a proving-key handle is released. It
+	// should detach any accelerator and free its resident GPU resources.
+	ReleasePK func(PK) error
+	Prove     func(constraint.ConstraintSystem, PK, witness.Witness, ...backend.ProverOption) (Proof, error)
+	Verify    func(Proof, VK, witness.Witness, ...backend.VerifierOption) error
 }
 
 var supportedCurves = map[string]ecc.ID{
@@ -45,7 +49,7 @@ type runtime[PK, VK, Proof any] struct {
 	cfg  Config[PK, VK, Proof]
 	next uint64
 	ccs  map[string]entry[constraint.ConstraintSystem]
-	pks  map[string]*entry[PK]
+	pks  map[string]*pkEntry[PK]
 	vks  map[string]entry[VK]
 }
 
@@ -53,6 +57,11 @@ type entry[T any] struct {
 	curve    ecc.ID
 	value    T
 	prepared bool
+}
+
+type pkEntry[T any] struct {
+	entry[T]
+	prepareMu sync.Mutex
 }
 
 // Install publishes the runtime on globalThis. The caller must keep the Go
@@ -69,7 +78,7 @@ func Install[PK, VK, Proof any](cfg Config[PK, VK, Proof]) error {
 	r := &runtime[PK, VK, Proof]{
 		cfg: cfg,
 		ccs: make(map[string]entry[constraint.ConstraintSystem]),
-		pks: make(map[string]*entry[PK]),
+		pks: make(map[string]*pkEntry[PK]),
 		vks: make(map[string]entry[VK]),
 	}
 	obj := js.Global().Get("Object").New()
@@ -157,7 +166,7 @@ func (r *runtime[PK, VK, Proof]) readProvingKey(args []js.Value) (js.Value, erro
 		return js.Undefined(), fmt.Errorf("read pk: %w", err)
 	}
 	handle := r.handle("pk")
-	r.pks[handle] = &entry[PK]{curve: curveID, value: pk}
+	r.pks[handle] = &pkEntry[PK]{entry: entry[PK]{curve: curveID, value: pk}}
 	return object("handle", handle), nil
 }
 
@@ -256,13 +265,24 @@ func (r *runtime[PK, VK, Proof]) release(args []js.Value) (js.Value, error) {
 		return js.Undefined(), fmt.Errorf("missing handle")
 	}
 	handle := args[0].String()
+	if pk, ok := r.pks[handle]; ok {
+		delete(r.pks, handle)
+		if r.cfg.ReleasePK != nil {
+			pk.prepareMu.Lock()
+			defer pk.prepareMu.Unlock()
+			if err := r.cfg.ReleasePK(pk.value); err != nil {
+				return js.Undefined(), fmt.Errorf("release pk: %w", err)
+			}
+		}
+	}
 	delete(r.ccs, handle)
-	delete(r.pks, handle)
 	delete(r.vks, handle)
 	return js.Undefined(), nil
 }
 
-func (r *runtime[PK, VK, Proof]) ensurePrepared(pk *entry[PK], ccs constraint.ConstraintSystem) error {
+func (r *runtime[PK, VK, Proof]) ensurePrepared(pk *pkEntry[PK], ccs constraint.ConstraintSystem) error {
+	pk.prepareMu.Lock()
+	defer pk.prepareMu.Unlock()
 	if pk.prepared || r.cfg.Prepare == nil {
 		return nil
 	}

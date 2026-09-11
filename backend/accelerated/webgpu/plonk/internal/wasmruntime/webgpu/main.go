@@ -20,8 +20,9 @@ func main() {
 		Prepare: func(ccs constraint.ConstraintSystem, pk gnarkplonk.ProvingKey) error {
 			return webgpuplonk.Prepare(pk, ccs)
 		},
-		Prove:  gnarkplonk.Prove,
-		Verify: gnarkplonk.Verify,
+		ReleasePK: webgpuplonk.Release,
+		Prove:     gnarkplonk.Prove,
+		Verify:    gnarkplonk.Verify,
 	}); err != nil {
 		panic(err)
 	}

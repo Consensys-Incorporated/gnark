@@ -20,8 +20,9 @@ func main() {
 		Prepare: func(_ constraint.ConstraintSystem, pk gnarkgroth16.ProvingKey) error {
 			return webgpugroth16.Prepare(pk)
 		},
-		Prove:  gnarkgroth16.Prove,
-		Verify: gnarkgroth16.Verify,
+		ReleasePK: webgpugroth16.Release,
+		Prove:     gnarkgroth16.Prove,
+		Verify:    gnarkgroth16.Verify,
 	}); err != nil {
 		panic(err)
 	}
