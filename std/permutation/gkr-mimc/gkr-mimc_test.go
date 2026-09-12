@@ -69,8 +69,8 @@ func merkleTreeCircuits(n int) (circuit, assignment merkleTreeCircuit) {
 	}
 
 	return merkleTreeCircuit{
-		Leaves: make([]frontend.Variable, len(leaves)),
-	}, merkleTreeCircuit{
-		Leaves: leaves,
-	}
+			Leaves: make([]frontend.Variable, len(leaves)),
+		}, merkleTreeCircuit{
+			Leaves: leaves,
+		}
 }

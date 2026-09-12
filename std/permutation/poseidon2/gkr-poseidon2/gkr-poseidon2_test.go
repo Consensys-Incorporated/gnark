@@ -21,10 +21,10 @@ func gkrCompressionsCircuits(n int) (circuit, assignment testGkrCompressionCircu
 	}
 
 	return testGkrCompressionCircuit{
-		Ins: make([][2]frontend.Variable, len(ins)),
-	}, testGkrCompressionCircuit{
-		Ins: ins,
-	}
+			Ins: make([][2]frontend.Variable, len(ins)),
+		}, testGkrCompressionCircuit{
+			Ins: ins,
+		}
 }
 
 func TestGkrCompression(t *testing.T) {
