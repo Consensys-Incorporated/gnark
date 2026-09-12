@@ -30,10 +30,20 @@ func init() {
 
 func GetHints() []solver.Hint {
 	return []solver.Hint{
+		scalarMulPreimageHint,
 		decomposeScalarG1,
 		scalarMulHint,
 		rationalReconstruct,
 		rationalReconstructExt,
+		combRecodeHint,
+		combChainLambdaHint,
+		ratioHint,
+		tangentHint,
+		tangentHintA,
+		unifiedSlopeHint,
+		bjSlopeHint,
+		implicitTangentHint,
+		implicitChordHint,
 	}
 }
 
@@ -76,6 +86,13 @@ func decomposeScalarG1(mod *big.Int, inputs []*big.Int, outputs []*big.Int) erro
 		}
 		return nil
 	})
+}
+
+// scalarMulPreimageHint computes [m]P exactly like scalarMulHint but is a
+// distinct hint (distinct ID) so the cofactor-subgroup-binding preimage can be
+// overridden independently of the main scalar-mul output in soundness tests.
+func scalarMulPreimageHint(field *big.Int, inputs []*big.Int, outputs []*big.Int) error {
+	return scalarMulHint(field, inputs, outputs)
 }
 
 func scalarMulHint(field *big.Int, inputs []*big.Int, outputs []*big.Int) error {

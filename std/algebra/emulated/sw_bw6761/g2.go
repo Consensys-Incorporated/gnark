@@ -362,6 +362,77 @@ func (g2 *G2) Select(b frontend.Variable, p, q *G2Affine) *G2Affine {
 	}
 }
 
+// assertIsOnCurve asserts that P satisfies the BW6-761 G2 curve equation
+// Y² = X³ + b over 𝔽ₚ. The constant b is recovered from the (on-curve,
+// in-subgroup) generator as b = Gy² − Gx³, avoiding a hardcoded literal.
+func (g2 *G2) assertIsOnCurve(P *G2Affine) {
+	x3 := g2.curveF.Mul(&P.P.X, g2.curveF.Mul(&P.P.X, &P.P.X))
+	lhs := g2.curveF.Sub(g2.curveF.Mul(&P.P.Y, &P.P.Y), x3)
+	gx3 := g2.curveF.Mul(&g2.g2Gen.X, g2.curveF.Mul(&g2.g2Gen.X, &g2.g2Gen.X))
+	rhs := g2.curveF.Sub(g2.curveF.Mul(&g2.g2Gen.Y, &g2.g2Gen.Y), gx3)
+	g2.curveF.AssertIsEqual(lhs, rhs)
+}
+
+// mulByConstant returns [k]P for a fixed k > 0, via a width-4 signed-window (NAF)
+// double-and-add using complete (unified) operations, so it is exception-free for
+// any on-curve P. The signed window trims the additions to ~the w-NAF weight (vs
+// the binary Hamming weight); the doubling count is unchanged. All operations stay
+// unified (infinity-complete), which is soundness-critical since P is an
+// adversarial preimage. k is a [big.Int] because the cofactor-clearing constant
+// can exceed 64 bits.
+func (g2 *G2) mulByConstant(P *G2Affine, k *big.Int) *G2Affine {
+	digits := naf4Digits(k) // LSB-first; each digit is 0 or an odd d with |d| < 8
+	// precompute the odd multiples 1P, 3P, 5P, 7P (negated on demand)
+	p2 := g2.doubleGeneric(P, true)
+	var odd [8]*G2Affine
+	odd[1] = P
+	odd[3] = g2.AddUnified(p2, P)
+	odd[5] = g2.AddUnified(odd[3], p2)
+	odd[7] = g2.AddUnified(odd[5], p2)
+	pick := func(d int8) *G2Affine {
+		if d > 0 {
+			return odd[d]
+		}
+		return g2.neg(odd[-d])
+	}
+	top := len(digits) - 1
+	for top >= 0 && digits[top] == 0 {
+		top--
+	}
+	acc := pick(digits[top])
+	for i := top - 1; i >= 0; i-- {
+		acc = g2.doubleGeneric(acc, true) // unified (complete) doubling
+		if digits[i] != 0 {
+			acc = g2.AddUnified(acc, pick(digits[i]))
+		}
+	}
+	return acc
+}
+
+// naf4Digits returns the width-4 non-adjacent form of k > 0, least-significant
+// digit first: each digit is 0 or an odd integer with |d| < 8, nonzero digits are
+// at least 4 positions apart, and Σ digits[i]·2^i == k.
+func naf4Digits(k *big.Int) []int8 {
+	k = new(big.Int).Set(k)
+	mask := big.NewInt(15)
+	tmp := new(big.Int)
+	var digits []int8
+	for k.Sign() > 0 {
+		var d int8
+		if k.Bit(0) == 1 {
+			m := int8(tmp.And(k, mask).Int64())
+			if m >= 8 {
+				m -= 16
+			}
+			d = m
+			k.Sub(k, big.NewInt(int64(d)))
+		}
+		digits = append(digits, d)
+		k.Rsh(k, 1)
+	}
+	return digits
+}
+
 // ScalarMul computes [s]Q using GLV+FakeGLV with proven r^(1/4) sub-scalar
 // bounds (LLL Hermite). Routes through scalarMulGLVAndFakeGLV.
 //
@@ -381,7 +452,68 @@ func (g2 *G2) Select(b frontend.Variable, p, q *G2Affine) *G2Affine {
 //
 // [EEMP25]: https://eprint.iacr.org/2025/933
 func (g2 *G2) ScalarMul(Q *G2Affine, s *Scalar, opts ...algopts.AlgebraOption) *G2Affine {
-	return g2.scalarMulGLVAndFakeGLV(Q, s, opts...)
+	// BW6-761 G2 lives over Fp (a sextic twist), so its points are ordinary
+	// sw_emulated affine points. We route ScalarMul through classic GLV rather
+	// than GLV+fake-GLV: the classic-GLV output is *computed*, hence inherently in
+	// the prime-order subgroup, so it needs no cofactor-clearing binding. This
+	// closes the chosen-scalar cofactor hole (a rational φ-eigenvector reaches
+	// torsion up to ~r^{1/2}, so a minimal clearing constant would be unsound, and
+	// full-cofactor clearing is expensive) at lower cost — mirroring the
+	// PreferClassicGLV routing of BLS12-381 G1 and BW6-761 G1 in sw_emulated.
+	cr, err := sw_emulated.New[BaseField, ScalarField](g2.api, bw6761G2ClassicParams)
+	if err != nil {
+		panic(err)
+	}
+	res := cr.ScalarMul(&Q.P, s, opts...)
+	return &G2Affine{P: *res}
+}
+
+// bw6761G2ClassicParams are the sw_emulated curve parameters for BW6-761's G2
+// (y² = x³ + 4 over Fp), with PreferClassicGLV so ScalarMul uses classic GLV.
+// Computed once (the generator table is a set of fixed G2 doublings).
+var bw6761G2ClassicParams = func() sw_emulated.CurveParams {
+	_, _, _, g2 := bw6761.Generators()
+	lambda, _ := new(big.Int).SetString("80949648264912719408558363140637477264845294720710499478137287262712535938301461879813459410945", 10)
+	// ω = thirdRootOneG2 = thirdRootOneG1² (the G2 endomorphism φ: (x,y) ↦ (ωx,y)).
+	omega, _ := new(big.Int).SetString("4922464560225523242118178942575080391082002530232324381063048548642823052024664478336818169867474395270858391911405337707247735739826664939444490469542109391530482826728203582549674992333383150446779312029624171857054392282775648", 10)
+	return sw_emulated.CurveParams{
+		A:                big.NewInt(0),
+		B:                big.NewInt(4),
+		Gx:               g2.X.BigInt(new(big.Int)),
+		Gy:               g2.Y.BigInt(new(big.Int)),
+		Gm:               computeBW6761G2Table(),
+		Eigenvalue:       lambda,
+		ThirdRootOne:     omega,
+		PreferClassicGLV: true,
+	}
+}()
+
+// computeBW6761G2Table returns the generator-multiples table for BW6-761 G2,
+// mirroring sw_emulated's computeBW6761Table (G1) with G2 arithmetic.
+func computeBW6761G2Table() [][2]*big.Int {
+	_, Gjac, _, _ := bw6761.Generators()
+	table := make([][2]*big.Int, 377)
+	tmp := new(bw6761.G2Jac).Set(&Gjac)
+	aff := new(bw6761.G2Affine)
+	jac := new(bw6761.G2Jac)
+	for i := 1; i < 377; i++ {
+		tmp = tmp.Double(tmp)
+		switch i {
+		case 1, 2:
+			jac.Set(tmp).AddAssign(&Gjac)
+			aff.FromJacobian(jac)
+			table[i-1] = [2]*big.Int{aff.X.BigInt(new(big.Int)), aff.Y.BigInt(new(big.Int))}
+		case 3:
+			jac.Set(tmp).SubAssign(&Gjac)
+			aff.FromJacobian(jac)
+			table[i-1] = [2]*big.Int{aff.X.BigInt(new(big.Int)), aff.Y.BigInt(new(big.Int))}
+			fallthrough
+		default:
+			aff.FromJacobian(tmp)
+			table[i] = [2]*big.Int{aff.X.BigInt(new(big.Int)), aff.Y.BigInt(new(big.Int))}
+		}
+	}
+	return table
 }
 
 // scalarMulGLVAndFakeGLV computes [s]Q using GLV+FakeGLV with r^(1/4) bounds.
@@ -494,6 +626,39 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 		isInputPointAtInfinity = g2.api.And(g2.curveF.IsZero(&Q.P.X), g2.curveF.IsZero(&Q.P.Y))
 		_Q = g2.Select(isInputPointAtInfinity, dummyQ, Q)
 		R = g2.Select(isScalarOne, dummyR, R)
+	}
+
+	// Subgroup binding: force the hinted output R = [s]Q into the prime-order G2
+	// subgroup via a preimage check [c]S == R with S constrained on-curve, where
+	// c = g2CofactorClearingConstant = 3·13·261812779·10233228391030511371 clears
+	// every cofactor prime < 2^nbits (h = 3·13·261812779·10233228391030511371·
+	// (118-bit prime)·(170-bit prime); the two large prime parts have order ≫
+	// 2^nbits, out of reach of the r^(1/4) sub-scalars). Without this, a
+	// torsion-shifted R' = [s]Q + T with ord(T) | c satisfies the accumulator
+	// identity and would be accepted as [s]Q.
+	{
+		_, preimg, _, errPre := emulated.NewVarGenericHint(g2.api, 0, 2, 0, nil,
+			[]*emulated.Element[BaseField]{&Q.P.X, &Q.P.Y},
+			[]*emulated.Element[ScalarField]{s},
+			scalarMulG2CofactorPreimageHint)
+		if errPre != nil {
+			panic(fmt.Sprintf("scalarMulG2CofactorPreimageHint: %v", errPre))
+		}
+		S := &G2Affine{P: g2AffP{X: *preimg[0], Y: *preimg[1]}}
+		if !cfg.IncompleteArithmetic {
+			// R = O in the s=0 / Q=∞ cases: the identity has no affine preimage, so
+			// substitute a dummy on-curve point and make the equality vacuous to
+			// preserve completeness.
+			skip := g2.api.Or(isScalarZero, isInputPointAtInfinity)
+			S = g2.Select(skip, &G2Affine{P: *g2.g2Gen}, S)
+			g2.assertIsOnCurve(S)
+			cS := g2.mulByConstant(S, g2CofactorClearingConstant)
+			g2.AssertIsEqual(cS, g2.Select(skip, cS, originalR))
+		} else {
+			g2.assertIsOnCurve(S)
+			cS := g2.mulByConstant(S, g2CofactorClearingConstant)
+			g2.AssertIsEqual(cS, originalR)
+		}
 	}
 
 	addFn := g2.add

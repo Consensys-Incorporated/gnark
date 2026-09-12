@@ -167,19 +167,28 @@ func (bf *Bytes) twoArgFn(tbl *logderivprecomp.Precomputed, a ...U8) U8 {
 		return a[0]
 	}
 	ret := tbl.Query(a[0].Val, a[1].Val)[0]
+	// NB! we cannot assume that the query result is in range even if the inputs
+	// are. The log-derivative lookup only constrains the packed value
+	// a + 2^8*b + 2^16*c, and a malicious prover could commit to an out-of-range
+	// c which makes the packed value collide with a valid table entry (e.g.
+	// Xor(1,0) = 1/256 since 1 + 2^8*0 + 2^16/256 = 257 = 0x000101 is the entry
+	// for Xor(1,0)=1). We therefore range check every intermediate result: an
+	// out-of-range intermediate could be consumed by a subsequent query in this
+	// same chain whose packed key collides, letting a forgery pass through.
+	bf.rchecker.Check(ret, 8)
 	for i := 2; i < len(a); i++ {
 		ret = tbl.Query(ret, a[i].Val)[0]
+		bf.rchecker.Check(ret, 8)
 	}
-	// because the response comes from the lookup table, then (assuming that the
-	// function which built the table is correct) we can assume that the value
-	// is in range. Thus we set the internal flag to true.
 	return bf.packInternal(ret)
 }
 
 func (bf *Bytes) Not(a U8) U8 {
+	bf.enforceWidth(a)
 	ret := bf.xorT.Query(a.Val, bf.allOne.Val)
-	// the response comes from the lookup table, thus we can assume that the
-	// value is in range. Thus we set the internal flag to true.
+	// the result of the lookup is not range checked by the table (the packed key
+	// a + 2^8*b + 2^16*c can collide for out-of-range c), so range check it here.
+	bf.rchecker.Check(ret[0], 8)
 	return bf.packInternal(ret[0])
 }
 

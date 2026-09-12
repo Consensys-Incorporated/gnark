@@ -76,6 +76,10 @@ type Curve[Base, Scalars emulated.FieldParams] struct {
 	addA         bool
 	eigenvalue   *emulated.Element[Scalars]
 	thirdRootOne *emulated.Element[Base]
+
+	// combCache caches the fixed-base comb tables per base point and window
+	// width.
+	combCache map[string]*combData
 }
 
 // Generator returns the base point of the curve. The method does not copy and
@@ -191,7 +195,7 @@ func (c *Curve[B, S]) add(p, q *AffinePoint[B]) *AffinePoint[B] {
 	// compute λ = (q.y-p.y)/(q.x-p.x)
 	qypy := c.baseApi.Sub(&q.Y, &p.Y)
 	qxpx := c.baseApi.Sub(&q.X, &p.X)
-	λ := c.baseApi.Div(qypy, qxpx)
+	λ := c.assertedRatio(qypy, qxpx)
 
 	// xr = λ²-p.x-q.x
 	xr := c.baseApi.Eval([][]*emulated.Element[B]{{λ, λ}, {c.baseApi.Add(&p.X, &q.X)}}, []int{1, -1})
@@ -268,20 +272,35 @@ func (c *Curve[B, S]) AddUnified(p, q *AffinePoint[B]) *AffinePoint[B] {
 		// Div(3p.X², 2p.Y) before selecting).
 		//   • chord   numerator = q.Y - p.Y,  denominator = q.X - p.X
 		//   • tangent numerator = 3·p.X²,     denominator = 2·p.Y
-		// The combined denominator is zero only when p = q = (0,0); in that
-		// case the infinity-selectors below override `result` with p anyway,
-		// so we can safely divide by a dummy 1 and force λ to 0.
+		// The combined denominator is zero when p = q = (0,0) and also when
+		// doubling a rational 2-torsion point (p = q, p.Y = 0, e.g. (1,0) on
+		// BW6-761). In every such case an infinity-selector below overrides
+		// `result` with O (or p), so we can safely divide by a dummy 1 and force
+		// λ to 0 here.
 		numChord := c.baseApi.Sub(&q.Y, &p.Y)
 		denChord := xDiff
-		xx := c.baseApi.MulMod(&p.X, &p.X)
-		numTangent := c.baseApi.MulConst(xx, big.NewInt(3))
 		denTangent := c.baseApi.MulConst(&p.Y, big.NewInt(2))
 
-		num := c.baseApi.Select(xEqual, numTangent, numChord)
 		den := c.baseApi.Select(xEqual, denTangent, denChord)
 		denIsZero := c.baseApi.IsZero(den)
 		denSafe := c.baseApi.Select(denIsZero, c.baseApi.One(), den)
-		λ := c.baseApi.Div(num, denSafe)
+		// witness the unified slope and certify it with a single deferred
+		// zero-assertion, blending the chord and tangent numerators with the
+		// xEqual indicator instead of materializing 3x² and selecting:
+		//   λ·denSafe − xEqual·3x² − (1−xEqual)·(y2−y1) ≡ 0
+		// λ remains pinned in all cases; when denIsZero the assertion is
+		// satisfied by the hint value and λ is discarded by the select below.
+		lams, err := c.baseApi.NewHint(unifiedSlopeHint, 1, &p.X, &p.Y, &q.X, &q.Y)
+		if err != nil {
+			panic(fmt.Sprintf("unified slope hint: %v", err))
+		}
+		λ := lams[0]
+		zx := c.baseApi.FromBits(xEqual)
+		nzx := c.baseApi.Sub(c.baseApi.One(), zx)
+		c.baseApi.AssertEvalIsZero(
+			[][]*emulated.Element[B]{{λ, denSafe}, {zx, &p.X, &p.X}, {nzx, numChord}},
+			[]int{1, -3, -1},
+		)
 		λ = c.baseApi.Select(denIsZero, c.baseApi.Zero(), λ)
 
 		// compute the result point from λ
@@ -296,15 +315,24 @@ func (c *Curve[B, S]) AddUnified(p, q *AffinePoint[B]) *AffinePoint[B] {
 		result = c.Select(isPInfinity, q, result)
 		// if q=(0,0) return p
 		result = c.Select(isQInfinity, p, result)
-		// if p = −q (same X, different Y) return O.
-		// The remaining xEqual=1 and y2IsZero=1 case is doubling a 2-torsion
-		// point with p=q, p.Y=0, p.X≠0. That should also return O, but none of
-		// the currently supported j=0 curves have rational 2-torsion, so we do
-		// not special-case it here. The (0,0) case is already handled above via
-		// the infinity selectors.
+		// Return O whenever two finite points share the same X and their sum is
+		// the point at infinity. Two sub-cases:
+		//   • p = −q  (same X, different Y): the chord is vertical.
+		//   • doubling a rational 2-torsion point (same X, p = q, p.Y = 0): the
+		//     tangent is vertical. BW6-761 uses y² = x³ − 1 and DOES have a
+		//     finite order-2 point (1,0), so this case is reachable; the old
+		//     "no j=0 curve has rational 2-torsion" assumption was wrong and let
+		//     a prover certify (1,0)+(1,0) = (−2,0) instead of O.
+		// Both sub-cases collapse to: same X and (different Y or p.Y = 0). Guard
+		// with areFinite so O + Q (with Q.Y = 0) is not turned into O — the
+		// infinity selectors above already handle the (0,0) inputs.
 		yEqual := c.baseApi.IsZero(c.baseApi.Sub(&p.Y, &q.Y))
 		areFinite := c.api.And(c.api.Sub(1, isPInfinity), c.api.Sub(1, isQInfinity))
-		isInverse := c.api.And(c.api.And(xEqual, c.api.Sub(1, yEqual)), areFinite)
+		pyIsZero := c.baseApi.IsZero(&p.Y)
+		isInverse := c.api.And(
+			c.api.And(xEqual, areFinite),
+			c.api.Or(c.api.Sub(1, yEqual), pyIsZero),
+		)
 		result = c.Select(isInverse, infinity, result)
 	} else {
 		// ---------------------------------------------------------------
@@ -320,17 +348,23 @@ func (c *Curve[B, S]) AddUnified(p, q *AffinePoint[B]) *AffinePoint[B] {
 		// the j=0 branch, to avoid turning O + Q into O when Q.Y = 0.
 		// ---------------------------------------------------------------
 
-		// λ = ((p.x+q.x)² - p.x*q.x + a)/(p.y + q.y)
-		pxqx := c.baseApi.MulMod(&p.X, &q.X)
+		// λ = ((p.x+q.x)² - p.x*q.x + a)/(p.y + q.y), certified by a single
+		// deferred zero-assertion without materializing the numerator:
+		//   λ·denum − (p.x+q.x)² + p.x·q.x − a ≡ 0
 		pxplusqx := c.baseApi.Add(&p.X, &q.X)
-		num := c.baseApi.MulMod(pxplusqx, pxplusqx)
-		num = c.baseApi.Sub(num, pxqx)
-		num = c.baseApi.Add(num, &c.a)
 		denum := c.baseApi.Add(&p.Y, &q.Y)
 		// if p.y + q.y = 0, assign dummy 1 to denum and continue
 		isYSumZero := c.baseApi.IsZero(denum)
 		denum = c.baseApi.Select(isYSumZero, c.baseApi.One(), denum)
-		λ := c.baseApi.Div(num, denum)
+		lams, err := c.baseApi.NewHint(bjSlopeHint, 1, &p.X, &p.Y, &q.X, &q.Y, &c.a)
+		if err != nil {
+			panic(fmt.Sprintf("bj slope hint: %v", err))
+		}
+		λ := lams[0]
+		c.baseApi.AssertEvalIsZero(
+			[][]*emulated.Element[B]{{λ, denum}, {pxplusqx, pxplusqx}, {&p.X, &q.X}, {&c.a}},
+			[]int{1, -1, 1, -1},
+		)
 
 		// x = λ^2 - p.x - q.x
 		xr := c.baseApi.MulMod(λ, λ)
@@ -362,6 +396,109 @@ func (c *Curve[B, S]) Add(p, q *AffinePoint[B]) *AffinePoint[B] {
 	return c.add(p, q)
 }
 
+// mulByConstant returns [k]p for a fixed k > 0, via a width-4 signed-window (NAF)
+// double-and-add using complete (unified) operations, so it is exception-free for
+// any on-curve p. Used to clear the cofactor torsion in the fake-GLV subgroup
+// binding. k is a [big.Int] because the cofactor-clearing constant can exceed 64
+// bits (e.g. the full BLS12-381 G1 cofactor is 126 bits). The signed window trims
+// the additions to ~the w-NAF weight (vs the binary Hamming weight); the doubling
+// count is unchanged. All operations stay unified (infinity-complete), which is
+// soundness-critical since p is an adversarial preimage.
+func (c *Curve[B, S]) mulByConstant(p *AffinePoint[B], k *big.Int) *AffinePoint[B] {
+	digits := naf4Digits(k) // LSB-first; each digit is 0 or an odd d with |d| < 8
+	// precompute the odd multiples 1p, 3p, 5p, 7p (negated on demand)
+	p2 := c.doubleGeneric(p, true)
+	var odd [8]*AffinePoint[B]
+	odd[1] = p
+	odd[3] = c.AddUnified(p2, p)
+	odd[5] = c.AddUnified(odd[3], p2)
+	odd[7] = c.AddUnified(odd[5], p2)
+	pick := func(d int8) *AffinePoint[B] {
+		if d > 0 {
+			return odd[d]
+		}
+		return c.Neg(odd[-d])
+	}
+	// scan from the most-significant nonzero digit down
+	top := len(digits) - 1
+	for top >= 0 && digits[top] == 0 {
+		top--
+	}
+	acc := pick(digits[top])
+	for i := top - 1; i >= 0; i-- {
+		acc = c.doubleGeneric(acc, true) // unified (complete) doubling
+		if digits[i] != 0 {
+			acc = c.AddUnified(acc, pick(digits[i]))
+		}
+	}
+	return acc
+}
+
+// naf4Digits returns the width-4 non-adjacent form of k > 0, least-significant
+// digit first: each digit is 0 or an odd integer with |d| < 8, nonzero digits are
+// at least 4 positions apart, and Σ digits[i]·2^i == k. Used to drive a
+// signed-window scalar multiplication by a fixed constant.
+func naf4Digits(k *big.Int) []int8 {
+	k = new(big.Int).Set(k)
+	mask := big.NewInt(15)
+	tmp := new(big.Int)
+	var digits []int8
+	for k.Sign() > 0 {
+		var d int8
+		if k.Bit(0) == 1 {
+			m := int8(tmp.And(k, mask).Int64())
+			if m >= 8 {
+				m -= 16
+			}
+			d = m
+			k.Sub(k, big.NewInt(int64(d)))
+		}
+		digits = append(digits, d)
+		k.Rsh(k, 1)
+	}
+	return digits
+}
+
+// assertPointInSubgroup binds an arbitrary hinted point R into the prime-order
+// subgroup, when the curve has a nontrivial cofactor. It hints a preimage
+// S = [c⁻¹ mod r]·R and asserts S on-curve and [c]S == R, where
+// c = params.CofactorClearing clears every cofactor torsion of order < 2^nbits.
+// A torsion-shifted R = R₀ + T (R₀ in the subgroup, ord(T) | c) has no on-curve
+// preimage under [c], so it is rejected. No-op for prime-order curves (c == nil).
+//
+// Unlike a per-(P,s) binding, this is a point-based check that does not reference
+// the scalar-mul inputs, so it can be applied once to an aggregate output (an MSM
+// or joint-scalar-mul sum) instead of once per summand: each summand's accumulator
+// already forces its subgroup part exactly (Qᵢ = [sᵢ]Pᵢ + Tᵢ with Tᵢ pure torsion,
+// given Pᵢ in the subgroup), so binding the sum forces ΣTᵢ = O and the aggregate
+// equals Σ[sᵢ]Pᵢ. See [Curve.MultiScalarMul] and [Curve.jointScalarMulGLV].
+//
+// The R = O case (encoded (0,0)) has no affine preimage, so a dummy in-subgroup
+// point is substituted and the equality is made vacuous to preserve completeness.
+func (c *Curve[B, S]) assertPointInSubgroup(R *AffinePoint[B]) {
+	cc := c.params.CofactorClearing
+	if cc == nil {
+		return
+	}
+	var sc S
+	cInv := new(big.Int).ModInverse(cc, sc.Modulus())
+	if cInv == nil {
+		panic("sw_emulated: CofactorClearing not invertible mod r")
+	}
+	skipZero := c.api.And(c.baseApi.IsZero(&R.X), c.baseApi.IsZero(&R.Y))
+	dummy := &c.GeneratorMultiples()[3] // in-subgroup, so [c][c⁻¹]dummy == dummy
+	Rsafe := c.Select(skipZero, dummy, R)
+	_, pre, _, err := emulated.NewVarGenericHint(c.api, 0, 2, 0, nil,
+		[]*emulated.Element[B]{&Rsafe.X, &Rsafe.Y}, []*emulated.Element[S]{c.scalarApi.NewElement(cInv)}, scalarMulPreimageHint)
+	if err != nil {
+		panic(fmt.Sprintf("cofactor preimage hint: %v", err))
+	}
+	Sp := &AffinePoint[B]{X: *pre[0], Y: *pre[1]}
+	c.AssertIsOnCurve(Sp)
+	cS := c.mulByConstant(Sp, cc)
+	c.AssertIsEqual(cS, c.Select(skipZero, cS, R))
+}
+
 // double doubles p and return it. It doesn't modify p.
 //
 // ⚠️  p.Y must be nonzero.
@@ -372,23 +509,10 @@ func (c *Curve[B, S]) double(p *AffinePoint[B]) *AffinePoint[B] {
 }
 
 func (c *Curve[B, S]) doubleGeneric(p *AffinePoint[B], unified bool) *AffinePoint[B] {
-	// compute λ = (3p.x²+a)/2*p.y, here we assume a=0 (j invariant 0 curve)
-	xx3a := c.baseApi.MulMod(&p.X, &p.X)
-	xx3a = c.baseApi.MulConst(xx3a, big.NewInt(3))
-	if c.addA {
-		xx3a = c.baseApi.Add(xx3a, &c.a)
-	}
-	y2 := c.baseApi.MulConst(&p.Y, big.NewInt(2))
-	var isDoubleYZero frontend.Variable = 0
-	if unified {
-		// if 2*p.y = 0, assign dummy 1 to y2 and continue
-		isDoubleYZero = c.baseApi.IsZero(y2)
-		y2 = c.baseApi.Select(isDoubleYZero, c.baseApi.One(), y2)
-	}
-	λ := c.baseApi.Div(xx3a, y2)
-	if unified {
-		λ = c.baseApi.Select(isDoubleYZero, c.baseApi.Zero(), λ)
-	}
+	// compute λ = (3p.x²+a)/2*p.y via a hinted witness and a single deferred
+	// zero-assertion, without materializing x². In unified mode y ≡ 0 forces
+	// λ = 0 and keeps the assertion satisfiable (see tangentSlope).
+	λ := c.tangentSlope(p, unified)
 
 	// xr = λ²-2p.x
 	xr := c.baseApi.Eval([][]*emulated.Element[B]{{λ, λ}, {&p.X}}, []int{1, -2})
@@ -432,7 +556,7 @@ func (c *Curve[B, S]) tripleGeneric(p *AffinePoint[B], unified bool) *AffinePoin
 		isDoubleYZero = c.baseApi.IsZero(y2)
 		y2 = c.baseApi.Select(isDoubleYZero, c.baseApi.One(), y2)
 	}
-	λ1 := c.baseApi.Div(xx, y2)
+	λ1 := c.assertedRatio(xx, y2)
 	if unified {
 		λ1 = c.baseApi.Select(isDoubleYZero, c.baseApi.Zero(), λ1)
 	}
@@ -448,7 +572,7 @@ func (c *Curve[B, S]) tripleGeneric(p *AffinePoint[B], unified bool) *AffinePoin
 		isSecondSlopeDenominatorZero = c.baseApi.IsZero(x1x2)
 		x1x2 = c.baseApi.Select(isSecondSlopeDenominatorZero, c.baseApi.One(), x1x2)
 	}
-	λ2 := c.baseApi.Div(y2, x1x2)
+	λ2 := c.assertedRatio(y2, x1x2)
 	if unified {
 		λ2 = c.baseApi.Select(isSecondSlopeDenominatorZero, c.baseApi.Zero(), λ2)
 	}
@@ -492,7 +616,7 @@ func (c *Curve[B, S]) doubleAndAddGeneric(p, q *AffinePoint[B], unified bool) *A
 		isChordDenominatorZero = c.baseApi.IsZero(xqxp)
 		xqxp = c.baseApi.Select(isChordDenominatorZero, c.baseApi.One(), xqxp)
 	}
-	λ1 := c.baseApi.Div(yqyp, xqxp)
+	λ1 := c.assertedRatio(yqyp, xqxp)
 	if unified {
 		λ1 = c.baseApi.Select(isChordDenominatorZero, c.baseApi.Zero(), λ1)
 	}
@@ -510,7 +634,7 @@ func (c *Curve[B, S]) doubleAndAddGeneric(p, q *AffinePoint[B], unified bool) *A
 		isSecondSlopeDenominatorZero = c.baseApi.IsZero(x2xp)
 		x2xp = c.baseApi.Select(isSecondSlopeDenominatorZero, c.baseApi.One(), x2xp)
 	}
-	λ2 := c.baseApi.Div(ypyp, x2xp)
+	λ2 := c.assertedRatio(ypyp, x2xp)
 	if unified {
 		λ2 = c.baseApi.Select(isSecondSlopeDenominatorZero, c.baseApi.Zero(), λ2)
 	}
@@ -541,7 +665,7 @@ func (c *Curve[B, S]) doubleAndAddSelect(b frontend.Variable, p, q *AffinePoint[
 	// compute λ1 = (q.y-p.y)/(q.x-p.x)
 	yqyp := c.baseApi.Sub(&q.Y, &p.Y)
 	xqxp := c.baseApi.Sub(&q.X, &p.X)
-	λ1 := c.baseApi.Div(yqyp, xqxp)
+	λ1 := c.assertedRatio(yqyp, xqxp)
 
 	// compute x2 = λ1²-p.x-q.x
 	x2 := c.baseApi.Eval([][]*emulated.Element[B]{{λ1, λ1}, {&p.X}, {&q.X}}, []int{1, -1, -1})
@@ -554,7 +678,7 @@ func (c *Curve[B, S]) doubleAndAddSelect(b frontend.Variable, p, q *AffinePoint[
 	// compute -λ2 = λ1+2*t.y/(x2-t.x)
 	ypyp := c.baseApi.MulConst(&t.Y, big.NewInt(2))
 	x2xp := c.baseApi.Sub(x2, &t.X)
-	λ2 := c.baseApi.Div(ypyp, x2xp)
+	λ2 := c.assertedRatio(ypyp, x2xp)
 	λ2 = c.baseApi.Add(λ1, λ2)
 
 	// compute x3 = (-λ2)²-t.x-x2
@@ -643,13 +767,39 @@ func (c *Curve[B, S]) muxY8Signed(signBit frontend.Variable, selector frontend.V
 // N.B. For scalarMulGLVAndFakeGLV, the result is undefined when the input point is
 // not on the prime order subgroup. For scalarMulFakeGLV the result is well
 // defined for any point on the curve
+//
+// When p is a compile-time constant point of prime order r (for example a
+// point from a fixed verification key or SRS), the method automatically uses
+// the fixed-base comb method with precomputed tables (see
+// [Curve.scalarMulComb]), which uses complete arithmetic and is significantly
+// cheaper. In this case the [algopts.WithIncompleteArithmetic] option is a
+// no-op.
 func (c *Curve[B, S]) ScalarMul(p *AffinePoint[B], s *emulated.Element[S], opts ...algopts.AlgebraOption) *AffinePoint[B] {
-	if c.eigenvalue != nil && c.thirdRootOne != nil {
-		return c.scalarMulGLVAndFakeGLV(p, s, opts...)
-
-	} else {
+	if px, ok := c.baseApi.ConstantValue(&p.X); ok {
+		if py, ok := c.baseApi.ConstantValue(&p.Y); ok {
+			// constant point: try the fixed-base comb. combDataFor verifies
+			// at compile time that (px, py) is a finite curve point of prime
+			// order r; otherwise we fall back to the variable-base methods
+			// below which have no such requirement.
+			if d, err := c.combDataFor(px, py, c.combWindow()); err == nil {
+				return c.scalarMulComb(d, s)
+			}
+		}
+	}
+	hasEndo := c.eigenvalue != nil && c.thirdRootOne != nil
+	switch {
+	case hasEndo && c.params.PreferClassicGLV:
+		// cofactor curves where the fake-GLV subgroup clearing outweighs its
+		// r^(1/4) savings (e.g. BLS12-381 G1); classic GLV is faster and sound.
+		return c.scalarMulGLV(p, s, opts...)
+	case hasEndo:
+		// scalarMulGLVAndFakeGLV returns an unbound (possibly torsion-shifted)
+		// output; bind it into the prime-order subgroup (no-op if prime-order).
+		q := c.scalarMulGLVAndFakeGLV(p, s, opts...)
+		c.assertPointInSubgroup(q)
+		return q
+	default:
 		return c.scalarMulFakeGLV(p, s, opts...)
-
 	}
 }
 
@@ -723,10 +873,12 @@ func (c *Curve[B, S]) scalarMulGLV(Q *AffinePoint[B], s *emulated.Element[S], op
 	}
 	tablePhiQ[0] = c.Neg(tablePhiQ[1])
 	tableQ[2] = c.triple(tableQ[1])
-	tablePhiQ[2] = &AffinePoint[B]{
-		X: *c.baseApi.Mul(&tableQ[2].X, c.thirdRootOne),
-		Y: *c.baseApi.Select(isS2Negative, c.baseApi.Neg(&tableQ[2].Y), &tableQ[2].Y),
-	}
+	// tablePhiQ[2] must be [3]·tablePhiQ[1] = ε_s2·[3]Φ(Q). Deriving it from
+	// tableQ[2] = ε_s1·[3]Q (twist X, re-apply only ε_s2) entangles the s1 sign:
+	// tableQ[2].Y = ε_s1·[3]Q.Y, so the result would be ε_s1·ε_s2·[3]Q.Y — a
+	// negated point whenever s1 < 0 (a malicious hint can select such a lattice
+	// rep). Build it directly from the correctly-signed tablePhiQ[1] instead.
+	tablePhiQ[2] = c.triple(tablePhiQ[1])
 
 	// we suppose that the first bits of the sub-scalars are 1 and set:
 	// 		Acc = Q + Φ(Q)
@@ -1005,9 +1157,23 @@ func (c *Curve[B, S]) jointScalarMulGLV(p1, p2 *AffinePoint[B], s1, s2 *emulated
 		panic(fmt.Sprintf("parse opts: %v", err))
 	}
 	if !cfg.IncompleteArithmetic {
+		// On PreferClassicGLV curves (e.g. BLS12-381 G1) route each summand
+		// through classic GLV, matching [Curve.ScalarMul]/[Curve.ScalarMulBase]:
+		// its computed output is inherently in-subgroup and cheaper than
+		// GLV+fake-GLV once the (here full-cofactor) clearing is included.
+		if c.params.PreferClassicGLV {
+			// classic GLV: computed, inherently in-subgroup, no binding needed.
+			res1 := c.scalarMulGLV(p1, s1, opts...)
+			res2 := c.scalarMulGLV(p2, s2, opts...)
+			return c.AddUnified(res1, res2)
+		}
+		// Deferred binding: each summand is unbound (torsion-shiftable), but its
+		// subgroup part is exact, so bind the SUM once instead of each summand.
 		res1 := c.scalarMulGLVAndFakeGLV(p1, s1, opts...)
 		res2 := c.scalarMulGLVAndFakeGLV(p2, s2, opts...)
-		return c.AddUnified(res1, res2)
+		res := c.AddUnified(res1, res2)
+		c.assertPointInSubgroup(res)
+		return res
 	} else {
 		return c.jointScalarMulGLVUnsafe(p1, p2, s1, s2)
 	}
@@ -1098,18 +1264,15 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 	tableS[2] = tableQ[1]
 	tableS[2] = c.Add(tableS[2], tableR[0])
 	tableS[3] = c.Neg(tableS[2])
-	f0 := c.baseApi.Mul(&tableS[0].X, c.thirdRootOne)
-	f2 := c.baseApi.Mul(&tableS[2].X, c.thirdRootOne)
-	isPhiXTwisted := c.api.Xor(isS2Negative, isT2Negative)
-	tablePhiS[0] = &AffinePoint[B]{
-		X: *c.baseApi.Select(isPhiXTwisted, f2, f0),
-		Y: *c.baseApi.Lookup2(isS2Negative, isT2Negative, &tableS[0].Y, &tableS[2].Y, &tableS[3].Y, &tableS[1].Y),
-	}
+	// Build the Φ-side combinations directly from the correctly-signed
+	// tablePhiQ/tablePhiR (mirroring tableS from tableQ/tableR). The previous
+	// twist-trick derived tablePhiS.X/.Y from tableS — which carries the s1/t1
+	// signs — while re-applying only the s2/t2 signs, so the Φ(Q)/Φ(R) digits
+	// picked up ε_s1/ε_t1 and were negated whenever s1 < 0 or t1 < 0 (a malicious
+	// hint can select such a lattice rep).
+	tablePhiS[0] = c.Add(tablePhiQ[0], tablePhiR[0])
 	tablePhiS[1] = c.Neg(tablePhiS[0])
-	tablePhiS[2] = &AffinePoint[B]{
-		X: *c.baseApi.Select(isPhiXTwisted, f0, f2),
-		Y: *c.baseApi.Lookup2(isS2Negative, isT2Negative, &tableS[2].Y, &tableS[0].Y, &tableS[1].Y, &tableS[3].Y),
-	}
+	tablePhiS[2] = c.Add(tablePhiQ[1], tablePhiR[0])
 	tablePhiS[3] = c.Neg(tablePhiS[2])
 
 	// we suppose that the first bits of the sub-scalars are 1 and set:
@@ -1172,6 +1335,12 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 	// hence have the same X coordinates.
 
 	var Bi *AffinePoint[B]
+	// run the loop with the accumulator y-coordinate in implicit form on
+	// j = 0 curves (see implicitDoubleAndAdd).
+	var iAcc *implicitAcc[B]
+	if !c.addA {
+		iAcc = c.implicitFromAffine(Acc)
+	}
 	for i := nbits - 1; i > 0; i-- {
 		// selectorY takes values in [0,15]
 		selectorY := c.api.Add(
@@ -1198,7 +1367,14 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 			),
 		}
 		// Acc = [2]Acc + Bi
-		Acc = c.doubleAndAdd(Acc, Bi)
+		if iAcc != nil {
+			c.implicitDoubleAndAdd(iAcc, Bi)
+		} else {
+			Acc = c.doubleAndAdd(Acc, Bi)
+		}
+	}
+	if iAcc != nil {
+		Acc = c.implicitToAffine(iAcc)
 	}
 
 	// i = 0
@@ -1233,26 +1409,37 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 
 // ScalarMulBase computes [s]g and returns it where g is the fixed curve generator. It doesn't modify p nor s.
 //
-// By default, uses complete arithmetic.
+// It uses the fixed-base comb method with compile-time constant window tables
+// (see [Curve.scalarMulBaseComb]), which uses complete arithmetic and
+// correctly handles the zero scalar. The [algopts.WithIncompleteArithmetic]
+// option is a no-op for this method as the comb method is both complete and
+// cheaper than the incomplete variable-base fallbacks.
 //
-// ⚠️  When [algopts.WithIncompleteArithmetic] is set, the exact exceptional set
-// depends on the scalar-multiplication algorithm selected for the current
-// curve:
+// For custom curve parameters where the comb tables cannot be constructed, it
+// falls back to the variable-base scalar multiplication with the generator:
 //   - curves without an efficient endomorphism inherit the documented
 //     exceptional set of [Curve.scalarMulFakeGLV]
-//     and currently include P-256, P-384 and STARK curve
 //   - curves with an efficient endomorphism inherit the documented exceptional
-//     set of [Curve.scalarMulGLVAndFakeGLV] and currently include BN254,
-//     BLS12-381, BW6-761 and secp256k1.
-//
-// ScalarMul calls scalarMulBaseGeneric or scalarMulGLVAndFakeGLV depending on whether an efficient endomorphism is available.
+//     set of [Curve.scalarMulGLVAndFakeGLV].
 func (c *Curve[B, S]) ScalarMulBase(s *emulated.Element[S], opts ...algopts.AlgebraOption) *AffinePoint[B] {
-	if c.eigenvalue != nil && c.thirdRootOne != nil {
-		return c.scalarMulGLVAndFakeGLV(c.Generator(), s, opts...)
-
-	} else {
+	// The fixed-base comb is complete and cheapest; it requires the generator to
+	// be a prime-order point, which combData verifies at compile time.
+	if _, err := c.combData(c.combWindow()); err == nil {
+		return c.scalarMulBaseComb(s, c.combWindow())
+	}
+	hasEndo := c.eigenvalue != nil && c.thirdRootOne != nil
+	switch {
+	case hasEndo && c.params.PreferClassicGLV:
+		// cofactor curves where the fake-GLV subgroup clearing outweighs its
+		// r^(1/4) savings (e.g. BLS12-381 G1); classic GLV is faster and sound.
+		// Kept consistent with the [Curve.ScalarMul] dispatch.
+		return c.scalarMulGLV(c.Generator(), s, opts...)
+	case hasEndo:
+		q := c.scalarMulGLVAndFakeGLV(c.Generator(), s, opts...)
+		c.assertPointInSubgroup(q)
+		return q
+	default:
 		return c.scalarMulFakeGLV(c.Generator(), s, opts...)
-
 	}
 }
 
@@ -1283,6 +1470,27 @@ func (c *Curve[B, S]) ScalarMulBase(s *emulated.Element[S], opts ...algopts.Alge
 // The [EVM] specifies these checks, which are performed on the zkEVM
 // arithmetization side before calling the circuit that uses this method.
 func (c *Curve[B, S]) JointScalarMulBase(p *AffinePoint[B], s2, s1 *emulated.Element[S], opts ...algopts.AlgebraOption) *AffinePoint[B] {
+	cfg, err := algopts.NewConfig(opts...)
+	if err != nil {
+		panic(fmt.Sprintf("parse opts: %v", err))
+	}
+	if _, cerr := c.combData(c.combWindow()); cerr == nil && !cfg.IncompleteArithmetic {
+		// In complete mode, compute the fixed-base part with the comb method
+		// (complete, handles s1 = 0) and the variable-base part separately,
+		// and merge with the complete addition. This is cheaper than two
+		// variable-base scalar multiplications.
+		//
+		// We do NOT take this path in incomplete mode: composing the comb
+		// with the incomplete variable-base [Curve.ScalarMul] would be
+		// cheaper still, but the incomplete scalar multiplication has a
+		// non-negligible exceptional set when p has a small known relation
+		// to the generator (e.g. p = [2]g fails for a noticeable fraction of
+		// scalars), whereas the joint Shamir-based algorithm below handles
+		// those points.
+		sm1 := c.scalarMulBaseComb(s1, c.combWindow())
+		sm2 := c.ScalarMul(p, s2, opts...)
+		return c.AddUnified(sm1, sm2)
+	}
 	return c.jointScalarMul(c.Generator(), p, s1, s2, opts...)
 }
 
@@ -1319,16 +1527,69 @@ func (c *Curve[B, S]) MultiScalarMul(p []*AffinePoint[B], s []*emulated.Element[
 		if len(p) != len(s) {
 			return nil, fmt.Errorf("mismatching points and scalars slice lengths")
 		}
-		n := len(p)
+		// route compile-time constant points of prime order through the
+		// fixed-base comb (complete arithmetic, much cheaper) and fold only
+		// the remaining variable points through the joint scalar
+		// multiplications.
 		var res *AffinePoint[B]
-		if n%2 == 1 {
-			res = c.ScalarMul(p[n-1], s[n-1], opts...)
-		} else {
-			res = c.jointScalarMul(p[n-2], p[n-1], s[n-2], s[n-1], opts...)
+		varP := make([]*AffinePoint[B], 0, len(p))
+		varS := make([]*emulated.Element[S], 0, len(s))
+		for i := range p {
+			var d *combData
+			if px, ok := c.baseApi.ConstantValue(&p[i].X); ok {
+				if py, ok := c.baseApi.ConstantValue(&p[i].Y); ok {
+					if dd, derr := c.combDataFor(px, py, c.combWindow()); derr == nil {
+						d = dd
+					}
+				}
+			}
+			if d == nil {
+				varP = append(varP, p[i])
+				varS = append(varS, s[i])
+				continue
+			}
+			q := c.scalarMulComb(d, s[i])
+			if res == nil {
+				res = q
+			} else {
+				res = addFn(res, q)
+			}
 		}
-		for i := 1; i < n-1; i += 2 {
-			q := c.jointScalarMul(p[i-1], p[i], s[i-1], s[i], opts...)
-			res = addFn(res, q)
+		n := len(varP)
+		if n > 0 {
+			var vres *AffinePoint[B]
+			hasEndo := c.eigenvalue != nil && c.thirdRootOne != nil
+			if hasEndo && !c.params.PreferClassicGLV && !cfg.IncompleteArithmetic {
+				// Deferred subgroup binding: accumulate the UNBOUND per-point
+				// fake-GLV outputs and bind the variable-point aggregate ONCE (n
+				// subgroup checks → 1). Sound because each summand's accumulator
+				// forces its subgroup part exactly (Qᵢ = [sᵢ]Pᵢ + Tᵢ with Tᵢ pure
+				// torsion, given Pᵢ in the subgroup), so binding the sum forces
+				// ΣTᵢ = O. The constant prime-order points already folded into res
+				// go through the comb and are already in the subgroup.
+				vres = c.scalarMulGLVAndFakeGLV(varP[0], varS[0], opts...)
+				for i := 1; i < n; i++ {
+					vres = addFn(vres, c.scalarMulGLVAndFakeGLV(varP[i], varS[i], opts...))
+				}
+				c.assertPointInSubgroup(vres)
+			} else {
+				// classic-GLV / no-endo / incomplete: the per-call scalar muls bind
+				// their own output (or are computed in-subgroup / prime-order).
+				if n%2 == 1 {
+					vres = c.ScalarMul(varP[n-1], varS[n-1], opts...)
+				} else {
+					vres = c.jointScalarMul(varP[n-2], varP[n-1], varS[n-2], varS[n-1], opts...)
+				}
+				for i := 1; i < n-1; i += 2 {
+					q := c.jointScalarMul(varP[i-1], varP[i], varS[i-1], varS[i], opts...)
+					vres = addFn(vres, q)
+				}
+			}
+			if res == nil {
+				res = vres
+			} else {
+				res = addFn(res, vres)
+			}
 		}
 		return res, nil
 	} else {
@@ -1757,6 +2018,13 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 		Q = c.Select(isScalarOne, &c.GeneratorMultiples()[3], Q)
 	}
 
+	// NOTE: the returned point is NOT bound into the prime-order subgroup. The
+	// accumulator below only pins it modulo the v-torsion, so on cofactor curves a
+	// torsion-shifted output satisfies the identity. Callers that expose the result
+	// must bind it with [Curve.assertPointInSubgroup]; the public entry points
+	// ([Curve.ScalarMul], [Curve.ScalarMulBase], [Curve.jointScalarMulGLV],
+	// [Curve.MultiScalarMul]) do so — once per aggregate output, not per summand.
+
 	addFn := c.Add
 	if !cfg.IncompleteArithmetic {
 		addFn = c.AddUnified
@@ -1848,6 +2116,13 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 	// hence have the same X coordinates.
 
 	var Bi *AffinePoint[B]
+	// in incomplete mode on j = 0 curves, run the loop with the accumulator
+	// y-coordinate in implicit form (see implicitDoubleAndAdd): one deferred
+	// check saved per iteration, y materialized once after the loop.
+	var iAcc *implicitAcc[B]
+	if cfg.IncompleteArithmetic && !c.addA {
+		iAcc = c.implicitFromAffine(Acc)
+	}
 	for i := nbits - 1; i > 0; i-- {
 		// selectorY takes values in [0,15]
 		selectorY := c.api.Add(
@@ -1877,9 +2152,14 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 		if !cfg.IncompleteArithmetic {
 			Acc = c.doubleGeneric(Acc, true)
 			Acc = addFn(Acc, Bi)
+		} else if iAcc != nil {
+			c.implicitDoubleAndAdd(iAcc, Bi)
 		} else {
 			Acc = c.doubleAndAdd(Acc, Bi)
 		}
+	}
+	if iAcc != nil {
+		Acc = c.implicitToAffine(iAcc)
 	}
 
 	// i = 0

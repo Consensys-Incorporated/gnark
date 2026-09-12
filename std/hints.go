@@ -10,8 +10,11 @@ import (
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bls12381"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bw6761"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
+	sw_emulated_maptocurve "github.com/consensys/gnark/std/algebra/emulated/sw_emulated/maptocurve_increment"
 	"github.com/consensys/gnark/std/algebra/native/fields_bls12377"
 	"github.com/consensys/gnark/std/algebra/native/sw_bls12377"
+	sw_bls12377_maptocurve "github.com/consensys/gnark/std/algebra/native/sw_bls12377/maptocurve_increment"
+	sw_grumpkin_maptocurve "github.com/consensys/gnark/std/algebra/native/sw_grumpkin/maptocurve_increment"
 	"github.com/consensys/gnark/std/algebra/native/twistededwards"
 	"github.com/consensys/gnark/std/conversion"
 	"github.com/consensys/gnark/std/evmprecompiles"
@@ -61,8 +64,11 @@ func registerHints() {
 	solver.RegisterHint(sw_emulated.GetHints()...)
 	solver.RegisterHint(sw_bls12381.GetHints()...)
 	solver.RegisterHint(sw_bw6761.GetHints()...)
+	solver.RegisterHint(sw_emulated_maptocurve.GetHints()...)
 	// native curves
 	solver.RegisterHint(sw_bls12377.GetHints()...)
+	solver.RegisterHint(sw_bls12377_maptocurve.GetHints()...)
+	solver.RegisterHint(sw_grumpkin_maptocurve.GetHints()...)
 	// field extensions
 	solver.RegisterHint(fieldextension.GetHints()...)
 }

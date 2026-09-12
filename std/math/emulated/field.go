@@ -173,6 +173,21 @@ func (f *Field[T]) NewElement(v any) *Element[T] {
 	return c
 }
 
+// UnsafeFromLimbs constructs an element from the given limbs without
+// enforcing any range checks on them. The caller MUST guarantee that every
+// limb value is strictly less than 2^BitsPerLimb, otherwise the result is
+// unsound. It is useful in gadgets where the limbs are bounded by
+// construction, for example when they are convex combinations of constant
+// limbs selected by a one-hot vector.
+func (f *Field[T]) UnsafeFromLimbs(limbVals []frontend.Variable) *Element[T] {
+	if len(limbVals) != int(f.fParams.NbLimbs()) {
+		panic("limb count mismatch")
+	}
+	cp := make([]frontend.Variable, len(limbVals))
+	copy(cp, limbVals)
+	return f.newInternalElement(cp, 0)
+}
+
 // Zero returns zero as a constant.
 func (f *Field[T]) Zero() *Element[T] {
 	f.zeroConstOnce.Do(func() {
@@ -238,15 +253,20 @@ func (f *Field[T]) enforceWidthConditional(a *Element[T]) (didConstrain bool) {
 		// for some reason called on nil
 		return false
 	}
+	if a.internal {
+		// internal elements are already constrained in the method which returned
+		// it. We return before calling [Element.Initialize] as it resets the
+		// cached flags (modReduced, bit decomposition) as a safety measure
+		// against stale values from a previous compilation. Internal elements
+		// are always allocated during the current compilation by the method
+		// which created them, so their flags cannot be stale.
+		return false
+	}
 	// ensure that when the element is defined in-circuit with [ValueOf] method
 	// (as a constant), then we decompose it into limbs. When [ValueOf] is called
 	// for a witness assignment, then [Element.Initialize] is already called at
 	// witness parsing time. In that case, the below operation is no-op.
 	a.Initialize(f.api.Compiler().Field())
-	if a.internal {
-		// internal elements are already constrained in the method which returned it
-		return false
-	}
 	if _, isConst := f.constantValue(a); isConst {
 		// enforce constant element limbs not to be large.
 		for i := range a.Limbs {
@@ -298,6 +318,18 @@ func (f *Field[T]) enforceWidthConditional(a *Element[T]) (didConstrain bool) {
 	return
 }
 
+// ConstantValue returns the constant value of the element modulo the field
+// modulus and a boolean indicating if the element is in fact a compile-time
+// constant. It allows gadgets to specialize for constant inputs (for example
+// scalar multiplication by a constant point can use precomputed tables).
+func (f *Field[T]) ConstantValue(v *Element[T]) (*big.Int, bool) {
+	c, ok := f.constantValue(v)
+	if !ok {
+		return nil, false
+	}
+	return c.Mod(c, f.fParams.Modulus()), true
+}
+
 func (f *Field[T]) constantValue(v *Element[T]) (*big.Int, bool) {
 	// this case happens when we have called [ValueOf] inside a circuit as
 	// [Element.Initialize] has not been called (Limbs are nil). In this case,
@@ -326,13 +358,22 @@ func (f *Field[T]) constantValue(v *Element[T]) (*big.Int, bool) {
 	return res, true
 }
 
+// maxLazyOverflow keeps lazy arithmetic and its resulting carry bounds well
+// below the native field modulus. Lower values were measured to introduce
+// more reduction constraints than they save in carry range checks.
+const maxLazyOverflow uint = 96
+
 // maxOverflow returns the maximal possible overflow for the element. If the
 // overflow of the next operation exceeds the value returned by this method,
 // then the limbs may overflow the native field.
 func (f *Field[T]) maxOverflow() uint {
 	f.maxOfOnce.Do(func() {
-		// if we change this computation then also change maxOverflowReducedResult
-		f.maxOf = uint(f.api.Compiler().FieldBitLen()-2) - f.fParams.BitsPerLimb()
+		// A lazy result must still admit a sound reduction or zero check. Those
+		// operations need four carry bits in addition to the input overflow.
+		if maxCarry := f.maxCarryBits(); maxCarry > 4 {
+			f.maxOf = maxCarry - 4
+		}
+		f.maxOf = min(f.maxOf, maxLazyOverflow)
 	})
 	// when we perform non-reducing operations then we have to ensure that we are still
 	// able to reduce the result afterwards (i.e. when doing additions/subtractions).
@@ -340,17 +381,15 @@ func (f *Field[T]) maxOverflow() uint {
 }
 
 func (f *Field[T]) maxOverflowReducedResult() uint {
-	f.maxOfOnce.Do(func() {
-		// if we change this computation then also change maxOverflow
-		f.maxOf = uint(f.api.Compiler().FieldBitLen()-2) - f.fParams.BitsPerLimb()
-	})
-	// when doing multiplication (or checkZero), the hint always outputs
-	// quotient and result limbs with width BitsPerLimb. As the carry limbs are
-	// additionally shifted by BitsPerLimb, then we have additional BitsPerLimb
-	// bits of margin (relative to the native field width). Keep in mind that
-	// the `maxOf` constant is already BitsPerLimb less than the modulus width,
-	// then we can add BitsPerLimb again twice.
-	return f.maxOf + 2*f.fParams.BitsPerLimb()
+	// The reduced result itself has zero overflow. This limit applies to the
+	// per-call carry bound computed by mulPreCondReduced.
+	return min(f.maxCarryBits(), maxLazyOverflow)
+}
+
+// maxCarryBits is the largest signed carry magnitude that keeps the
+// corresponding integer coefficient strictly below the native modulus.
+func (f *Field[T]) maxCarryBits() uint {
+	return uint(f.api.Compiler().FieldBitLen()-2) - f.fParams.BitsPerLimb()
 }
 
 func sum[T cmp.Ordered](a ...T) T {

@@ -365,6 +365,75 @@ func TestRegressionOr(t *testing.T) {
 	}
 }
 
+type regressionXorZero struct {
+	A frontend.Variable
+}
+
+func (c *regressionXorZero) Define(api frontend.API) error {
+	api.AssertIsBoolean(c.A)
+	y := api.Xor(c.A, 0)
+	_ = y
+	return nil
+}
+
+func TestRegressionXorZeroNoConstraint(t *testing.T) {
+	assert := test.NewAssert(t)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &regressionXorZero{})
+	assert.NoError(err)
+	assert.Equal(1, ccs.GetNbConstraints(), "expected only the boolean assertion")
+}
+
+type regressionLookup2ConstantSelector struct {
+	B                    frontend.Variable
+	I0, I1, I2, I3, Want frontend.Variable
+	Mode                 int `gnark:"-"`
+}
+
+func (c *regressionLookup2ConstantSelector) Define(api frontend.API) error {
+	api.AssertIsBoolean(c.B)
+	var y frontend.Variable
+	switch c.Mode {
+	case 0:
+		y = api.Lookup2(0, c.B, c.I0, c.I1, c.I2, c.I3)
+	case 1:
+		y = api.Lookup2(1, c.B, c.I0, c.I1, c.I2, c.I3)
+	case 2:
+		y = api.Lookup2(c.B, 0, c.I0, c.I1, c.I2, c.I3)
+	case 3:
+		y = api.Lookup2(c.B, 1, c.I0, c.I1, c.I2, c.I3)
+	default:
+		panic("invalid mode")
+	}
+	api.AssertIsEqual(y, c.Want)
+	return nil
+}
+
+func TestRegressionLookup2ConstantSelector(t *testing.T) {
+	assert := test.NewAssert(t)
+	for _, tc := range []struct {
+		mode, bit, want int
+	}{
+		{0, 0, 10}, {0, 1, 30},
+		{1, 0, 20}, {1, 1, 40},
+		{2, 0, 10}, {2, 1, 20},
+		{3, 0, 30}, {3, 1, 40},
+	} {
+		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &regressionLookup2ConstantSelector{Mode: tc.mode})
+		assert.NoError(err)
+		w, err := frontend.NewWitness(&regressionLookup2ConstantSelector{
+			B:    tc.bit,
+			I0:   10,
+			I1:   20,
+			I2:   30,
+			I3:   40,
+			Want: tc.want,
+		}, ecc.BN254.ScalarField())
+		assert.NoError(err)
+		_, err = ccs.Solve(w)
+		assert.NoError(err)
+	}
+}
+
 type deduplicateCommitmentsCircuit struct {
 	repetitions int
 	A           frontend.Variable

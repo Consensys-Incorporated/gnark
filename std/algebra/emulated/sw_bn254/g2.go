@@ -415,6 +415,77 @@ func (g2 *G2) AssertIsEqual(p, q *G2Affine) {
 	g2.Ext2.AssertIsEqual(&p.P.Y, &q.P.Y)
 }
 
+// assertIsOnCurve asserts that P satisfies the BN254 G2 (twist) curve equation
+// Y² = X³ + b over 𝔽ₚ². The constant b is recovered from the (on-curve,
+// in-subgroup) generator as b = Gy² − Gx³, avoiding a hardcoded literal.
+func (g2 *G2) assertIsOnCurve(P *G2Affine) {
+	x3 := g2.Ext2.Mul(&P.P.X, g2.Ext2.Square(&P.P.X))
+	lhs := g2.Ext2.Sub(g2.Ext2.Square(&P.P.Y), x3)
+	gx3 := g2.Ext2.Mul(&g2.g2Gen.X, g2.Ext2.Square(&g2.g2Gen.X))
+	rhs := g2.Ext2.Sub(g2.Ext2.Square(&g2.g2Gen.Y), gx3)
+	g2.Ext2.AssertIsEqual(lhs, rhs)
+}
+
+// mulByConstant returns [k]P for a fixed k > 0, via a width-4 signed-window (NAF)
+// double-and-add using complete (unified) operations, so it is exception-free for
+// any on-curve P. The signed window trims the additions to ~the w-NAF weight (vs
+// the binary Hamming weight); the doubling count is unchanged. All operations stay
+// unified (infinity-complete), which is soundness-critical since P is an
+// adversarial preimage. k is a [big.Int] because the cofactor-clearing constant
+// can exceed 64 bits.
+func (g2 *G2) mulByConstant(P *G2Affine, k *big.Int) *G2Affine {
+	digits := naf4Digits(k) // LSB-first; each digit is 0 or an odd d with |d| < 8
+	// precompute the odd multiples 1P, 3P, 5P, 7P (negated on demand)
+	p2 := g2.doubleGeneric(P, true)
+	var odd [8]*G2Affine
+	odd[1] = P
+	odd[3] = g2.AddUnified(p2, P)
+	odd[5] = g2.AddUnified(odd[3], p2)
+	odd[7] = g2.AddUnified(odd[5], p2)
+	pick := func(d int8) *G2Affine {
+		if d > 0 {
+			return odd[d]
+		}
+		return g2.neg(odd[-d])
+	}
+	top := len(digits) - 1
+	for top >= 0 && digits[top] == 0 {
+		top--
+	}
+	acc := pick(digits[top])
+	for i := top - 1; i >= 0; i-- {
+		acc = g2.doubleGeneric(acc, true) // unified (complete) doubling
+		if digits[i] != 0 {
+			acc = g2.AddUnified(acc, pick(digits[i]))
+		}
+	}
+	return acc
+}
+
+// naf4Digits returns the width-4 non-adjacent form of k > 0, least-significant
+// digit first: each digit is 0 or an odd integer with |d| < 8, nonzero digits are
+// at least 4 positions apart, and Σ digits[i]·2^i == k.
+func naf4Digits(k *big.Int) []int8 {
+	k = new(big.Int).Set(k)
+	mask := big.NewInt(15)
+	tmp := new(big.Int)
+	var digits []int8
+	for k.Sign() > 0 {
+		var d int8
+		if k.Bit(0) == 1 {
+			m := int8(tmp.And(k, mask).Int64())
+			if m >= 8 {
+				m -= 16
+			}
+			d = m
+			k.Sub(k, big.NewInt(int64(d)))
+		}
+		digits = append(digits, d)
+		k.Rsh(k, 1)
+	}
+	return digits
+}
+
 func (g2 *G2) IsEqual(p, q *G2Affine) frontend.Variable {
 	xEqual := g2.Ext2.IsEqual(&p.P.X, &q.P.X)
 	yEqual := g2.Ext2.IsEqual(&p.P.Y, &q.P.Y)
@@ -451,6 +522,14 @@ func (g2 *G2) Select(b frontend.Variable, p, q *G2Affine) *G2Affine {
 //
 // [EEMP25]: https://eprint.iacr.org/2025/933
 func (g2 *G2) ScalarMul(Q *G2Affine, s *Scalar, opts ...algopts.AlgebraOption) *G2Affine {
+	// when Q is a compile-time constant subgroup point (for example a fixed
+	// verification-key or SRS point), use the fixed-base comb method with
+	// precomputed tables (see fixedbase_g2.go). It uses complete arithmetic
+	// and handles the zero scalar; [algopts.WithIncompleteArithmetic] is a
+	// no-op on this path.
+	if d, ok := g2.g2CombTryConst(Q); ok {
+		return g2.scalarMulComb(d, s)
+	}
 	return g2.scalarMulGLVAndFakeGLV(Q, s, opts...)
 }
 
@@ -565,6 +644,41 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 		isInputPointAtInfinity = g2.api.And(g2.Ext2.IsZero(&Q.P.X), g2.Ext2.IsZero(&Q.P.Y))
 		_Q = g2.Select(isInputPointAtInfinity, dummyQ, Q)
 		R = g2.Select(isScalarOne, dummyR, R)
+	}
+
+	// Subgroup binding: force the hinted output R = [s]Q into the prime-order G2
+	// subgroup via a preimage check [c]S == R with S constrained on-curve, where
+	// c = g2CofactorClearingConstant = 10069·5864401·1875725156269 clears every
+	// cofactor prime < 2^nbits (h = 10069·5864401·1875725156269·(177-bit prime);
+	// the 177-bit prime part has order ≫ 2^nbits, out of reach of the r^(1/4)
+	// sub-scalars). Without this, a torsion-shifted R' = [s]Q + T with ord(T) | c
+	// satisfies the accumulator identity and would be accepted as [s]Q.
+	{
+		_, preimg, _, errPre := emulated.NewVarGenericHint(g2.api, 0, 4, 0, nil,
+			[]*emulated.Element[BaseField]{&Q.P.X.A0, &Q.P.X.A1, &Q.P.Y.A0, &Q.P.Y.A1},
+			[]*emulated.Element[ScalarField]{s},
+			scalarMulG2CofactorPreimageHint)
+		if errPre != nil {
+			panic(fmt.Sprintf("scalarMulG2CofactorPreimageHint: %v", errPre))
+		}
+		S := &G2Affine{P: g2AffP{
+			X: fields_bn254.E2{A0: *preimg[0], A1: *preimg[1]},
+			Y: fields_bn254.E2{A0: *preimg[2], A1: *preimg[3]},
+		}}
+		if !cfg.IncompleteArithmetic {
+			// R = O in the s=0 / Q=∞ cases: the identity has no affine preimage, so
+			// substitute a dummy on-curve point and make the equality vacuous to
+			// preserve completeness.
+			skip := g2.api.Or(isScalarZero, isInputPointAtInfinity)
+			S = g2.Select(skip, &G2Affine{P: *g2.g2Gen}, S)
+			g2.assertIsOnCurve(S)
+			cS := g2.mulByConstant(S, g2CofactorClearingConstant)
+			g2.AssertIsEqual(cS, g2.Select(skip, cS, originalR))
+		} else {
+			g2.assertIsOnCurve(S)
+			cS := g2.mulByConstant(S, g2CofactorClearingConstant)
+			g2.AssertIsEqual(cS, originalR)
+		}
 	}
 
 	addFn := g2.add

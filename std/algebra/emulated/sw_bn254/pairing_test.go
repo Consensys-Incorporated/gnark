@@ -10,6 +10,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -785,4 +786,41 @@ func BenchmarkPairing(b *testing.B) {
 			}
 		}
 	})
+}
+
+// zeroHintOutputs is a malicious hint replacement returning the all-zero
+// witness. It is used to exercise the residue-witness invertibility anchor.
+func zeroHintOutputs(_ *big.Int, _, outputs []*big.Int) error {
+	for i := range outputs {
+		outputs[i].SetInt64(0)
+	}
+	return nil
+}
+
+// TestFinalExponentiationIsOneRejectsZeroWitness is a regression test for the
+// zero-residue-witness soundness bug: the check
+// x·cubicNonResiduePower == residueWitness^λ is homogeneous in the hint
+// outputs, so the all-zero finalExpHint output degenerates it to 0 == 0 for
+// any x. The invertibility anchor (residueWitness·residueWitness⁻¹ == 1) must
+// reject it. Uses the same valid inputs as TestFinalExponentiationIsOneTestSolve.
+func TestFinalExponentiationIsOneRejectsZeroWitness(t *testing.T) {
+	assert := test.NewAssert(t)
+	// e(a,2b) * e(-2a,b) == 1
+	p1, q1 := randomG1G2Affines()
+	var p2 bn254.G1Affine
+	p2.Double(&p1).Neg(&p2)
+	var q2 bn254.G2Affine
+	q2.Set(&q1)
+	q1.Double(&q1)
+	ml, err := bn254.MillerLoop(
+		[]bn254.G1Affine{p1, p2},
+		[]bn254.G2Affine{q1, q2},
+	)
+	assert.NoError(err)
+	witness := FinalExponentiationIsOne{
+		InGt: NewGTEl(ml),
+	}
+	err = test.IsSolved(&FinalExponentiationIsOne{}, &witness, ecc.BN254.ScalarField(),
+		test.WithReplacementHint(solver.GetHintID(finalExpHint), zeroHintOutputs))
+	assert.Error(err, "all-zero residue witness must be rejected by the invertibility anchor")
 }

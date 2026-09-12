@@ -605,6 +605,19 @@ func (builder *builder[E]) Lookup2(b0, b1 frontend.Variable, i0, i1, i2, i3 fron
 		return in2
 	}
 
+	if b0IsConstant {
+		if builder.isCstOne(c0) {
+			return builder.Select(s1, in3, in1)
+		}
+		return builder.Select(s1, in2, in0)
+	}
+	if b1IsConstant {
+		if builder.isCstOne(c1) {
+			return builder.Select(s0, in3, in2)
+		}
+		return builder.Select(s0, in1, in0)
+	}
+
 	// two-bit lookup for the general case can be done with three constraints as
 	// following:
 	//    (1) (in3 - in2 - in1 + in0) * s1 = tmp1 - in1 + in0

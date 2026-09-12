@@ -1,6 +1,44 @@
 
+<a name="v0.16.3"></a>
+## [v0.16.3] - 2026-08-24
+### Fix
+- range check quotient for small fields
+- update version
+<a name="v0.16.2"></a>
+## [v0.16.2] - 2026-08-21
+### Fix
+- Bind quotient in smallCheckZero
+- **sha3:** Bind the Euclidean relation length
+<a name="v0.16.1"></a>
+## [v0.16.1] - 2026-08-20
+### Fix
+- AddUnified for bw6-761 2-torsion points
+<a name="v0.16.0"></a>
+## [v0.16.0] - 2026-08-19
+### Build
+- **deps:** bump golang.org/x/crypto from 0.48.0 to 0.52.0 in the go_modules group across 1 directory ([#1793](https://github.com/Consensys/gnark/issues/1793))
+### Chore
+- prepare v0.16.0 release
+- update dependencies ([#1803](https://github.com/Consensys/gnark/issues/1803))
+- pin and update GitHub Actions to latest releases ([#1784](https://github.com/Consensys/gnark/issues/1784))
+- remove FRI verifier gadget ([#1777](https://github.com/Consensys/gnark/issues/1777))
+### Feat
+- map-to-curve relations ([#1746](https://github.com/Consensys/gnark/issues/1746))
+### Fix
+- regenerate gkr_poseidon2 binary file
+- do not discard returned value in Miller loop precomputelines ([#1786](https://github.com/Consensys/gnark/issues/1786))
+- validate Plonk proof structure according to verifying key ([#1787](https://github.com/Consensys/gnark/issues/1787))
+- GLV subscalar range checks ([#1778](https://github.com/Consensys/gnark/issues/1778))
+### Perf
+- optimize `Lookup2` and `Xor(x,0)` ([#1801](https://github.com/Consensys/gnark/issues/1801))
+- twisted Edwards lattice-based double-base MSM ([#1765](https://github.com/Consensys/gnark/issues/1765))
+- G2 lattice-based GLV+FakeGLV scalar-mul ([#1764](https://github.com/Consensys/gnark/issues/1764))
+- use lattice scalar decomposition for tighter scalar-mul bounds ([#1763](https://github.com/Consensys/gnark/issues/1763))
+- **bls12-377:** randomized Schwartz-Zippel in native Fp6 and Fp12 ([#1760](https://github.com/Consensys/gnark/issues/1760))
+### Refactor
+- enforce least-privilege in GitHub Actions workflows ([#1785](https://github.com/Consensys/gnark/issues/1785))
 <a name="v0.15.0"></a>
-## [v0.15.0] - 2026-03-11
+## [v0.15.0] - 2026-05-14
 ### Build
 - updated to latest gnark crypto api change (code gen) ([#1668](https://github.com/Consensys/gnark/issues/1668))
 - **deps:** bump golang.org/x/crypto from 0.41.0 to 0.45.0 in the go_modules group across 1 directory ([#1652](https://github.com/Consensys/gnark/issues/1652))
@@ -8,8 +46,6 @@
 ### CI
 - enable security code scanner ([#1655](https://github.com/Consensys/gnark/issues/1655))
 ### Chore
-- generate release updates
-- update chglog config
 - pin GitHub Actions to commit SHAs ([#1766](https://github.com/Consensys/gnark/issues/1766))
 - golangcilint update ([#1726](https://github.com/Consensys/gnark/issues/1726))
 - add dependabot configuration for GitHub Actions updates ([#1714](https://github.com/Consensys/gnark/issues/1714))
@@ -23,28 +59,27 @@
 - update README.md ([#1712](https://github.com/Consensys/gnark/issues/1712))
 - added zkBTC to gnark known users ([#1658](https://github.com/Consensys/gnark/issues/1658))
 ### Feat
-- implement log-derivative argument over small fields ([#1673](https://github.com/Consensys/gnark/issues/1673))
-- implement BLS signature verification (minimal public key) ([#1473](https://github.com/Consensys/gnark/issues/1473))
-- clean up interface assertions in circuits ([#1685](https://github.com/Consensys/gnark/issues/1685))
-- allow replacing hints in test engine ([#1737](https://github.com/Consensys/gnark/issues/1737))
+- better emulation for small fields in large fields ([#1682](https://github.com/Consensys/gnark/issues/1682))
+- correct curve names in error messages and vector type ([#1587](https://github.com/Consensys/gnark/issues/1587))
+- make elliptic curve arithmetic complete by default and only fallback to incomplete path on request ([#1751](https://github.com/Consensys/gnark/issues/1751))
 - add grumpkin curve support ([#1729](https://github.com/Consensys/gnark/issues/1729))
 - Test engine to store elements in Montgomery format ([#1695](https://github.com/Consensys/gnark/issues/1695))
 - add new api to profile package to capture virtual constraints ([#1696](https://github.com/Consensys/gnark/issues/1696))
 - add PointEval precompiles for 16-bit limbs ([#1689](https://github.com/Consensys/gnark/issues/1689))
 - emulated arithmetic bound optimization ([#1688](https://github.com/Consensys/gnark/issues/1688))
 - Compiled Gates for GKR ([#1676](https://github.com/Consensys/gnark/issues/1676))
-- correct curve names in error messages and vector type ([#1587](https://github.com/Consensys/gnark/issues/1587))
-- make elliptic curve arithmetic complete by default and only fallback to incomplete path on request ([#1751](https://github.com/Consensys/gnark/issues/1751))
-- Enable multiple GKR sub-circuits ([#1661](https://github.com/Consensys/gnark/issues/1661))
 - add internal Koalabear E4 extension for field emulation and logderivative argument ([#1672](https://github.com/Consensys/gnark/issues/1672))
-- add tool to modify all files before new release
+- allow replacing hints in test engine ([#1737](https://github.com/Consensys/gnark/issues/1737))
+- implement log-derivative argument over small fields ([#1673](https://github.com/Consensys/gnark/issues/1673))
+- clean up interface assertions in circuits ([#1685](https://github.com/Consensys/gnark/issues/1685))
+- Enable multiple GKR sub-circuits ([#1661](https://github.com/Consensys/gnark/issues/1661))
 - add example for printing constraints ([#1643](https://github.com/Consensys/gnark/issues/1643))
 - EIP-7951 for ECDSA on P-256 curve ([#1649](https://github.com/Consensys/gnark/issues/1649))
 - implement flag based recursive groth16 and EdDSA check ([#1647](https://github.com/Consensys/gnark/issues/1647))
 - add BLS12-377, BLS12-381 and BW6-761 GPU acceleration support for Groth16 ([#1625](https://github.com/Consensys/gnark/issues/1625))
 - add Grumpkin elliptic curve (native 2-cycle with BN254) ([#1409](https://github.com/Consensys/gnark/issues/1409))
 - allow taking benchmarking instance in NewAssert ([#1607](https://github.com/Consensys/gnark/issues/1607))
-- better emulation for small fields in large fields ([#1682](https://github.com/Consensys/gnark/issues/1682))
+- implement BLS signature verification (minimal public key) ([#1473](https://github.com/Consensys/gnark/issues/1473))
 - pointeval precompile circuit for failing inputs  ([#1572](https://github.com/Consensys/gnark/issues/1572))
 - **poseidon2:** support BN254 widths t=4,8,12,16; fix matMulExternal indexing ([#1743](https://github.com/Consensys/gnark/issues/1743))
 - GKR-Hashers ([#1512](https://github.com/Consensys/gnark/issues/1512))
@@ -95,6 +130,8 @@
 - remove bls24-315, bls24-317, and bw6-633 ([#1708](https://github.com/Consensys/gnark/issues/1708))
 - support dynamic emulation parameters for ecrec ([#1660](https://github.com/Consensys/gnark/issues/1660))
 - PLONK commitment input and output registration ([#1642](https://github.com/Consensys/gnark/issues/1642))
+### Release
+- gnark v0.15.0 ([#1731](https://github.com/Consensys/gnark/issues/1731))
 ### Test
 - add small field test in checkcircuit ([#1671](https://github.com/Consensys/gnark/issues/1671))
 - handle gnark-crypto not returning malleable signatures anymore ([#1601](https://github.com/Consensys/gnark/issues/1601))
@@ -3103,6 +3140,10 @@
 - Merge pull request [#8](https://github.com/Consensys/gnark/issues/8) from ConsenSys/internal-curve-tests
 - Merge pull request [#7](https://github.com/Consensys/gnark/issues/7) from ConsenSys/develop Fixed [#6](https://github.com/Consensys/gnark/issues/6)
 - Merge pull request [#5](https://github.com/Consensys/gnark/issues/5) from ConsenSys/go1.14_deps
+[v0.16.3]: https://github.com/Consensys/gnark/compare/v0.16.2...v0.16.3
+[v0.16.2]: https://github.com/Consensys/gnark/compare/v0.16.1...v0.16.2
+[v0.16.1]: https://github.com/Consensys/gnark/compare/v0.16.0...v0.16.1
+[v0.16.0]: https://github.com/Consensys/gnark/compare/v0.15.0...v0.16.0
 [v0.15.0]: https://github.com/Consensys/gnark/compare/v0.14.0...v0.15.0
 [v0.14.0]: https://github.com/Consensys/gnark/compare/v0.13.0...v0.14.0
 [v0.13.0]: https://github.com/Consensys/gnark/compare/v0.12.0...v0.13.0

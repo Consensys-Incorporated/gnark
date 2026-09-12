@@ -203,9 +203,25 @@ func (p *g2AffP) scalarMulBySeed(api frontend.API, Q *g2AffP) *g2AffP {
 func (p *g2AffP) ScalarMul(api frontend.API, Q g2AffP, s interface{}, opts ...algopts.AlgebraOption) *g2AffP {
 	if n, ok := api.Compiler().ConstantValue(s); ok {
 		return p.constScalarMul(api, Q, n, opts...)
-	} else {
-		return p.varScalarMul(api, Q, s, opts...)
 	}
+	// when Q is a compile-time constant point, use the fixed-base comb
+	// method with precomputed tables (complete arithmetic, handles the zero
+	// scalar). See fixedbase_g2.go.
+	if x0, ok := api.Compiler().ConstantValue(Q.X.A0); ok {
+		if x1, ok := api.Compiler().ConstantValue(Q.X.A1); ok {
+			if y0, ok := api.Compiler().ConstantValue(Q.Y.A0); ok {
+				if y1, ok := api.Compiler().ConstantValue(Q.Y.A1); ok {
+					if d, err := g2CombDataFor(x0, x1, y0, y1); err == nil && api.Compiler().FieldBitLen() > d.n+2 {
+						res := g2CombScalarMul(api, d, s)
+						p.X = res.X
+						p.Y = res.Y
+						return p
+					}
+				}
+			}
+		}
+	}
+	return p.varScalarMul(api, Q, s, opts...)
 }
 
 // varScalarMul sets P = [s]Q and returns P. It doesn't modify Q nor s.
@@ -503,6 +519,21 @@ func (p *g2AffP) DoubleAndAdd(api frontend.API, p1, p2 *g2AffP) *g2AffP {
 // does not support complete arithmetic and will produce incorrect results for
 // s=0.
 func (p *g2AffP) ScalarMulBase(api frontend.API, s frontend.Variable) *g2AffP {
+	// use the fixed-base comb on the generator when supported (complete
+	// arithmetic, handles the zero scalar); fall back to the legacy
+	// precomputed-table double-and-add otherwise.
+	_, _, _, g2gen := bls12377.Generators()
+	if d, err := g2CombDataFor(
+		g2gen.X.A0.BigInt(new(big.Int)),
+		g2gen.X.A1.BigInt(new(big.Int)),
+		g2gen.Y.A0.BigInt(new(big.Int)),
+		g2gen.Y.A1.BigInt(new(big.Int)),
+	); err == nil && api.Compiler().FieldBitLen() > d.n+2 {
+		res := g2CombScalarMul(api, d, s)
+		p.X = res.X
+		p.Y = res.Y
+		return p
+	}
 
 	points := getTwistPoints()
 

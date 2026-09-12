@@ -19,7 +19,7 @@ permissions: {} # lock everything by default (least-privilege)
 
 jobs:
   security-scan:
-    uses: MetaMask/action-security-code-scanner/.github/workflows/security-scan.yml@ff5edd492dfd4a70813066fe9f1552a2ac13766f # v2.1.0
+    uses: MetaMask/action-security-code-scanner/.github/workflows/security-scan.yml@becb242930b3cc271c26da0280050db9c157e291 # v2.1.1
     permissions:
       actions: read
       contents: read

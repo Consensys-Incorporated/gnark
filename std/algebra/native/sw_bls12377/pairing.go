@@ -20,9 +20,9 @@ var loopCounter = [64]int8{
 	0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 1,
 }
 
-// MillerLoopClassical computes the product of n miller loops (n can be 1)
+// MillerLoop computes the product of n miller loops (n can be 1)
 // ∏ᵢ { fᵢ_{x₀,Q}(P) }
-func MillerLoopClassical(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
+func MillerLoop(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 
 	// check input size match
 	n := len(P)
@@ -37,12 +37,12 @@ func MillerLoopClassical(api frontend.API, P []G1Affine, Q []G2Affine) (GT, erro
 		}
 		lines[i] = *Q[i].Lines
 	}
-	return millerLoopLinesClassical(api, P, lines)
+	return millerLoopLines(api, P, lines)
 
 }
 
-// millerLoopLinesClassical computes the multi-Miller loop from points in G1 and precomputed lines in G2
-func millerLoopLinesClassical(api frontend.API, P []G1Affine, lines []lineEvaluations) (GT, error) {
+// millerLoopLines computes the multi-Miller loop from points in G1 and precomputed lines in G2
+func millerLoopLines(api frontend.API, P []G1Affine, lines []lineEvaluations) (GT, error) {
 
 	// check input size match
 	n := len(P)
@@ -201,8 +201,15 @@ func FinalExponentiation(api frontend.API, e1 GT) GT {
 
 	// easy part
 	// (p⁶-1)(p²+1)
+	// t0 = conj(result)·result⁻¹. Using Inverse (which constrains
+	// result·result⁻¹ == 1) rather than DivUnchecked rejects a witness GT equal
+	// to 0: a plain DivUnchecked(conj(0), 0) only enforces q·0 == 0, leaving the
+	// quotient a free, prover-chosen value (a soundness gap that lets a prover
+	// prove FinalExponentiation(0) == 1).
+	var invResult GT
+	invResult.Inverse(api, result)
 	t0.Conjugate(api, result)
-	t0.DivUnchecked(api, t0, result)
+	t0.Mul(api, t0, invResult)
 	result.FrobeniusSquare(api, t0).
 		Mul(api, result, t0)
 	t3 := result
@@ -227,24 +234,24 @@ func FinalExponentiation(api frontend.API, e1 GT) GT {
 	return result
 }
 
-// pairClassical calculates the reduced pairing for a set of points
+// Pair calculates the reduced pairing for a set of points
 // ∏ᵢ e(Pᵢ, Qᵢ).
 //
 // This function doesn't check that the inputs are in the correct subgroup
-func pairClassical(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
-	f, err := MillerLoopClassical(api, P, Q)
+func Pair(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
+	f, err := MillerLoop(api, P, Q)
 	if err != nil {
 		return GT{}, err
 	}
 	return FinalExponentiation(api, f), nil
 }
 
-// pairingCheckClassical calculates the reduced pairing for a set of points and asserts if the result is One
+// PairingCheck calculates the reduced pairing for a set of points and asserts if the result is One
 // ∏ᵢ e(Pᵢ, Qᵢ) =? 1
 //
 // This function doesn't check that the inputs are in the correct subgroups.
 // It uses the classical E12-based Miller loop.
-func pairingCheckClassical(api frontend.API, P []G1Affine, Q []G2Affine) error {
+func PairingCheck(api frontend.API, P []G1Affine, Q []G2Affine) error {
 
 	// check input size match
 	nP := len(P)
@@ -287,6 +294,14 @@ func pairingCheckClassical(api frontend.API, P []G1Affine, Q []G2Affine) error {
 	scalingFactor.B1.A1 = hint[15]
 	scalingFactor.B2.A0 = hint[16]
 	scalingFactor.B2.A1 = hint[17]
+
+	// Constrain residueWitness to be invertible (non-zero). The final check
+	// res·scalingFactor == Frobenius(residueWitness) is homogeneous in
+	// residueWitness (the Miller accumulator below is seeded with it), so the
+	// all-zero witness would satisfy it (0 == 0) for any P, Q. Inverse asserts
+	// residueWitness·residueWitness⁻¹ == 1, ruling that out.
+	var residueWitnessInv GT
+	residueWitnessInv.Inverse(api, residueWitness)
 
 	lines := make([]lineEvaluations, nQ)
 	for i := range Q {
@@ -361,23 +376,6 @@ func pairingCheckClassical(api frontend.API, P []G1Affine, Q []G2Affine) error {
 	return nil
 }
 
-// Pair calculates the reduced pairing for a set of points
-// ∏ᵢ e(Pᵢ, Qᵢ).
-//
-// This function doesn't check that the inputs are in the correct subgroup
-func Pair(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
-	return pairTorus(api, P, Q)
-}
-
-// PairingCheck calculates the reduced pairing for a set of points and asserts if the result is One
-// ∏ᵢ e(Pᵢ, Qᵢ) =? 1
-//
-// This function doesn't check that the inputs are in the correct subgroups.
-// It uses the optimized torus-based Miller loop internally.
-func PairingCheck(api frontend.API, P []G1Affine, Q []G2Affine) error {
-	return pairingCheckTorus(api, P, Q)
-}
-
 // doubleAndAddStep doubles p1 and adds p2 to the result in affine coordinates, and evaluates the line in Miller loop
 // https://eprint.iacr.org/2022/1162 (Section 6.1)
 func doubleAndAddStep(api frontend.API, p1, p2 *g2AffP) (g2AffP, *lineEvaluation, *lineEvaluation) {
@@ -389,7 +387,7 @@ func doubleAndAddStep(api frontend.API, p1, p2 *g2AffP) (g2AffP, *lineEvaluation
 	// compute lambda1 = (y2-y1)/(x2-x1)
 	n.Sub(api, p1.Y, p2.Y)
 	d.Sub(api, p1.X, p2.X)
-	l1.DivUnchecked(api, n, d)
+	l1 = divE2WithZeroGuard(api, n, d)
 
 	// x3 =lambda1**2-(p1.x+p2.x)
 	x3.Square(api, l1)
@@ -405,7 +403,7 @@ func doubleAndAddStep(api frontend.API, p1, p2 *g2AffP) (g2AffP, *lineEvaluation
 	// compute lambda2 = -lambda1-2*y1/(x3-x1)
 	n.Double(api, p1.Y)
 	d.Sub(api, x3, p1.X)
-	l2.DivUnchecked(api, n, d)
+	l2 = divE2WithZeroGuard(api, n, d)
 	l2.Add(api, l2, l1).Neg(api, l2)
 
 	// compute x4 = lambda2**2-(x1+x3)
@@ -439,7 +437,7 @@ func doubleStep(api frontend.API, p1 *g2AffP) (g2AffP, *lineEvaluation) {
 	// lambda = 3*p1.x**2/2*p.y
 	n.Square(api, p1.X).MulByFp(api, n, 3)
 	d.MulByFp(api, p1.Y, 2)
-	l.DivUnchecked(api, n, d)
+	l = divE2WithZeroGuard(api, n, d)
 
 	// xr = lambda**2-2*p1.x
 	xr.Square(api, l)
@@ -470,7 +468,7 @@ func linesCompute(api frontend.API, p1, p2 *g2AffP) (*lineEvaluation, *lineEvalu
 	// compute lambda1 = (y2-y1)/(x2-x1)
 	n.Sub(api, p1.Y, p2.Y)
 	d.Sub(api, p1.X, p2.X)
-	l1.DivUnchecked(api, n, d)
+	l1 = divE2WithZeroGuard(api, n, d)
 
 	// x3 =lambda1**2-p1.x-p2.x
 	x3.Square(api, l1)
@@ -485,7 +483,7 @@ func linesCompute(api frontend.API, p1, p2 *g2AffP) (*lineEvaluation, *lineEvalu
 	// compute lambda2 = -lambda1-2*y1/(x3-x1)
 	n.Double(api, p1.Y)
 	d.Sub(api, x3, p1.X)
-	l2.DivUnchecked(api, n, d)
+	l2 = divE2WithZeroGuard(api, n, d)
 	l2.Add(api, l2, l1).Neg(api, l2)
 
 	// compute line2
@@ -493,4 +491,23 @@ func linesCompute(api frontend.API, p1, p2 *g2AffP) (*lineEvaluation, *lineEvalu
 	line2.R1.Mul(api, l2, p1.X).Sub(api, line2.R1, p1.Y)
 
 	return &line1, &line2
+}
+
+// divE2WithZeroGuard returns n/d as a Miller-loop line slope, but constrains the
+// quotient to 0 when d == 0 instead of leaving it as a free (prover-chosen) hint
+// value. A plain DivUnchecked(n, 0) only enforces l·0 == n, i.e. 0 == 0, which
+// leaves l unconstrained; that is the soundness gap when Q = (0,0) (the point
+// at infinity) is fed to the Miller loop and every affine line evaluation becomes
+// 0/0. Non-degenerate steps (d != 0) are unchanged, and the degenerate value
+// matches the honest 0/0 = 0 convention, so completeness (incl. legitimate
+// G2-infinity inputs) is preserved.
+func divE2WithZeroGuard(api frontend.API, n, d fields_bls12377.E2) fields_bls12377.E2 {
+	dIsZero := d.IsZero(api)
+	var one, zero, dSafe, l, res fields_bls12377.E2
+	one.SetOne()
+	zero.SetZero()
+	dSafe.Select(api, dIsZero, one, d)
+	l.DivUnchecked(api, n, dSafe)
+	res.Select(api, dIsZero, zero, l)
+	return res
 }

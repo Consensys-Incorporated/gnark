@@ -26,20 +26,22 @@ type FieldParams interface {
 	Modulus() *big.Int // returns modulus. Do not modify.
 }
 
-// DynamicFieldParams extends the FieldParams interface to allow for limb size
-// and count depending on the native field size. If the field emulation
-// parameters do not implement this interface, then the limb size and count are
-// fixed to the values defined in the FieldParams interface.
+// DynamicFieldParams extends the FieldParams interface to allow for the limb
+// size to depend on the native field size. If the field emulation parameters do
+// not implement this interface, then the limb size and count are fixed to the
+// values defined in the FieldParams interface.
 //
 // The interface allows for optimized emulation in case the native field is
 // large (more than 256 bits) and enables field emulation when the native field
 // is small (less than 128 bits).
 //
+// Only the limb size is part of the interface. The number of limbs is always
+// derived from it and the modulus, see [GetEffectiveFieldParams].
+//
 // All defined parameters in the [emparams] package implement this interface.
 type DynamicFieldParams interface {
 	FieldParams
 
-	NbLimbsDynamic(field *big.Int) uint
 	BitsPerLimbDynamic(field *big.Int) uint
 }
 
@@ -106,13 +108,18 @@ func (s *staticFieldParams[T]) BitsPerLimb() uint { return s.nbBits }
 
 // GetEffectiveFieldParams returns the number of limbs and bits per limb for a
 // given field. If the field implements the DynamicFieldParams interface, then
-// the number of limbs and bits per limb are computed dynamically based on the
-// field size. Otherwise, the values are taken from the FieldParams interface.
+// the limb size is computed dynamically based on the field size and the number
+// of limbs is derived from it. Otherwise, the values are taken from the
+// FieldParams interface.
+//
+// The number of limbs is always the smallest count which fits the modulus, as
+// required by [NewField]. It is derived rather than declared so that the two
+// cannot drift apart.
 func GetEffectiveFieldParams[T FieldParams](field *big.Int) (nbLimbs, nbBits uint) {
 	var fp T
 	if f, ok := any(fp).(DynamicFieldParams); ok {
-		nbLimbs = f.NbLimbsDynamic(field)
 		nbBits = f.BitsPerLimbDynamic(field)
+		nbLimbs = (uint(fp.Modulus().BitLen()) + nbBits - 1) / nbBits
 	} else {
 		nbLimbs = fp.NbLimbs()
 		nbBits = fp.BitsPerLimb()

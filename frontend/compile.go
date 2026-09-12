@@ -99,7 +99,7 @@ func CompileGeneric[E constraint.Element](field *big.Int, newBuilder NewBuilderG
 
 func parseCircuit[E constraint.Element](builder Builder[E], circuit Circuit) (err error) {
 	// ensure circuit.Define has pointer receiver
-	if reflect.ValueOf(circuit).Kind() != reflect.Ptr {
+	if reflect.ValueOf(circuit).Kind() != reflect.Pointer {
 		return errors.New("frontend.Circuit methods must be defined on pointer receiver")
 	}
 

@@ -317,9 +317,6 @@ func (builder *builder[E]) Xor(a, b frontend.Variable) frontend.Variable {
 		return b0 ^ b1
 	}
 
-	res := builder.newInternalVariable()
-	builder.MarkBoolean(res)
-
 	// if one input is constant, ensure we put it in b.
 	if aConstant {
 		a, b = b, a
@@ -327,6 +324,12 @@ func (builder *builder[E]) Xor(a, b frontend.Variable) frontend.Variable {
 		_b = _a
 	}
 	if bConstant {
+		if _b.IsZero() {
+			return a
+		}
+
+		res := builder.newInternalVariable()
+		builder.MarkBoolean(res)
 		xa := a.(expr.Term[E])
 		// 1 - 2b
 		qL := builder.tOne
@@ -345,6 +348,9 @@ func (builder *builder[E]) Xor(a, b frontend.Variable) frontend.Variable {
 		// builder.addPlonkConstraint(xa, xb, res, builder.st.CoeffID(oneMinusTwoB), constraint.CoeffIdZero, constraint.CoeffIdZero, constraint.CoeffIdZero, constraint.CoeffIdMinusOne, builder.st.CoeffID(_b))
 		return res
 	}
+
+	res := builder.newInternalVariable()
+	builder.MarkBoolean(res)
 	xa := a.(expr.Term[E])
 	xb := b.(expr.Term[E])
 
@@ -477,6 +483,19 @@ func (builder *builder[E]) Lookup2(b0, b1 frontend.Variable, i0, i1, i2, i3 fron
 			return i3
 		}
 		return i2
+	}
+
+	if b0IsConstant {
+		if builder.cs.IsOne(c0) {
+			return builder.Select(b1, i3, i1)
+		}
+		return builder.Select(b1, i2, i0)
+	}
+	if b1IsConstant {
+		if builder.cs.IsOne(c1) {
+			return builder.Select(b0, i3, i2)
+		}
+		return builder.Select(b0, i1, i0)
 	}
 
 	// two-bit lookup for the general case can be done with three constraints as

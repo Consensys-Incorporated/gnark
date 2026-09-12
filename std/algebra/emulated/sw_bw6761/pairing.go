@@ -79,8 +79,12 @@ func (pr *Pairing) FinalExponentiation(z *GTEl) *GTEl {
 
 	// 1. Easy part
 	// (p³-1)(p+1)
+	// buf = conj(result)·result⁻¹. Using Inverse (which constrains
+	// result·result⁻¹ == 1) rather than DivUnchecked rejects a witness GT equal
+	// to 0: a plain DivUnchecked(conj(0), 0) only enforces q·0 == 0 and leaves
+	// the quotient free, letting a prover prove FinalExponentiation(0) == 1.
 	buf := pr.Conjugate(result)
-	buf = pr.DivUnchecked(buf, result)
+	buf = pr.Mul(buf, pr.Inverse(result))
 	result = pr.Frobenius(buf)
 	result = pr.Mul(result, buf)
 
@@ -142,13 +146,15 @@ func (pr *Pairing) AssertFinalExponentiationIsOne(x *GTEl) {
 	}
 
 	// Check that x == residueWitness^Λ
-	// where Λ = x₀+1+p(x₀^3-x₀^2-x₀) and residueWitness from the hint.
+	// where Λ = x₀+1+p(x₀³-x₀²-x₀) and residueWitness from the hint.
 
-	// exponentiation by U1=x₀^3-x₀^2-x₀
-	t0 := pr.Ext6.ExpByU1(&residueWitness)
-	t0 = pr.Ext6.Frobenius(t0)
-	// exponentiation by U2=x₀+1
+	// exponentiation by U2 = x₀+1
 	t1 := pr.Ext6.ExpByU2(&residueWitness)
+	// exponentiation by x₀³-x₀²-x₀ = (x₀³-x₀²+1) - (x₀+1) = U1 - U2,
+	// where ExpByU1 raises to U1 = x₀³-x₀²+1.
+	t0 := pr.Ext6.ExpByU1(&residueWitness)
+	t0 = pr.Ext6.DivUnchecked(t0, t1)
+	t0 = pr.Ext6.Frobenius(t0)
 	t0 = pr.Ext6.Mul(t0, t1)
 
 	pr.AssertIsEqual(t0, x)
@@ -658,7 +664,7 @@ func (pr *Pairing) doubleAndAddStep(p1, p2 *g2AffP, isSub bool) (*g2AffP, *lineE
 		n = pr.curveF.Sub(&p1.Y, &p2.Y)
 	}
 	d := pr.curveF.Sub(&p1.X, &p2.X)
-	l1 := pr.curveF.Div(n, d)
+	l1 := pr.divWithZeroGuard(n, d)
 
 	// compute x3 =λ1²-x1-x2
 	x3 := pr.curveF.Eval([][]*baseEl{{l1, l1}, {&p1.X}, {&p2.X}}, []int{1, -1, -1})
@@ -672,7 +678,7 @@ func (pr *Pairing) doubleAndAddStep(p1, p2 *g2AffP, isSub bool) (*g2AffP, *lineE
 	// compute -λ2 = λ1+2y1/(x3-x1)
 	ypyp := pr.curveF.MulConst(&p1.Y, big.NewInt(2))
 	x2xp := pr.curveF.Sub(x3, &p1.X)
-	l2 := pr.curveF.Div(ypyp, x2xp)
+	l2 := pr.divWithZeroGuard(ypyp, x2xp)
 	l2 = pr.curveF.Add(l1, l2)
 
 	// compute x4 = (-λ2)²-x1-x3
@@ -702,7 +708,7 @@ func (pr *Pairing) doubleStep(p1 *g2AffP) (*g2AffP, *lineEvaluation) {
 	n := pr.curveF.Mul(&p1.X, &p1.X)
 	n = pr.curveF.MulConst(n, big.NewInt(3))
 	d := pr.curveF.MulConst(&p1.Y, big.NewInt(2))
-	λ := pr.curveF.Div(n, d)
+	λ := pr.divWithZeroGuard(n, d)
 
 	// xr = λ²-2x
 	xr := pr.curveF.Eval([][]*baseEl{{λ, λ}, {&p1.X}}, []int{1, -2})
@@ -727,7 +733,7 @@ func (pr *Pairing) tangentCompute(p1 *g2AffP) *lineEvaluation {
 	n := pr.curveF.Mul(&p1.X, &p1.X)
 	n = pr.curveF.MulConst(n, big.NewInt(3))
 	d := pr.curveF.MulConst(&p1.Y, big.NewInt(2))
-	λ := pr.curveF.Div(n, d)
+	λ := pr.divWithZeroGuard(n, d)
 
 	var line lineEvaluation
 	line.R0 = *λ
@@ -735,4 +741,19 @@ func (pr *Pairing) tangentCompute(p1 *g2AffP) *lineEvaluation {
 
 	return &line
 
+}
+
+// divWithZeroGuard computes n/d as a line slope, but when d == 0 it returns 0
+// with the quotient *constrained* to 0 rather than left as a free (prover-chosen)
+// hint value. A plain Div(n, 0) only enforces λ·0 == n, i.e. 0 == 0, which leaves
+// λ unconstrained; that is the soundness gap when Q = (0,0) (the point at
+// infinity) is fed to the Miller loop and every affine line evaluation becomes
+// 0/0. Non-degenerate steps (d ≠ 0) are unchanged, and the degenerate value
+// matches the honest 0/0 = 0 convention, so completeness (incl. legitimate
+// G2-infinity inputs) is preserved.
+func (pr *Pairing) divWithZeroGuard(n, d *baseEl) *baseEl {
+	dIsZero := pr.curveF.IsZero(d)
+	dSafe := pr.curveF.Select(dIsZero, pr.curveF.One(), d)
+	λ := pr.curveF.Div(n, dSafe)
+	return pr.curveF.Select(dIsZero, pr.curveF.Zero(), λ)
 }

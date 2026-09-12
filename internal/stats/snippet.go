@@ -12,7 +12,10 @@ import (
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bn254"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bw6761"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
+	sw_emulated_maptocurve "github.com/consensys/gnark/std/algebra/emulated/sw_emulated/maptocurve_increment"
 	"github.com/consensys/gnark/std/algebra/native/sw_bls12377"
+	sw_bls12377_maptocurve "github.com/consensys/gnark/std/algebra/native/sw_bls12377/maptocurve_increment"
+	sw_grumpkin_maptocurve "github.com/consensys/gnark/std/algebra/native/sw_grumpkin/maptocurve_increment"
 	"github.com/consensys/gnark/std/hash/mimc"
 	"github.com/consensys/gnark/std/math/bits"
 	"github.com/consensys/gnark/std/math/emulated"
@@ -515,6 +518,54 @@ func initSnippets() {
 		selector.BinaryMux(api, []frontend.Variable{newVariable(), newVariable(), newVariable()}, []frontend.Variable{newVariable(), newVariable(), newVariable(), newVariable(), newVariable(), newVariable(), newVariable(), newVariable()})
 	})
 
+	// --- map-to-curve increment-and-check gadgets ---
+
+	registerEmulatedMaptocurveSnippet[emulated.BN254Fp, emulated.BN254Fr]("maptocurve_increment/x_bn254", true, ecc.BN254)
+	registerEmulatedMaptocurveSnippet[emulated.BN254Fp, emulated.BN254Fr]("maptocurve_increment/y_bn254", false, ecc.BN254)
+	registerEmulatedMaptocurveSnippet[emulated.Secp256k1Fp, emulated.Secp256k1Fr]("maptocurve_increment/x_secp256k1", true, ecc.BN254)
+	registerEmulatedMaptocurveSnippet[emulated.Secp256k1Fp, emulated.Secp256k1Fr]("maptocurve_increment/y_secp256k1", false, ecc.BN254)
+	registerEmulatedMaptocurveSnippet[emulated.P256Fp, emulated.P256Fr]("maptocurve_increment/x_p256", true, ecc.BN254)
+	registerEmulatedMaptocurveSnippet[emulated.P256Fp, emulated.P256Fr]("maptocurve_increment/y_p256", false, ecc.BN254)
+
+	registerSnippet("maptocurve_increment/y_grumpkin", func(api frontend.API, newVariable func() frontend.Variable) {
+		_, _, _ = sw_grumpkin_maptocurve.YIncrement(api, newVariable())
+	}, ecc.BN254)
+
+	registerSnippet("maptocurve_increment/y_bls12377", func(api frontend.API, newVariable func() frontend.Variable) {
+		_, _, _ = sw_bls12377_maptocurve.YIncrement(api, newVariable())
+	}, ecc.BW6_761)
+}
+
+// registerEmulatedMaptocurveSnippet wires up an emulated map-to-curve
+// increment-and-check gadget snippet for the given base/scalar field pair.
+// When xVariant is true, it exercises [Mapper.XIncrement]; otherwise it
+// exercises [Mapper.YIncrement].
+func registerEmulatedMaptocurveSnippet[B, S emulated.FieldParams](name string, xVariant bool, curves ...ecc.ID) {
+	registerSnippet(name, func(api frontend.API, newVariable func() frontend.Variable) {
+		crv, err := sw_emulated.New[B, S](api, sw_emulated.GetCurveParams[B]())
+		if err != nil {
+			panic(err)
+		}
+		m, err := sw_emulated_maptocurve.NewMapper[B, S](api, crv)
+		if err != nil {
+			panic(err)
+		}
+		field, err := emulated.NewField[B](api)
+		if err != nil {
+			panic(err)
+		}
+		nbLimbs, _ := emulated.GetEffectiveFieldParams[B](api.Compiler().Field())
+		limbs := make([]frontend.Variable, nbLimbs)
+		for i := range limbs {
+			limbs[i] = newVariable()
+		}
+		msg := field.NewElement(limbs)
+		if xVariant {
+			_, _ = m.XIncrement(msg)
+		} else {
+			_, _ = m.YIncrement(msg)
+		}
+	}, curves...)
 }
 
 type snippetCircuit struct {
