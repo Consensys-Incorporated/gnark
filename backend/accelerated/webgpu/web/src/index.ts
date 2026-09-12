@@ -10,7 +10,7 @@
  * const curve = await createBN254(ctx);
  *
  * // G1 scalar multiplication
- * const result = await curve.g1.scalarMul(base, scalar);
+ * const result = await curve.g1.scalarMulAffine(base, scalar);
  *
  * // Multi-scalar multiplication (Pippenger)
  * const msm = await curve.g1msm.pippengerPackedJacobianBases(bases, scalars, opts);
@@ -29,8 +29,9 @@
  *
  * Use `createBN254`, `createBLS12381`, or `createBLS12377` (or the lower-level `createCurveModule`) to
  * create a {@link CurveModule}.  Each module contains sub-modules for field arithmetic
- * ({@link FieldModule} `fr`, `fp`), curve arithmetic ({@link G1Module}, {@link G2Module}),
- * NTT ({@link NTTModule}), and MSM ({@link G1MSMModule}, {@link G2MSMModule}).
+ * ({@link FieldModule} `fr`, `fp`), curve arithmetic ({@link GroupModule} as `g1` / `g2`),
+ * NTT ({@link NTTModule}), MSM ({@link MSMModule} as `g1msm` / `g2msm`) and the Go WASM
+ * provers ({@link ProofModule} as `groth16` / `plonk`).
  *
  * ## Coordinate conventions
  *
@@ -80,26 +81,35 @@ export type {
   CurveGPUMSMOptions,
   CurveModule,
   FieldModule,
+  GroupModule,
   G1Module,
   G2Module,
+  MSMModule,
   G1MSMModule,
   G2MSMModule,
+  ResidentBases,
+  NTTModule,
+  Groth16QuotientModule,
+  ProofConstraintSystem,
+  ProofHandle,
+  ProofModule,
+  ProofRuntimeKind,
+  ProofRuntimeOptions,
+  Groth16Module,
+  Groth16ProvingKeyFormat,
+  PlonkModule,
+  PlonkProvingKeyFormat,
+  SupportedCurveID,
+  // Deprecated aliases kept for source compatibility.
   Groth16ConstraintSystem,
   Groth16Handle,
-  NTTModule,
-  Groth16Module,
   Groth16ProvingKey,
-  Groth16ProvingKeyFormat,
-  Groth16QuotientModule,
   Groth16RuntimeKind,
   Groth16RuntimeOptions,
   Groth16VerificationKey,
-  SupportedCurveID,
   PlonkConstraintSystem,
   PlonkHandle,
-  PlonkModule,
   PlonkProvingKey,
-  PlonkProvingKeyFormat,
   PlonkRuntimeKind,
   PlonkRuntimeOptions,
   PlonkVerificationKey,
@@ -122,15 +132,14 @@ export {
   createBN254,
   createCurveModule,
   curveDefinition,
+  shapeFor,
   supportedCurveIds,
 } from "./curvegpu/curves.js";
 
 export type { CurveDefinition } from "./curvegpu/curves.js";
 
 export type { CurveID, FieldID, FieldShape } from "./curvegpu/types.js";
-export { shapeFor } from "./curvegpu/types.js";
-export { defaultGroth16RuntimeURLs } from "./curvegpu/groth16_module.js";
-export { defaultPlonkRuntimeURLs } from "./curvegpu/plonk_module.js";
+export { defaultGroth16RuntimeURLs, defaultPlonkRuntimeURLs } from "./curvegpu/proof_module.js";
 
 export type {
   MontgomeryLEBytes,

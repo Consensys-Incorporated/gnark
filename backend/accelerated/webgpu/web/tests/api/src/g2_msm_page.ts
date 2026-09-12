@@ -1,253 +1,104 @@
-export { };
-
-import { bytesToHex, fetchJSON, hexToBytes } from "../../../src/curvegpu/browser_utils.js";
-import type {
-  CurveGPUElementBytes,
-  CurveGPUFp2Element,
-  CurveGPUG2AffinePoint,
-  CurveGPUG2JacobianPoint,
-  CurveModule,
-  SupportedCurveID,
-} from "../../../src/index.js";
+import type { CurveGPUG2AffinePoint, CurveGPUG2JacobianPoint, CurveModule } from "../../../src/index.js";
+import { fetchJSON, packBytes } from "./shared/browser_utils.js";
+import {
+  bytesList,
+  expectG2AffineBatch,
+  g2AffineFromHex,
+  suiteTitle,
+  vectorPath,
+  type HexG2Affine,
+  type HexG2Jacobian,
+  type Log,
+  type SuiteResult,
+} from "./shared/fixtures.js";
 import { curveDisplayName } from "./shared/page_library.js";
-
-type Fp2Point = {
-  c0_bytes_le: string;
-  c1_bytes_le: string;
-};
-
-type AffinePoint = {
-  x: Fp2Point;
-  y: Fp2Point;
-};
-
-type JacobianPoint = {
-  x: Fp2Point;
-  y: Fp2Point;
-  z: Fp2Point;
-};
-
-type MSMCase = {
-  name: string;
-  bases_affine: AffinePoint[];
-  scalars_bytes_le: string[];
-  expected_affine: JacobianPoint;
-};
 
 type G2MSMVectors = {
   terms_per_instance: number;
-  msm_cases: MSMCase[];
+  msm_cases: { name: string; bases_affine: HexG2Affine[]; scalars_bytes_le: string[]; expected_affine: HexG2Jacobian }[];
 };
 
-type G2MSMConfig = {
-  curve: SupportedCurveID;
-  title: string;
-  vectorPath: string;
-};
-
-const CONFIGS: Partial<Record<SupportedCurveID, G2MSMConfig>> = {
-  bn254: {
-    curve: "bn254",
-    title: "BN254 G2 MSM Browser Smoke",
-    vectorPath: "/tests/fixtures/api/vectors/g2/bn254_g2_msm.json",
-  },
-  bls12_377: {
-    curve: "bls12_377",
-    title: "BLS12-377 G2 MSM Browser Smoke",
-    vectorPath: "/tests/fixtures/api/vectors/g2/bls12_377_g2_msm.json",
-  },
-  bls12_381: {
-    curve: "bls12_381",
-    title: "BLS12-381 G2 MSM Browser Smoke",
-    vectorPath: "/tests/fixtures/api/vectors/g2/bls12_381_g2_msm.json",
-  },
-};
-
-function fp2FromHex(point: Fp2Point): CurveGPUFp2Element {
-  return { c0: hexToBytes(point.c0_bytes_le), c1: hexToBytes(point.c1_bytes_le) };
-}
-
-function affineFromHex(point: AffinePoint): CurveGPUG2AffinePoint {
-  return { x: fp2FromHex(point.x), y: fp2FromHex(point.y) };
-}
-
-function affineToHex(point: CurveGPUG2AffinePoint): AffinePoint {
-  return {
-    x: { c0_bytes_le: bytesToHex(point.x.c0), c1_bytes_le: bytesToHex(point.x.c1) },
-    y: { c0_bytes_le: bytesToHex(point.y.c0), c1_bytes_le: bytesToHex(point.y.c1) },
-  };
-}
-
-function toAffinePoint(point: CurveGPUG2JacobianPoint): CurveGPUG2AffinePoint {
-  return { x: point.x, y: point.y };
-}
-
-function equalFp2(a: Fp2Point, b: Fp2Point): boolean {
-  return a.c0_bytes_le === b.c0_bytes_le && a.c1_bytes_le === b.c1_bytes_le;
-}
-
-function expectAffineBatch(name: string, got: readonly CurveGPUG2AffinePoint[], want: readonly JacobianPoint[]): void {
-  if (got.length !== want.length) {
-    throw new Error(`${name}: length mismatch got=${got.length} want=${want.length}`);
-  }
-  for (let i = 0; i < got.length; i += 1) {
-    const gotHex = affineToHex(got[i]);
-    if (!equalFp2(gotHex.x, want[i].x) || !equalFp2(gotHex.y, want[i].y)) {
-      throw new Error(
-        `${name}: mismatch at index ${i}` +
-        ` got=(${gotHex.x.c0_bytes_le}/${gotHex.x.c1_bytes_le},${gotHex.y.c0_bytes_le}/${gotHex.y.c1_bytes_le})` +
-        ` want=(${want[i].x.c0_bytes_le}/${want[i].x.c1_bytes_le},${want[i].y.c0_bytes_le}/${want[i].y.c1_bytes_le})`,
-      );
-    }
-  }
-}
-
-async function expectJacobianBatchAffineEqual(
-  module: CurveModule,
-  name: string,
-  got: readonly CurveGPUG2JacobianPoint[],
-  want: readonly JacobianPoint[],
-): Promise<void> {
-  const affine = await module.g2.jacobianToAffineBatch(got);
-  expectAffineBatch(name, affine, want);
-}
-
-function packAffinePointsWithOneZ(
-  bases: readonly CurveGPUG2AffinePoint[],
-  componentBytes: number,
-  pointBytes: number,
-  oneMontC0: Uint8Array,
-): Uint8Array {
-  const out = new Uint8Array(bases.length * pointBytes);
-  for (let i = 0; i < bases.length; i += 1) {
-    const base = i * pointBytes;
-    out.set(bases[i].x.c0, base);
-    out.set(bases[i].x.c1, base + componentBytes);
-    out.set(bases[i].y.c0, base + 2 * componentBytes);
-    out.set(bases[i].y.c1, base + 3 * componentBytes);
-    const isInfinity =
-      bases[i].x.c0.every((byte) => byte === 0) &&
-      bases[i].x.c1.every((byte) => byte === 0) &&
-      bases[i].y.c0.every((byte) => byte === 0) &&
-      bases[i].y.c1.every((byte) => byte === 0);
-    if (!isInfinity) {
-      out.set(oneMontC0, base + 4 * componentBytes);
-    }
-  }
-  return out;
-}
-
-function packScalars(scalars: readonly CurveGPUElementBytes[]): Uint8Array {
-  const out = new Uint8Array(scalars.length * 32);
-  for (let i = 0; i < scalars.length; i += 1) {
-    out.set(scalars[i], i * 32);
-  }
-  return out;
-}
-
-function unpackJacobianPoints(
-  bytes: Uint8Array,
-  count: number,
-  componentBytes: number,
-  pointBytes: number,
-): CurveGPUG2JacobianPoint[] {
-  const out: CurveGPUG2JacobianPoint[] = [];
-  for (let i = 0; i < count; i += 1) {
-    const base = i * pointBytes;
-    out.push({
-      x: {
-        c0: bytes.slice(base, base + componentBytes),
-        c1: bytes.slice(base + componentBytes, base + 2 * componentBytes),
-      },
-      y: {
-        c0: bytes.slice(base + 2 * componentBytes, base + 3 * componentBytes),
-        c1: bytes.slice(base + 3 * componentBytes, base + 4 * componentBytes),
-      },
-      z: {
-        c0: bytes.slice(base + 4 * componentBytes, base + 5 * componentBytes),
-        c1: bytes.slice(base + 5 * componentBytes, base + 6 * componentBytes),
-      },
-    });
-  }
-  return out;
-}
-
-async function naiveMSMAffine(
-  module: CurveModule,
-  bases: readonly CurveGPUG2AffinePoint[],
-  scalars: readonly CurveGPUElementBytes[],
-): Promise<CurveGPUG2AffinePoint> {
+async function naiveMSMAffine(module: CurveModule, bases: CurveGPUG2AffinePoint[], scalars: Uint8Array[]): Promise<CurveGPUG2AffinePoint> {
   const scaled = await module.g2.scalarMulAffineBatch(bases, scalars);
   if (scaled.length === 0) {
     return module.g2.affineInfinity();
   }
-  let accJacobian = await module.g2.affineToJacobian(toAffinePoint(scaled[0]));
+  let acc = await module.g2.affineToJacobian(scaled[0]);
   for (let i = 1; i < scaled.length; i += 1) {
-    accJacobian = await module.g2.addMixed(accJacobian, toAffinePoint(scaled[i]));
+    acc = await module.g2.addMixed(acc, scaled[i]);
   }
-  return module.g2.jacobianToAffine(accJacobian);
+  return module.g2.jacobianToAffine(acc);
 }
 
-export async function runSuite(module: CurveModule, log: (msg: string) => void): Promise<{ passed: number; failed: number }> {
-  const config = CONFIGS[module.id];
-  if (!config) {
-    throw new Error(`g2 MSM vectors unavailable for curve ${module.id}`);
-  }
-  log(`=== ${config.title} ===`);
+/** Pack affine G2 points into the shader layout (`z = (one, 0)`, infinity all-zero). */
+function packG2AffineWithOneZ(module: CurveModule, bases: readonly CurveGPUG2AffinePoint[], oneMont: Uint8Array): Uint8Array {
+  const { componentBytes, pointBytes } = module.g2;
+  const out = new Uint8Array(bases.length * pointBytes);
+  bases.forEach((point, i) => {
+    const base = i * pointBytes;
+    const parts = [point.x.c0, point.x.c1, point.y.c0, point.y.c1];
+    parts.forEach((part, j) => out.set(part, base + j * componentBytes));
+    if (parts.some((part) => part.some((byte) => byte !== 0))) {
+      out.set(oneMont, base + 4 * componentBytes);
+    }
+  });
+  return out;
+}
+
+function unpackG2Jacobian(module: CurveModule, bytes: Uint8Array, count: number): CurveGPUG2JacobianPoint[] {
+  const { componentBytes, pointBytes } = module.g2;
+  const part = (base: number, j: number): Uint8Array => bytes.slice(base + j * componentBytes, base + (j + 1) * componentBytes);
+  return Array.from({ length: count }, (_, i) => {
+    const base = i * pointBytes;
+    return { x: { c0: part(base, 0), c1: part(base, 1) }, y: { c0: part(base, 2), c1: part(base, 3) }, z: { c0: part(base, 4), c1: part(base, 5) } };
+  });
+}
+
+export async function runSuite(module: CurveModule, log: Log): Promise<SuiteResult> {
+  log(`=== ${suiteTitle(module.id, "G2 MSM")} ===`);
   log("");
-  const vectors = await fetchJSON<G2MSMVectors>(config.vectorPath);
+  const vectors = await fetchJSON<G2MSMVectors>(vectorPath("g2", module.id, "g2_msm"));
   log(`terms_per_instance = ${vectors.terms_per_instance}`);
   log(`cases.msm = ${vectors.msm_cases.length}`);
+  const expected = vectors.msm_cases.map((item) => item.expected_affine);
+  const allBases = vectors.msm_cases.flatMap((item) => item.bases_affine.map(g2AffineFromHex));
+  const allScalars = vectors.msm_cases.flatMap((item) => bytesList(item.scalars_bytes_le));
 
   const naiveResults: CurveGPUG2AffinePoint[] = [];
   for (const msmCase of vectors.msm_cases) {
-    naiveResults.push(
-      await naiveMSMAffine(
-        module,
-        msmCase.bases_affine.map(affineFromHex),
-        msmCase.scalars_bytes_le.map((value) => hexToBytes(value) as CurveGPUElementBytes),
-      ),
-    );
+    naiveResults.push(await naiveMSMAffine(module, msmCase.bases_affine.map(g2AffineFromHex), bytesList(msmCase.scalars_bytes_le)));
   }
-  expectAffineBatch("msm_naive_affine", naiveResults, vectors.msm_cases.map((item) => item.expected_affine));
-  log("msm_naive_affine: OK");
+  expectG2AffineBatch("msm_naive_affine", naiveResults, expected, log);
 
   const window = 4;
-  const pippengerResults = await module.g2msm.pippengerAffineBatch(
-    vectors.msm_cases.flatMap((item) => item.bases_affine.map(affineFromHex)),
-    vectors.msm_cases.flatMap((item) => item.scalars_bytes_le.map((value) => hexToBytes(value) as CurveGPUElementBytes)),
-    {
-      count: vectors.msm_cases.length,
-      termsPerInstance: vectors.terms_per_instance,
-      window,
-    },
-  );
-  await expectJacobianBatchAffineEqual(module, `msm_jac_pippenger_affine_input (window=${window})`, pippengerResults, vectors.msm_cases.map((item) => item.expected_affine));
-  log(`msm_jac_pippenger_affine_input (window=${window}): OK`);
+  const batchOptions = { count: vectors.msm_cases.length, termsPerInstance: vectors.terms_per_instance, window };
+  const pippengerResults = await module.g2msm.pippengerAffineBatch(allBases, allScalars, batchOptions);
+  expectG2AffineBatch(`msm_jac_pippenger_affine_input (window=${window})`, await module.g2.jacobianToAffineBatch(pippengerResults), expected, log);
 
-  const oneMontC0 = await module.fp.montOne();
-  const packedBases = packAffinePointsWithOneZ(
-    vectors.msm_cases.flatMap((item) => item.bases_affine.map(affineFromHex)),
-    module.g2.componentBytes,
-    module.g2.pointBytes,
-    oneMontC0,
-  );
-  const packedScalars = packScalars(
-    vectors.msm_cases.flatMap((item) => item.scalars_bytes_le.map((value) => hexToBytes(value) as CurveGPUElementBytes)),
-  );
+  const packedBases = packG2AffineWithOneZ(module, allBases, await module.fp.montOne());
+  const packedScalars = packBytes(allScalars, 32);
+  const packedResults = unpackG2Jacobian(module, await module.g2msm.pippengerPackedJacobianBases(packedBases, packedScalars, batchOptions), vectors.msm_cases.length);
+  expectG2AffineBatch(`msm_jac_pippenger_packed (window=${window})`, await module.g2.jacobianToAffineBatch(packedResults), expected, log);
 
-  const jacPackedResults = unpackJacobianPoints(
-    await module.g2msm.pippengerPackedJacobianBases(packedBases, packedScalars, {
-      count: vectors.msm_cases.length,
-      termsPerInstance: vectors.terms_per_instance,
-      window,
-    }),
-    vectors.msm_cases.length,
-    module.g2.componentBytes,
-    module.g2.pointBytes,
-  );
-  await expectJacobianBatchAffineEqual(module, `msm_jac_pippenger_packed (window=${window})`, jacPackedResults, vectors.msm_cases.map((item) => item.expected_affine));
-  log(`msm_jac_pippenger_packed (window=${window}): OK`);
+  // GPU-resident bases, as used by the Groth16 bridge for the G2 part of B.
+  const componentBytes = module.g2.componentBytes;
+  const affinePacked = new Uint8Array(allBases.length * 4 * componentBytes);
+  allBases.forEach((point, i) => {
+    [point.x.c0, point.x.c1, point.y.c0, point.y.c1].forEach((part, j) => affinePacked.set(part, (4 * i + j) * componentBytes));
+  });
+  const resident = await module.g2msm.uploadAffineBases(affinePacked);
+  try {
+    const residentResults: CurveGPUG2AffinePoint[] = [];
+    for (let i = 0; i < vectors.msm_cases.length; i += 1) {
+      const start = i * vectors.terms_per_instance;
+      const out = await module.g2msm.msmResident(resident, start, packBytes(allScalars.slice(start, start + vectors.terms_per_instance), 32), { window });
+      const part = (j: number): Uint8Array => out.slice(j * componentBytes, (j + 1) * componentBytes);
+      residentResults.push({ x: { c0: part(0), c1: part(1) }, y: { c0: part(2), c1: part(3) } });
+    }
+    expectG2AffineBatch(`msm_resident_bases (window=${window})`, residentResults, expected, log);
+  } finally {
+    resident.release();
+  }
 
   log("");
   log(`PASS: ${curveDisplayName(module.id)} G2 MSM browser smoke succeeded`);

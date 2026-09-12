@@ -1,0 +1,50 @@
+on:
+  pull_request:
+    paths:
+      - "backend/accelerated/webgpu/**"
+      - "backend/groth16/**"
+      - "backend/plonk/**"
+      - "internal/generator/backend/**"
+      - ".github/workflows/webgpu.yml"
+name: webgpu
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    # WebGPU needs a GPU-capable browser; the macOS runners expose Metal.
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: backend/accelerated/webgpu/web
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: 1.25.x
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/accelerated/webgpu/web/package-lock.json
+      - run: npm ci
+      - run: npx playwright install chromium
+      - name: generated shaders and accelerators are up to date
+        run: |
+          (cd ../internal/generator && go run .)
+          git diff --exit-code -- ../shaders ../groth16 ../plonk
+      - run: npm run build:all
+      - name: test fixtures
+        run: |
+          go run ../internal/testdata/generate --suite api --out tests/fixtures
+          go run ../internal/testdata/generate --suite groth16 --out tests/fixtures --logs 15 --commitments 1
+          go run ../internal/testdata/generate --suite plonk --out tests/fixtures --logs 15 --commitments 1
+      - name: browser tests (API suites + one proof per system and curve)
+        run: npm run test:e2e

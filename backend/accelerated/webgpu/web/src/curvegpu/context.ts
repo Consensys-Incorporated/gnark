@@ -1,4 +1,3 @@
-import { getAdapterInfo } from "./browser_utils.js";
 import type {
   CurveGPUAdapterDiagnostics,
   CurveGPUContext,
@@ -15,6 +14,25 @@ type AdapterWithLimits = GPUAdapter & {
     maxBufferSize?: number;
   };
 };
+
+/** Read adapter info through whichever API the browser exposes. */
+export async function getAdapterInfo(adapter: GPUAdapter): Promise<GPUAdapterInfo | null> {
+  const adapterWithInfo = adapter as GPUAdapter & {
+    info?: GPUAdapterInfo;
+    requestAdapterInfo?: () => Promise<GPUAdapterInfo>;
+  };
+  if (adapterWithInfo.info) {
+    return adapterWithInfo.info;
+  }
+  if (typeof adapterWithInfo.requestAdapterInfo === "function") {
+    try {
+      return await adapterWithInfo.requestAdapterInfo();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 function collectRequestedLimits(adapter: AdapterWithLimits, options: CurveGPUContextOptions): CurveGPURequestedLimits {
   const requestedLimits: CurveGPURequestedLimits = {};
@@ -78,7 +96,11 @@ export async function createCurveGPUContext(options: CurveGPUContextOptions = {}
   });
 
   const debug = options.debug ?? false;
-  const maxWorkgroupSize = (device.limits as { maxComputeWorkgroupSizeX?: number }).maxComputeWorkgroupSizeX ?? 256;
+  const limits = device.limits as {
+    maxComputeWorkgroupSizeX?: number;
+    maxStorageBufferBindingSize?: number;
+    minStorageBufferOffsetAlignment?: number;
+  };
   const bufferPool = new BufferPool(device);
   let closed = false;
 
@@ -96,7 +118,9 @@ export async function createCurveGPUContext(options: CurveGPUContextOptions = {}
     diagnostics: buildDiagnostics(adapter, adapterInfo),
     requestedLimits,
     debug,
-    maxWorkgroupSize,
+    maxWorkgroupSize: limits.maxComputeWorkgroupSizeX ?? 256,
+    maxStorageBufferBindingSize: limits.maxStorageBufferBindingSize ?? 128 * 1024 * 1024,
+    minStorageBufferOffsetAlignment: limits.minStorageBufferOffsetAlignment ?? 256,
     bufferPool,
     deviceLost,
     close(): void {

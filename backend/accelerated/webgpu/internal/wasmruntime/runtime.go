@@ -1,125 +1,106 @@
 //go:build js && wasm
 
+// Package wasmruntime exposes a gnark prover to JavaScript as an object of
+// promise-returning methods (readConstraintSystem, readProvingKey,
+// readVerificationKey, prepareProvingKey, prove, verify, release) that operate
+// on string handles.
 package wasmruntime
 
 import (
 	"bytes"
 	"fmt"
 	"io"
+	"sync"
 	"syscall/js"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/witness"
 	"github.com/consensys/gnark/constraint"
 )
 
-type ProveFunc[PK, Proof any] func(constraint.ConstraintSystem, PK, witness.Witness) (Proof, error)
-type PrepareFunc[PK any] func(PK) error
-type PrepareWithCSFunc[PK any] func(constraint.ConstraintSystem, PK) error
-type VerifyFunc[VK, Proof any] func(Proof, VK, witness.Witness) error
-
+// Config describes the proof system exposed by Install.
 type Config[PK, VK, Proof any] struct {
+	// GlobalName is the name of the object installed on globalThis.
 	GlobalName string
 
-	SupportedCurves map[string]ecc.ID
-	CSFactory       func(ecc.ID) constraint.ConstraintSystem
-	PKFactory       func(ecc.ID) PK
-	VKFactory       func(ecc.ID) VK
-	ProofFactory    func(ecc.ID) Proof
+	CSFactory    func(ecc.ID) constraint.ConstraintSystem
+	PKFactory    func(ecc.ID) PK
+	VKFactory    func(ecc.ID) VK
+	ProofFactory func(ecc.ID) Proof
 
-	ReadProvingKey func(PK, string, []byte) error
-	Prepare        PrepareFunc[PK]
-	PrepareWithCS  PrepareWithCSFunc[PK]
-	Prove          ProveFunc[PK, Proof]
-	Verify         VerifyFunc[VK, Proof]
+	// Prepare, if set, is called once per proving key before its first proof,
+	// with the constraint system when the caller provided one.
+	Prepare func(constraint.ConstraintSystem, PK) error
+	// ReleasePK, if set, is called when a proving-key handle is released. It
+	// should detach any accelerator and free its resident GPU resources.
+	ReleasePK func(PK) error
+	Prove     func(constraint.ConstraintSystem, PK, witness.Witness, ...backend.ProverOption) (Proof, error)
+	Verify    func(Proof, VK, witness.Witness, ...backend.VerifierOption) error
 }
 
-type Runtime[PK, VK, Proof any] struct {
-	cfg     Config[PK, VK, Proof]
-	next    uint64
-	funcs   []js.Func
-	ccs     map[string]ccsEntry
-	pks     map[string]pkEntry[PK]
-	vks     map[string]vkEntry[VK]
-	handles map[string]string
+var supportedCurves = map[string]ecc.ID{
+	"bn254":     ecc.BN254,
+	"bls12_377": ecc.BLS12_377,
+	"bls12_381": ecc.BLS12_381,
 }
 
-type ccsEntry struct {
-	curve ecc.ID
-	value constraint.ConstraintSystem
+type runtime[PK, VK, Proof any] struct {
+	cfg  Config[PK, VK, Proof]
+	next uint64
+	ccs  map[string]entry[constraint.ConstraintSystem]
+	pks  map[string]*pkEntry[PK]
+	vks  map[string]entry[VK]
 }
 
-type pkEntry[PK any] struct {
+type entry[T any] struct {
 	curve    ecc.ID
-	value    PK
+	value    T
 	prepared bool
 }
 
-type vkEntry[VK any] struct {
-	curve ecc.ID
-	value VK
+type pkEntry[T any] struct {
+	entry[T]
+	prepareMu sync.Mutex
 }
 
+// Install publishes the runtime on globalThis. The caller must keep the Go
+// program alive afterwards (for example with select {}).
 func Install[PK, VK, Proof any](cfg Config[PK, VK, Proof]) error {
-	if cfg.GlobalName == "" {
+	switch {
+	case cfg.GlobalName == "":
 		return fmt.Errorf("missing global name")
+	case cfg.CSFactory == nil || cfg.PKFactory == nil || cfg.VKFactory == nil || cfg.ProofFactory == nil:
+		return fmt.Errorf("missing factory")
+	case cfg.Prove == nil || cfg.Verify == nil:
+		return fmt.Errorf("missing prove or verify function")
 	}
-	if cfg.CSFactory == nil {
-		return fmt.Errorf("missing constraint system factory")
+	r := &runtime[PK, VK, Proof]{
+		cfg: cfg,
+		ccs: make(map[string]entry[constraint.ConstraintSystem]),
+		pks: make(map[string]*pkEntry[PK]),
+		vks: make(map[string]entry[VK]),
 	}
-	if cfg.PKFactory == nil {
-		return fmt.Errorf("missing proving key factory")
-	}
-	if cfg.VKFactory == nil {
-		return fmt.Errorf("missing verification key factory")
-	}
-	if cfg.ProofFactory == nil {
-		return fmt.Errorf("missing proof factory")
-	}
-	if cfg.Prove == nil {
-		return fmt.Errorf("missing prove function")
-	}
-	if cfg.Verify == nil {
-		return fmt.Errorf("missing verify function")
-	}
-
-	r := &Runtime[PK, VK, Proof]{
-		cfg:     cfg,
-		ccs:     make(map[string]ccsEntry),
-		pks:     make(map[string]pkEntry[PK]),
-		vks:     make(map[string]vkEntry[VK]),
-		handles: make(map[string]string),
-	}
-	js.Global().Set(cfg.GlobalName, r.object())
-	select {}
-}
-
-func (r *Runtime[PK, VK, Proof]) object() js.Value {
 	obj := js.Global().Get("Object").New()
-	r.setMethod(obj, "readConstraintSystem", r.readConstraintSystem)
-	r.setMethod(obj, "readProvingKey", r.readProvingKey)
-	r.setMethod(obj, "readVerificationKey", r.readVerificationKey)
-	r.setMethod(obj, "prepareProvingKey", r.prepareProvingKey)
-	r.setMethod(obj, "prove", r.prove)
-	r.setMethod(obj, "verify", r.verify)
-	r.setMethod(obj, "release", r.release)
-	return obj
+	for name, fn := range map[string]func([]js.Value) (js.Value, error){
+		"readConstraintSystem": r.readConstraintSystem,
+		"readProvingKey":       r.readProvingKey,
+		"readVerificationKey":  r.readVerificationKey,
+		"prepareProvingKey":    r.prepareProvingKey,
+		"prove":                r.prove,
+		"verify":               r.verify,
+		"release":              r.release,
+	} {
+		obj.Set(name, js.FuncOf(func(_ js.Value, args []js.Value) any { return promise(func() (js.Value, error) { return fn(args) }) }))
+	}
+	js.Global().Set(cfg.GlobalName, obj)
+	return nil
 }
 
-func (r *Runtime[PK, VK, Proof]) setMethod(obj js.Value, name string, fn func([]js.Value) (js.Value, error)) {
-	callback := js.FuncOf(func(this js.Value, args []js.Value) any {
-		return promise(func() (js.Value, error) {
-			return fn(args)
-		})
-	})
-	r.funcs = append(r.funcs, callback)
-	obj.Set(name, callback)
-}
-
+// promise runs fn in a goroutine and returns a JavaScript promise of its result.
 func promise(fn func() (js.Value, error)) js.Value {
-	executor := js.FuncOf(func(this js.Value, args []js.Value) any {
-		resolve := args[0]
-		reject := args[1]
+	executor := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		resolve, reject := args[0], args[1]
 		go func() {
 			value, err := fn()
 			if err != nil {
@@ -130,17 +111,13 @@ func promise(fn func() (js.Value, error)) js.Value {
 		}()
 		return nil
 	})
-	p := js.Global().Get("Promise").New(executor)
-	executor.Release()
-	return p
+	defer executor.Release()
+	return js.Global().Get("Promise").New(executor)
 }
 
-func (r *Runtime[PK, VK, Proof]) readConstraintSystem(args []js.Value) (js.Value, error) {
-	curveID, err := r.curveIDFromArg(args, 0)
-	if err != nil {
-		return js.Undefined(), err
-	}
-	data, err := bytesFromArg(args, 1)
+// readConstraintSystem(curve, bytes) -> { handle, constraints }
+func (r *runtime[PK, VK, Proof]) readConstraintSystem(args []js.Value) (js.Value, error) {
+	curveID, data, err := curveAndBytes(args)
 	if err != nil {
 		return js.Undefined(), err
 	}
@@ -148,21 +125,15 @@ func (r *Runtime[PK, VK, Proof]) readConstraintSystem(args []js.Value) (js.Value
 	if _, err := ccs.ReadFrom(bytes.NewReader(data)); err != nil {
 		return js.Undefined(), fmt.Errorf("read ccs: %w", err)
 	}
-	handle := r.store("ccs")
-	r.ccs[handle] = ccsEntry{curve: curveID, value: ccs}
-
-	out := js.Global().Get("Object").New()
-	out.Set("handle", handle)
-	out.Set("constraints", ccs.GetNbConstraints())
-	return out, nil
+	handle := r.handle("ccs")
+	r.ccs[handle] = entry[constraint.ConstraintSystem]{curve: curveID, value: ccs}
+	return object("handle", handle, "constraints", ccs.GetNbConstraints()), nil
 }
 
-func (r *Runtime[PK, VK, Proof]) readProvingKey(args []js.Value) (js.Value, error) {
-	curveID, err := r.curveIDFromArg(args, 0)
-	if err != nil {
-		return js.Undefined(), err
-	}
-	data, err := bytesFromArg(args, 1)
+// readProvingKey(curve, bytes, format?) -> { handle }. format is "serialized"
+// (default), "dump" (Groth16 ReadDump) or "unsafe" (PLONK UnsafeReadFrom).
+func (r *runtime[PK, VK, Proof]) readProvingKey(args []js.Value) (js.Value, error) {
+	curveID, data, err := curveAndBytes(args)
 	if err != nil {
 		return js.Undefined(), err
 	}
@@ -171,279 +142,219 @@ func (r *Runtime[PK, VK, Proof]) readProvingKey(args []js.Value) (js.Value, erro
 		format = args[2].String()
 	}
 	pk := r.cfg.PKFactory(curveID)
-	if r.cfg.ReadProvingKey != nil {
-		if err := r.cfg.ReadProvingKey(pk, format, data); err != nil {
-			return js.Undefined(), err
+	switch format {
+	case "serialized":
+		err = readFrom(pk, "pk", data)
+	case "dump":
+		if d, ok := any(pk).(interface{ ReadDump(io.Reader) error }); ok {
+			err = d.ReadDump(bytes.NewReader(data))
+		} else {
+			err = fmt.Errorf("proving key does not support the dump format")
 		}
-	} else if format != "serialized" {
-		return js.Undefined(), fmt.Errorf("unsupported proving key format %q", format)
-	} else if err := readFromBytes(pk, "pk", data); err != nil {
-		return js.Undefined(), err
+	case "unsafe":
+		if u, ok := any(pk).(interface {
+			UnsafeReadFrom(io.Reader) (int64, error)
+		}); ok {
+			_, err = u.UnsafeReadFrom(bytes.NewReader(data))
+		} else {
+			err = fmt.Errorf("proving key does not support the unsafe format")
+		}
+	default:
+		err = fmt.Errorf("unsupported proving key format %q", format)
 	}
-	handle := r.store("pk")
-	r.pks[handle] = pkEntry[PK]{curve: curveID, value: pk}
-	return handleObject(handle), nil
+	if err != nil {
+		return js.Undefined(), fmt.Errorf("read pk: %w", err)
+	}
+	handle := r.handle("pk")
+	r.pks[handle] = &pkEntry[PK]{entry: entry[PK]{curve: curveID, value: pk}}
+	return object("handle", handle), nil
 }
 
-func (r *Runtime[PK, VK, Proof]) readVerificationKey(args []js.Value) (js.Value, error) {
-	curveID, err := r.curveIDFromArg(args, 0)
-	if err != nil {
-		return js.Undefined(), err
-	}
-	data, err := bytesFromArg(args, 1)
+// readVerificationKey(curve, bytes) -> { handle }
+func (r *runtime[PK, VK, Proof]) readVerificationKey(args []js.Value) (js.Value, error) {
+	curveID, data, err := curveAndBytes(args)
 	if err != nil {
 		return js.Undefined(), err
 	}
 	vk := r.cfg.VKFactory(curveID)
-	if err := readFromBytes(vk, "vk", data); err != nil {
+	if err := readFrom(vk, "vk", data); err != nil {
 		return js.Undefined(), err
 	}
-	handle := r.store("vk")
-	r.vks[handle] = vkEntry[VK]{curve: curveID, value: vk}
-	return handleObject(handle), nil
+	handle := r.handle("vk")
+	r.vks[handle] = entry[VK]{curve: curveID, value: vk}
+	return object("handle", handle), nil
 }
 
-func (r *Runtime[PK, VK, Proof]) prepareProvingKey(args []js.Value) (js.Value, error) {
-	handle, pk, err := r.pkFromArg(args, 0)
+// prepareProvingKey(pkHandle, ccsHandle?)
+func (r *runtime[PK, VK, Proof]) prepareProvingKey(args []js.Value) (js.Value, error) {
+	pk, err := lookup(r.pks, args, 0, "proving key")
 	if err != nil {
 		return js.Undefined(), err
 	}
-	var ccs *ccsEntry
+	var ccs constraint.ConstraintSystem
 	if len(args) > 1 && args[1].Type() == js.TypeString {
-		entry, err := r.ccsFromArg(args, 1)
+		c, err := lookup(r.ccs, args, 1, "ccs")
 		if err != nil {
 			return js.Undefined(), err
 		}
-		if entry.curve != pk.curve {
+		if c.curve != pk.curve {
 			return js.Undefined(), fmt.Errorf("ccs and proving key curves do not match")
 		}
-		ccs = &entry
+		ccs = c.value
 	}
-	if err := r.ensurePrepared(handle, pk, ccs); err != nil {
-		return js.Undefined(), err
-	}
-	return js.Undefined(), nil
+	return js.Undefined(), r.ensurePrepared(pk, ccs)
 }
 
-func (r *Runtime[PK, VK, Proof]) prove(args []js.Value) (js.Value, error) {
-	ccs, err := r.ccsFromArg(args, 0)
+// prove(ccsHandle, pkHandle, witnessBytes) -> proofBytes
+func (r *runtime[PK, VK, Proof]) prove(args []js.Value) (js.Value, error) {
+	ccs, err := lookup(r.ccs, args, 0, "ccs")
 	if err != nil {
 		return js.Undefined(), err
 	}
-	pkHandle, pk, err := r.pkFromArg(args, 1)
+	pk, err := lookup(r.pks, args, 1, "proving key")
 	if err != nil {
 		return js.Undefined(), err
 	}
 	if ccs.curve != pk.curve {
 		return js.Undefined(), fmt.Errorf("ccs and proving key curves do not match")
 	}
-	witnessBytes, err := bytesFromArg(args, 2)
+	fullWitness, err := readWitness(ccs.curve, args, 2)
 	if err != nil {
 		return js.Undefined(), err
 	}
-	fullWitness, err := readWitness(ccs.curve, witnessBytes)
-	if err != nil {
-		return js.Undefined(), fmt.Errorf("read witness: %w", err)
-	}
-	if err := r.ensurePrepared(pkHandle, pk, &ccs); err != nil {
+	if err := r.ensurePrepared(pk, ccs.value); err != nil {
 		return js.Undefined(), err
 	}
 	proof, err := r.cfg.Prove(ccs.value, pk.value, fullWitness)
 	if err != nil {
 		return js.Undefined(), fmt.Errorf("prove: %w", err)
 	}
-	proofBytes, err := writeToBytes(proof)
-	if err != nil {
+	var buf bytes.Buffer
+	if _, err := any(proof).(io.WriterTo).WriteTo(&buf); err != nil {
 		return js.Undefined(), fmt.Errorf("serialize proof: %w", err)
 	}
-	return jsBytes(proofBytes), nil
+	out := js.Global().Get("Uint8Array").New(buf.Len())
+	js.CopyBytesToJS(out, buf.Bytes())
+	return out, nil
 }
 
-func (r *Runtime[PK, VK, Proof]) verify(args []js.Value) (js.Value, error) {
-	proofBytes, err := bytesFromArg(args, 0)
+// verify(proofBytes, vkHandle, publicWitnessBytes) -> bool
+func (r *runtime[PK, VK, Proof]) verify(args []js.Value) (js.Value, error) {
+	vk, err := lookup(r.vks, args, 1, "verification key")
 	if err != nil {
 		return js.Undefined(), err
 	}
-	vk, err := r.vkFromArg(args, 1)
-	if err != nil {
-		return js.Undefined(), err
-	}
-	publicWitnessBytes, err := bytesFromArg(args, 2)
+	proofBytes, err := bytesArg(args, 0)
 	if err != nil {
 		return js.Undefined(), err
 	}
 	proof := r.cfg.ProofFactory(vk.curve)
-	if err := readFromBytes(proof, "proof", proofBytes); err != nil {
+	if err := readFrom(proof, "proof", proofBytes); err != nil {
 		return js.Undefined(), err
 	}
-	publicWitness, err := readWitness(vk.curve, publicWitnessBytes)
+	publicWitness, err := readWitness(vk.curve, args, 2)
 	if err != nil {
-		return js.Undefined(), fmt.Errorf("read public witness: %w", err)
+		return js.Undefined(), err
 	}
-	if err := r.cfg.Verify(proof, vk.value, publicWitness); err != nil {
-		return js.ValueOf(false), nil
-	}
-	return js.ValueOf(true), nil
+	return js.ValueOf(r.cfg.Verify(proof, vk.value, publicWitness) == nil), nil
 }
 
-func (r *Runtime[PK, VK, Proof]) release(args []js.Value) (js.Value, error) {
+// release(handle)
+func (r *runtime[PK, VK, Proof]) release(args []js.Value) (js.Value, error) {
 	if len(args) < 1 || args[0].Type() != js.TypeString {
 		return js.Undefined(), fmt.Errorf("missing handle")
 	}
 	handle := args[0].String()
-	switch r.handles[handle] {
-	case "ccs":
-		delete(r.ccs, handle)
-	case "pk":
+	if pk, ok := r.pks[handle]; ok {
 		delete(r.pks, handle)
-	case "vk":
-		delete(r.vks, handle)
+		if r.cfg.ReleasePK != nil {
+			pk.prepareMu.Lock()
+			defer pk.prepareMu.Unlock()
+			if err := r.cfg.ReleasePK(pk.value); err != nil {
+				return js.Undefined(), fmt.Errorf("release pk: %w", err)
+			}
+		}
 	}
-	delete(r.handles, handle)
+	delete(r.ccs, handle)
+	delete(r.vks, handle)
 	return js.Undefined(), nil
 }
 
-func (r *Runtime[PK, VK, Proof]) ensurePrepared(handle string, pk pkEntry[PK], ccs *ccsEntry) error {
-	if pk.prepared {
+func (r *runtime[PK, VK, Proof]) ensurePrepared(pk *pkEntry[PK], ccs constraint.ConstraintSystem) error {
+	pk.prepareMu.Lock()
+	defer pk.prepareMu.Unlock()
+	if pk.prepared || r.cfg.Prepare == nil {
 		return nil
 	}
-	if ccs != nil && r.cfg.PrepareWithCS != nil {
-		if err := r.cfg.PrepareWithCS(ccs.value, pk.value); err != nil {
-			return fmt.Errorf("prepare pk: %w", err)
-		}
-		pk.prepared = true
-		r.pks[handle] = pk
-		return nil
+	if err := r.cfg.Prepare(ccs, pk.value); err != nil {
+		return fmt.Errorf("prepare pk: %w", err)
 	}
-	if r.cfg.Prepare != nil {
-		if err := r.cfg.Prepare(pk.value); err != nil {
-			return fmt.Errorf("prepare pk: %w", err)
-		}
-	}
-	if r.cfg.PrepareWithCS == nil {
-		pk.prepared = true
-	}
-	r.pks[handle] = pk
+	// without the constraint system only part of the preparation may have run
+	pk.prepared = ccs != nil
 	return nil
 }
 
-func (r *Runtime[PK, VK, Proof]) ccsFromArg(args []js.Value, index int) (ccsEntry, error) {
-	handle, err := handleFromArg(args, index)
-	if err != nil {
-		return ccsEntry{}, err
-	}
-	entry, ok := r.ccs[handle]
-	if !ok {
-		return ccsEntry{}, fmt.Errorf("unknown ccs handle %q", handle)
-	}
-	return entry, nil
-}
-
-func (r *Runtime[PK, VK, Proof]) pkFromArg(args []js.Value, index int) (string, pkEntry[PK], error) {
-	handle, err := handleFromArg(args, index)
-	if err != nil {
-		return "", pkEntry[PK]{}, err
-	}
-	entry, ok := r.pks[handle]
-	if !ok {
-		return "", pkEntry[PK]{}, fmt.Errorf("unknown proving key handle %q", handle)
-	}
-	return handle, entry, nil
-}
-
-func (r *Runtime[PK, VK, Proof]) vkFromArg(args []js.Value, index int) (vkEntry[VK], error) {
-	handle, err := handleFromArg(args, index)
-	if err != nil {
-		return vkEntry[VK]{}, err
-	}
-	entry, ok := r.vks[handle]
-	if !ok {
-		return vkEntry[VK]{}, fmt.Errorf("unknown verification key handle %q", handle)
-	}
-	return entry, nil
-}
-
-func (r *Runtime[PK, VK, Proof]) store(kind string) string {
+func (r *runtime[PK, VK, Proof]) handle(kind string) string {
 	r.next++
-	handle := fmt.Sprintf("%s:%d", kind, r.next)
-	r.handles[handle] = kind
-	return handle
+	return fmt.Sprintf("%s:%d", kind, r.next)
 }
 
-func (r *Runtime[PK, VK, Proof]) curveIDFromArg(args []js.Value, index int) (ecc.ID, error) {
+func lookup[T any](m map[string]T, args []js.Value, index int, what string) (T, error) {
+	var zero T
 	if len(args) <= index || args[index].Type() != js.TypeString {
-		return ecc.UNKNOWN, fmt.Errorf("missing curve")
+		return zero, fmt.Errorf("missing %s handle", what)
 	}
-	name := args[index].String()
-	curves := r.cfg.SupportedCurves
-	if len(curves) == 0 {
-		curves = defaultSupportedCurves
-	}
-	curveID, ok := curves[name]
+	v, ok := m[args[index].String()]
 	if !ok {
-		return ecc.UNKNOWN, fmt.Errorf("unsupported curve %q", name)
+		return zero, fmt.Errorf("unknown %s handle %q", what, args[index].String())
 	}
-	return curveID, nil
+	return v, nil
 }
 
-var defaultSupportedCurves = map[string]ecc.ID{
-	"bn254":     ecc.BN254,
-	"bls12_377": ecc.BLS12_377,
-	"bls12_381": ecc.BLS12_381,
-}
-
-func handleObject(handle string) js.Value {
-	out := js.Global().Get("Object").New()
-	out.Set("handle", handle)
-	return out
-}
-
-func handleFromArg(args []js.Value, index int) (string, error) {
-	if len(args) <= index || args[index].Type() != js.TypeString {
-		return "", fmt.Errorf("missing handle")
+func curveAndBytes(args []js.Value) (ecc.ID, []byte, error) {
+	if len(args) < 1 || args[0].Type() != js.TypeString {
+		return ecc.UNKNOWN, nil, fmt.Errorf("missing curve")
 	}
-	return args[index].String(), nil
+	curveID, ok := supportedCurves[args[0].String()]
+	if !ok {
+		return ecc.UNKNOWN, nil, fmt.Errorf("unsupported curve %q", args[0].String())
+	}
+	data, err := bytesArg(args, 1)
+	return curveID, data, err
 }
 
-func bytesFromArg(args []js.Value, index int) ([]byte, error) {
+func bytesArg(args []js.Value, index int) ([]byte, error) {
 	if len(args) <= index {
 		return nil, fmt.Errorf("missing bytes argument")
 	}
-	src := args[index]
-	n := src.Get("byteLength")
+	n := args[index].Get("byteLength")
 	if n.Type() != js.TypeNumber {
 		return nil, fmt.Errorf("expected Uint8Array")
 	}
 	out := make([]byte, n.Int())
 	if len(out) > 0 {
-		js.CopyBytesToGo(out, src)
+		js.CopyBytesToGo(out, args[index])
 	}
 	return out, nil
 }
 
-func jsBytes(src []byte) js.Value {
-	out := js.Global().Get("Uint8Array").New(len(src))
-	if len(src) > 0 {
-		js.CopyBytesToJS(out, src)
+func readWitness(curveID ecc.ID, args []js.Value, index int) (witness.Witness, error) {
+	data, err := bytesArg(args, index)
+	if err != nil {
+		return nil, err
 	}
-	return out
-}
-
-func readWitness(curveID ecc.ID, data []byte) (witness.Witness, error) {
 	w, err := witness.New(curveID.ScalarField())
 	if err != nil {
 		return nil, err
 	}
 	if _, err := w.ReadFrom(bytes.NewReader(data)); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read witness: %w", err)
 	}
 	return w, nil
 }
 
-func readFromBytes(value any, label string, data []byte) error {
-	reader, ok := value.(interface {
-		ReadFrom(io.Reader) (int64, error)
-	})
+func readFrom(value any, label string, data []byte) error {
+	reader, ok := value.(io.ReaderFrom)
 	if !ok {
 		return fmt.Errorf("%s does not support ReadFrom", label)
 	}
@@ -453,16 +364,10 @@ func readFromBytes(value any, label string, data []byte) error {
 	return nil
 }
 
-func writeToBytes(value any) ([]byte, error) {
-	writer, ok := value.(interface {
-		WriteTo(io.Writer) (int64, error)
-	})
-	if !ok {
-		return nil, fmt.Errorf("value does not support WriteTo")
+func object(kv ...any) js.Value {
+	obj := js.Global().Get("Object").New()
+	for i := 0; i < len(kv); i += 2 {
+		obj.Set(kv[i].(string), kv[i+1])
 	}
-	var buf bytes.Buffer
-	if _, err := writer.WriteTo(&buf); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return obj
 }

@@ -50,6 +50,7 @@ const SHADER_PATHS = [
   "/shaders/common/g2_msm_bindings.wgsl",
   "/shaders/common/g1_msm_jac.wgsl",
   "/shaders/common/g2_msm_jac.wgsl",
+  "/shaders/common/msm_sort.wgsl",
 ];
 
 function escapeForTemplateLiteral(text) {

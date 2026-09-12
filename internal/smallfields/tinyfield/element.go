@@ -121,7 +121,7 @@ func (z *Element) Set(x *Element) *Element {
 //	*big.Int
 //	big.Int
 //	[]byte
-func (z *Element) SetInterface(i1 interface{}) (*Element, error) {
+func (z *Element) SetInterface(i1 any) (*Element, error) {
 	if i1 == nil {
 		return nil, errors.New("can't set tinyfield.Element with <nil>")
 	}
@@ -417,7 +417,7 @@ func BatchInvert(a []Element) []Element {
 	zeroes := bitset.New(uint(len(a)))
 	accumulator := One()
 
-	for i := 0; i < len(a); i++ {
+	for i := range len(a) {
 		if a[i].IsZero() {
 			zeroes.Set(uint(i))
 			continue
@@ -469,7 +469,7 @@ func Hash(msg, dst []byte, count int) ([]Element, error) {
 	vv := pool.BigInt.Get()
 
 	res := make([]Element, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		vv.SetBytes(pseudoRandomBytes[i*L : (i+1)*L])
 		res[i].SetBigInt(vv)
 	}
@@ -498,7 +498,6 @@ func (z *Element) Exp(x Element, k *big.Int) *Element {
 		defer pool.BigInt.Put(e)
 		e.Neg(k)
 	}
-
 	z.Set(&x)
 
 	for i := e.BitLen() - 2; i >= 0; i-- {
@@ -700,7 +699,7 @@ func (z *Element) SetBigInt(v *big.Int) *Element {
 func (z *Element) setBigInt(v *big.Int) *Element {
 	vBits := v.Bits()
 	// we assume v < q, so even if big.Int words are on 64bits, we can safely cast them to 32bits
-	for i := 0; i < len(vBits); i++ {
+	for i := range len(vBits) {
 		z[i] = uint32(vBits[i])
 	}
 
@@ -905,6 +904,31 @@ func (z *Element) Sqrt(x *Element) *Element {
 		return z.Set(&y)
 	}
 	return nil
+}
+
+var _bCbrtExponentElement *big.Int
+
+func init() {
+	_bCbrtExponentElement, _ = new(big.Int).SetString("1f", 16)
+}
+
+// Cbrt z = ∛x (mod q)
+// if the cube root doesn't exist (x is not a cube mod q)
+// Cbrt leaves z unchanged and returns nil
+func (z *Element) Cbrt(x *Element) *Element {
+	// q ≡ 2 (mod 3)
+	// using z = x^((2q-1)/3) (mod q)
+	z.Exp(*x, _bCbrtExponentElement)
+	// as we use x^((2q-1)/3), there is no check to do: every element has a unique cube root
+	return z
+}
+
+// Cube sets z to x^3 and returns z
+func (z *Element) Cube(x *Element) *Element {
+	var t Element
+	t.Square(x).Mul(&t, x)
+	z.Set(&t)
+	return z
 }
 
 // Inverse z = x⁻¹ (mod q)

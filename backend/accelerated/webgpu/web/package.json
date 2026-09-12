@@ -4,7 +4,10 @@
   "description": "WebGPU/WASM implementation of gnark Groth16 and PLONK backend over BN254, BLS12-377 and BLS12-381 curves.",
   "private": true,
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/src/curvegpu/shader_bundle.generated.js",
+    "./src/curvegpu/shader_bundle.generated.ts"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -45,12 +48,15 @@
     "build:test-fixtures:api": "go run ../internal/testdata/generate --suite api --out tests/fixtures",
     "build:test-fixtures:groth16": "go run ../internal/testdata/generate --suite groth16 --out tests/fixtures",
     "build:test-fixtures:plonk": "go run ../internal/testdata/generate --suite plonk --out tests/fixtures",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:e2e": "node scripts/e2e.mjs",
+    "bench:e2e": "node scripts/e2e.mjs --bench"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@webgpu/types": "^0.1.70",
     "eslint": "^9.0.0",
+    "playwright": "^1.63.0",
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.0.0"
   }

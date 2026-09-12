@@ -158,7 +158,7 @@ func TestKoalabearExt2MulByNonResidue(t *testing.T) {
 	assert := test.NewAssert(t)
 	var a, c extensions.E2
 	a.MustSetRandom()
-	c.MulByNonResidue(&a)
+	c.MulByQuadraticNonResidue(&a)
 
 	assert.CheckCircuit(
 		&kbE2MulByNonResidueTestCircuit{},

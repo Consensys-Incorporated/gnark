@@ -188,28 +188,6 @@ fn g1_add_jac(p: G1Point, q: G1Point) -> G1Point {
   return out;
 }
 
-fn g1_scalar_mul_affine_small(base: G1Point, scalar: u32) -> G1Point {
-  if (scalar == 0u || g1_affine_is_infinity(base)) {
-    return g1_jac_to_affine(g1_jac_infinity());
-  }
-  var acc = g1_jac_infinity();
-  var cur_jac = g1_affine_to_jac(base);
-  var cur_aff = base;
-  var k = scalar;
-  loop {
-    if ((k & 1u) != 0u) {
-      acc = g1_add_mixed(acc, cur_aff);
-    }
-    k = k >> 1u;
-    if (k == 0u) {
-      break;
-    }
-    cur_jac = g1_double_jac(cur_jac);
-    cur_aff = g1_jac_to_affine(cur_jac);
-  }
-  return g1_jac_to_affine(acc);
-}
-
 fn g1_scalar_mul_jac_small(base: G1Point, scalar: u32) -> G1Point {
   if (scalar == 0u || g1_jac_is_infinity(base)) {
     return g1_jac_infinity();

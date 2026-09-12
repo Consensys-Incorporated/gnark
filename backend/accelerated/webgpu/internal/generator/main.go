@@ -104,6 +104,12 @@ func main() {
 		runCmd("go", "tool", "goimports", "-w", filepath.Join(testdataDir, d.CurveDir))
 	}
 
+	if err := generateWGSL(filepath.Clean(filepath.Join(generatorDir, "../../shaders"))); err != nil {
+		panic(err)
+	}
+	if err := generateGoAccelerators(bgen, filepath.Clean(filepath.Join(generatorDir, "../..")), templatesDir, data); err != nil {
+		panic(err)
+	}
 }
 
 func runCmd(name string, arg ...string) {

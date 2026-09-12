@@ -1,136 +1,114 @@
-import type { Kernel } from "./msm_gpu_runtime.js";
-import type { SimpleKernel } from "./runtime_common.js";
-import { loadShaderParts } from "./runtime_common.js";
-
-declare const GPUShaderStage: { COMPUTE: number };
+import type { Kernel } from "./gpu.js";
+import { fetchShaderParts } from "./shaders.js";
 
 export interface PipelineRegistry {
-  getOpsKernel(entryPoint: string): SimpleKernel;
-  getMSMKernel(entryPoint: string): Kernel;
+  getKernel(entryPoint: string): Kernel;
 }
 
+/** A 4-binding "ops" shader (`override WORKGROUP_SIZE`, one entry point). */
 export type OpsShaderSpec = {
   shaderParts: readonly string[];
   entryPoint: string;
-  /** Pass WORKGROUP_SIZE override constant at pipeline creation time. Only valid for shaders that declare `override WORKGROUP_SIZE`. */
-  useWorkgroupOverride?: boolean;
 };
 
+/** A 7-binding MSM shader with several entry points sharing a hard-coded workgroup size. */
 export type MSMShaderSpec = {
   shaderParts: readonly string[];
   entryPoints: readonly string[];
+  workgroupSize: number;
 };
+
+/**
+ * The MSM bucket-sort shader: scalars (read-only), params (uniform) and five
+ * read-write metadata buffers; several entry points, hard-coded workgroup size.
+ */
+export type MSMSortShaderSpec = MSMShaderSpec;
+
+type BufferKind = "read-only-storage" | "storage" | "uniform";
+
+function layoutEntries(kinds: readonly BufferKind[]): GPUBindGroupLayoutEntry[] {
+  return kinds.map((type, binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, buffer: { type } }));
+}
+
+const RO: BufferKind = "read-only-storage";
+const RW: BufferKind = "storage";
+const UNIFORM: BufferKind = "uniform";
 
 export async function buildPipelineRegistry(options: {
   device: GPUDevice;
   opsShaders: OpsShaderSpec[];
   msmShaders: MSMShaderSpec[];
-  /** Workgroup size to use for ops kernels that declare `override WORKGROUP_SIZE`. Defaults to 64. */
+  sortShaders?: MSMSortShaderSpec[];
+  /** Workgroup size passed as `WORKGROUP_SIZE` to ops kernels. Defaults to 64. */
   opsWorkgroupSize?: number;
   debug?: boolean;
 }): Promise<PipelineRegistry> {
-  const { device, opsShaders, msmShaders, opsWorkgroupSize = 64, debug = false } = options;
+  const { device, opsShaders, msmShaders, sortShaders = [], opsWorkgroupSize = 64, debug = false } = options;
 
-  // Shared bind group layout for ops kernels (4-binding: read-only-storage×2, storage, uniform)
-  const opsLayout = device.createBindGroupLayout({
-    label: "curvegpu-ops-bgl",
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-    ],
-  });
+  // Ops kernels: read-only-storage×2, storage, uniform.
+  const opsLayout = device.createBindGroupLayout({ label: "curvegpu-ops-bgl", entries: layoutEntries([RO, RO, RW, UNIFORM]) });
+  // MSM kernels: same four plus read-only-storage×3 metadata buffers.
+  const msmLayout = device.createBindGroupLayout({ label: "curvegpu-msm-bgl", entries: layoutEntries([RO, RO, RW, UNIFORM, RO, RO, RO]) });
+  // Bucket-sort kernels: scalars, params, then read-write metadata.
+  const sortLayout = device.createBindGroupLayout({ label: "curvegpu-msm-sort-bgl", entries: layoutEntries([RO, UNIFORM, RW, RW, RW, RW, RW]) });
+  const pipelineLayout = (label: string, bindGroupLayout: GPUBindGroupLayout): GPUPipelineLayout =>
+    device.createPipelineLayout({ label, bindGroupLayouts: [bindGroupLayout] });
+  const opsPipelineLayout = pipelineLayout("curvegpu-ops-pl", opsLayout);
+  const msmPipelineLayout = pipelineLayout("curvegpu-msm-pl", msmLayout);
+  const sortPipelineLayout = pipelineLayout("curvegpu-msm-sort-pl", sortLayout);
 
-  // Shared bind group layout for MSM kernels (7-binding: same 4 + read-only-storage×3)
-  const msmLayout = device.createBindGroupLayout({
-    label: "curvegpu-msm-bgl",
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-    ],
-  });
-
-  const opsPipelineLayout = device.createPipelineLayout({
-    label: "curvegpu-ops-pl",
-    bindGroupLayouts: [opsLayout],
-  });
-
-  const msmPipelineLayout = device.createPipelineLayout({
-    label: "curvegpu-msm-pl",
-    bindGroupLayouts: [msmLayout],
-  });
-
-  // Load all shader texts in parallel
-  const [opsShaderTexts, msmShaderTexts] = await Promise.all([
-    Promise.all(opsShaders.map((spec) => loadShaderParts(spec.shaderParts))),
-    Promise.all(msmShaders.map((spec) => loadShaderParts(spec.shaderParts))),
+  const [opsShaderTexts, msmShaderTexts, sortShaderTexts] = await Promise.all([
+    Promise.all(opsShaders.map((spec) => fetchShaderParts(spec.shaderParts))),
+    Promise.all(msmShaders.map((spec) => fetchShaderParts(spec.shaderParts))),
+    Promise.all(sortShaders.map((spec) => fetchShaderParts(spec.shaderParts))),
   ]);
 
-  const opsKernels = new Map<string, SimpleKernel>();
-  const msmKernels = new Map<string, Kernel>();
+  const kernels = new Map<string, Kernel>();
 
-  // Create all pipelines in parallel
+  async function compile(
+    label: string,
+    module: GPUShaderModule,
+    layout: GPUPipelineLayout,
+    bindGroupLayout: GPUBindGroupLayout,
+    entryPoint: string,
+    workgroupSize: number,
+    constants?: Record<string, number>,
+  ): Promise<void> {
+    if (debug) {
+      console.debug(`[curvegpu] createComputePipelineAsync: ${entryPoint}`);
+    }
+    const pipeline = await device.createComputePipelineAsync({
+      label,
+      layout,
+      compute: constants ? { module, entryPoint, constants } : { module, entryPoint },
+    });
+    kernels.set(entryPoint, { pipeline, bindGroupLayout, workgroupSize });
+  }
+
+  /** Compile every entry point of a multi-entry shader against one layout. */
+  function compileMulti(prefix: string, specs: MSMShaderSpec[], texts: string[], layout: GPUPipelineLayout, bindGroupLayout: GPUBindGroupLayout): Promise<unknown>[] {
+    return specs.map((spec, i) => {
+      const module = device.createShaderModule({ label: `${prefix}-${spec.entryPoints[0]}-shader`, code: texts[i] });
+      return Promise.all(spec.entryPoints.map((entryPoint) => compile(`${prefix}-${entryPoint}`, module, layout, bindGroupLayout, entryPoint, spec.workgroupSize)));
+    });
+  }
+
   await Promise.all([
-    ...opsShaders.map(async (spec, i) => {
-      const shaderCode = opsShaderTexts[i];
-      const shaderModule = device.createShaderModule({
-        label: `curvegpu-ops-${spec.entryPoint}-shader`,
-        code: shaderCode,
+    ...opsShaders.map((spec, i) => {
+      const module = device.createShaderModule({ label: `curvegpu-ops-${spec.entryPoint}-shader`, code: opsShaderTexts[i] });
+      return compile(`curvegpu-ops-${spec.entryPoint}`, module, opsPipelineLayout, opsLayout, spec.entryPoint, opsWorkgroupSize, {
+        WORKGROUP_SIZE: opsWorkgroupSize,
       });
-      if (debug) {
-        console.debug(`[curvegpu] createComputePipelineAsync: ${spec.entryPoint}`);
-      }
-      const effectiveWorkgroupSize = spec.useWorkgroupOverride ? opsWorkgroupSize : 64;
-      const computeDesc: GPUProgrammableStage = spec.useWorkgroupOverride
-        ? { module: shaderModule, entryPoint: spec.entryPoint, constants: { WORKGROUP_SIZE: effectiveWorkgroupSize } }
-        : { module: shaderModule, entryPoint: spec.entryPoint };
-      const pipeline = await device.createComputePipelineAsync({
-        label: `curvegpu-ops-${spec.entryPoint}`,
-        layout: opsPipelineLayout,
-        compute: computeDesc,
-      });
-      opsKernels.set(spec.entryPoint, { pipeline, bindGroupLayout: opsLayout, workgroupSize: effectiveWorkgroupSize });
     }),
-    ...msmShaders.map(async (spec, i) => {
-      const shaderCode = msmShaderTexts[i];
-      const shaderModule = device.createShaderModule({
-        label: `curvegpu-msm-${spec.entryPoints[0]}-shader`,
-        code: shaderCode,
-      });
-      await Promise.all(
-        spec.entryPoints.map(async (entryPoint) => {
-          if (debug) {
-            console.debug(`[curvegpu] createComputePipelineAsync: ${entryPoint}`);
-          }
-          const pipeline = await device.createComputePipelineAsync({
-            label: `curvegpu-msm-${entryPoint}`,
-            layout: msmPipelineLayout,
-            compute: { module: shaderModule, entryPoint },
-          });
-          msmKernels.set(entryPoint, { pipeline, bindGroupLayout: msmLayout });
-        }),
-      );
-    }),
+    ...compileMulti("curvegpu-msm", msmShaders, msmShaderTexts, msmPipelineLayout, msmLayout),
+    ...compileMulti("curvegpu-msm-sort", sortShaders, sortShaderTexts, sortPipelineLayout, sortLayout),
   ]);
 
   return {
-    getOpsKernel(entryPoint: string): SimpleKernel {
-      const kernel = opsKernels.get(entryPoint);
+    getKernel(entryPoint: string): Kernel {
+      const kernel = kernels.get(entryPoint);
       if (!kernel) {
-        throw new Error(`[curvegpu] ops kernel not found: ${entryPoint}`);
-      }
-      return kernel;
-    },
-    getMSMKernel(entryPoint: string): Kernel {
-      const kernel = msmKernels.get(entryPoint);
-      if (!kernel) {
-        throw new Error(`[curvegpu] MSM kernel not found: ${entryPoint}`);
+        throw new Error(`[curvegpu] kernel not found: ${entryPoint}`);
       }
       return kernel;
     },
