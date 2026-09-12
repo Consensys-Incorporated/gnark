@@ -32,7 +32,7 @@ type templateData struct {
 	NTTSeed16    int64
 }
 
-//go:generate go run main.go
+//go:generate go run .
 func main() {
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
