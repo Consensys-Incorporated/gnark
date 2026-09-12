@@ -88,6 +88,7 @@ export async function runRawKernel(
   pass.end();
   encoder.copyBufferToBuffer(outputBuffer, 0, stagingBuffer, 0, dataBytes);
   device.queue.submit([encoder.finish()]);
+  await device.queue.onSubmittedWorkDone();
   const kernelMs = performance.now() - kernelStart;
 
   const readbackStart = performance.now();
