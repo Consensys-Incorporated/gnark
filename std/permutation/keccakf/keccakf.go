@@ -17,6 +17,7 @@ import (
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/internal/frontendtype"
 	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/std/math/uints"
 )
@@ -85,11 +86,14 @@ func permuteBits(api frontend.API, st [25][64]frontend.Variable) [25][64]fronten
 }
 
 func isR1CS(api frontend.API) bool {
+	// The custom one-row gadgets below rely on the characteristic being
+	// larger than their constant coefficients (they would divide by zero on
+	// F2/F3); those fields use the generic path.
 	if api.Compiler().Field().Cmp(big.NewInt(3)) <= 0 {
 		return false
 	}
-	_, ok := api.Compiler().ToCanonicalVariable(0).(constraint.LinearExpression)
-	return ok
+	ft, ok := api.Compiler().(frontendtype.FrontendTyper)
+	return ok && ft.FrontendType() == frontendtype.R1CS
 }
 
 func permuteBitsGeneric(api frontend.API, st [25][64]frontend.Variable) [25][64]frontend.Variable {
