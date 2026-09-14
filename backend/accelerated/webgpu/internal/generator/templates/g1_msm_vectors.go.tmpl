@@ -1,0 +1,78 @@
+import (
+	"math/big"
+
+	curve "{{ .CurveImport }}"
+	fr "{{ .FrImport }}"
+)
+
+type G1MSMCaseJSON struct {
+	Name           string            `json:"name"`
+	BasesAffine    []AffinePointJSON `json:"bases_affine"`
+	ScalarsBytesLE []string          `json:"scalars_bytes_le"`
+	ExpectedAffine JacobianPointJSON `json:"expected_affine"`
+}
+
+type G1MSMVectorsJSON struct {
+	TermsPerInstance int             `json:"terms_per_instance"`
+	MSMCases         []G1MSMCaseJSON `json:"msm_cases"`
+	OneMontZ         string          `json:"one_mont_z"`
+}
+
+func BuildG1MSMVectors() G1MSMVectorsJSON {
+	_, _, genAff, _ := curve.Generators()
+	infAff := new(curve.G1Affine).SetInfinity()
+	five := scalarMulG1MSM(5)
+	seventeen := scalarMulG1MSM(17)
+	oneTwentyThree := scalarMulG1MSM(123)
+	twoHundredEleven := scalarMulG1MSM(211)
+	modMinusOne := new(big.Int).Sub(fr.Modulus(), big.NewInt(1))
+	cases := []struct {
+		name    string
+		bases   []*curve.G1Affine
+		scalars []fr.Element
+	}{
+		{name: "single_generator", bases: []*curve.G1Affine{&genAff, infAff, infAff, infAff}, scalars: []fr.Element{newScalarUint64(1), newScalarUint64(0), newScalarUint64(0), newScalarUint64(0)}},
+		{name: "simple_linear_combo", bases: []*curve.G1Affine{&genAff, five, seventeen, oneTwentyThree}, scalars: []fr.Element{newScalarUint64(3), newScalarUint64(4), newScalarUint64(5), newScalarUint64(6)}},
+		{name: "includes_infinity_and_zero_scalar", bases: []*curve.G1Affine{infAff, five, infAff, seventeen}, scalars: []fr.Element{newScalarUint64(19), newScalarUint64(0), newScalarUint64(7), newScalarUint64(9)}},
+		{name: "q_minus_one_mix", bases: []*curve.G1Affine{&genAff, five, twoHundredEleven, oneTwentyThree}, scalars: []fr.Element{newScalarBig(modMinusOne), newScalarUint64(2), newScalarUint64(0), newScalarUint64(13)}},
+	}
+	out := G1MSMVectorsJSON{TermsPerInstance: 4, MSMCases: make([]G1MSMCaseJSON, len(cases)), OneMontZ: fpElementHex(montOne())}
+	for i, tc := range cases {
+		expected := naiveG1MSM(tc.bases, tc.scalars)
+		out.MSMCases[i] = G1MSMCaseJSON{Name: tc.name, BasesAffine: encodeAffineBatch(tc.bases), ScalarsBytesLE: encodeScalarBatch(tc.scalars), ExpectedAffine: affineOutputToJSON(expected)}
+	}
+	return out
+}
+
+func scalarMulG1MSM(v uint64) *curve.G1Affine {
+	_, _, genAff, _ := curve.Generators()
+	var out curve.G1Affine
+	out.ScalarMultiplication(&genAff, new(big.Int).SetUint64(v))
+	return &out
+}
+
+func encodeAffineBatch(in []*curve.G1Affine) []AffinePointJSON {
+	out := make([]AffinePointJSON, len(in))
+	for i, point := range in {
+		out[i] = affineToJSON(point)
+	}
+	return out
+}
+
+func encodeScalarBatch(in []fr.Element) []string {
+	out := make([]string, len(in))
+	for i, scalar := range in {
+		out[i] = scalarToHex(scalar)
+	}
+	return out
+}
+
+func naiveG1MSM(bases []*curve.G1Affine, scalars []fr.Element) *curve.G1Affine {
+	sum := new(curve.G1Affine).SetInfinity()
+	for i := range bases {
+		var term curve.G1Affine
+		term.ScalarMultiplication(bases[i], scalarToBig(scalars[i]))
+		sum.Add(sum, &term)
+	}
+	return sum
+}

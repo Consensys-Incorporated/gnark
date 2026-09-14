@@ -1,4 +1,5 @@
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"math/big"
@@ -42,6 +43,95 @@ func (proof *Proof) CurveID() ecc.ID {
 	return curve.ID
 }
 
+// Accelerator offloads the heavy operations of Prove: the multi-scalar
+// multiplications against the proving key and the computation of the quotient
+// polynomial H. Implementations are attached to a ProvingKey with
+// SetAccelerator; when none is set, Prove uses gnark-crypto on the CPU.
+//
+// The bases passed to MultiExpG1 and MultiExpG2 are always slices of the
+// proving key (pk.G1.A, pk.G1.B, pk.G1.K, pk.G1.Z, pk.G2.B,
+// pk.CommitmentKeys[i].Basis and pk.CommitmentKeys[i].BasisExpSigma), so an
+// implementation may cache device-side copies keyed by the backing array.
+// Scalars are in Montgomery form. Implementations must be safe for concurrent
+// use: Prove issues several MSMs from different goroutines.
+type Accelerator interface {
+	// MultiExpG1 returns Σ scalars[i]·bases[i].
+	MultiExpG1(bases []curve.G1Affine, scalars []fr.Element) (curve.G1Affine, error)
+	// MultiExpG2 returns Σ scalars[i]·bases[i].
+	MultiExpG2(bases []curve.G2Affine, scalars []fr.Element) (curve.G2Affine, error)
+	// ComputeH returns the coefficients of h = (a·b − c)/(Xⁿ−1) where a, b, c are
+	// the evaluations of the R1CS polynomials on domain (len(a) <= n, zero padded)
+	// and n is domain.Cardinality. The result has length n; only the first n−1
+	// entries are used.
+	ComputeH(a, b, c []fr.Element, domain *fft.Domain) ([]fr.Element, error)
+}
+
+// SetAccelerator attaches an Accelerator to the proving key. Passing nil restores
+// the CPU implementation.
+func (pk *ProvingKey) SetAccelerator(a Accelerator) {
+	pk.accelerator = a
+}
+
+// Accelerator returns the accelerator attached to the proving key, or nil.
+func (pk *ProvingKey) Accelerator() Accelerator {
+	return pk.accelerator
+}
+
+func (pk *ProvingKey) multiExpG1(res *curve.G1Jac, bases []curve.G1Affine, scalars []fr.Element, nbTasks int) error {
+	if pk.accelerator == nil {
+		_, err := res.MultiExp(bases, scalars, ecc.MultiExpConfig{NbTasks: nbTasks})
+		return err
+	}
+	aff, err := pk.accelerator.MultiExpG1(bases, scalars)
+	if err != nil {
+		return err
+	}
+	res.FromAffine(&aff)
+	return nil
+}
+
+func (pk *ProvingKey) multiExpG2(res *curve.G2Jac, bases []curve.G2Affine, scalars []fr.Element, nbTasks int) error {
+	if pk.accelerator == nil {
+		_, err := res.MultiExp(bases, scalars, ecc.MultiExpConfig{NbTasks: nbTasks})
+		return err
+	}
+	aff, err := pk.accelerator.MultiExpG2(bases, scalars)
+	if err != nil {
+		return err
+	}
+	res.FromAffine(&aff)
+	return nil
+}
+
+// pedersenCommit computes the BSB22 commitment of values with the i-th commitment key.
+func (pk *ProvingKey) pedersenCommit(i int, values []fr.Element) (curve.G1Affine, error) {
+	if pk.accelerator == nil {
+		return pk.CommitmentKeys[i].Commit(values)
+	}
+	if len(values) != len(pk.CommitmentKeys[i].Basis) {
+		return curve.G1Affine{}, errors.New("must have as many values as basis elements")
+	}
+	return pk.accelerator.MultiExpG1(pk.CommitmentKeys[i].Basis, values)
+}
+
+// pedersenProveKnowledge computes the BSB22 proof of knowledge of values with the i-th commitment key.
+func (pk *ProvingKey) pedersenProveKnowledge(i int, values []fr.Element) (curve.G1Affine, error) {
+	if pk.accelerator == nil {
+		return pk.CommitmentKeys[i].ProveKnowledge(values)
+	}
+	if len(values) != len(pk.CommitmentKeys[i].BasisExpSigma) {
+		return curve.G1Affine{}, errors.New("must have as many values as basis elements")
+	}
+	return pk.accelerator.MultiExpG1(pk.CommitmentKeys[i].BasisExpSigma, values)
+}
+
+func (pk *ProvingKey) computeH(a, b, c []fr.Element) ([]fr.Element, error) {
+	if pk.accelerator == nil {
+		return computeH(a, b, c, &pk.Domain), nil
+	}
+	return pk.accelerator.ComputeH(a, b, c, &pk.Domain)
+}
+
 // Prove generates the proof of knowledge of a r1cs with full witness (secret + public part).
 func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...backend.ProverOption) (*Proof, error) {
 	opt, err := backend.NewProverConfig(opts...)
@@ -52,7 +142,11 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		opt.HashToFieldFn = hash_to_field.New([]byte(constraint.CommitmentDst))
 	}
 
-	log := logger.Logger().With().Str("curve", r1cs.CurveID().String()).Str("acceleration", "none").Int("nbConstraints", r1cs.GetNbConstraints()).Str("backend", "groth16").Logger()
+	acceleration := "none"
+	if pk.accelerator != nil {
+		acceleration = fmt.Sprintf("%T", pk.accelerator)
+	}
+	log := logger.Logger().With().Str("curve", r1cs.CurveID().String()).Str("acceleration", acceleration).Int("nbConstraints", r1cs.GetNbConstraints()).Str("backend", "groth16").Logger()
 
 	commitmentInfo := r1cs.CommitmentInfo.(constraint.Groth16Commitments)
 
@@ -75,7 +169,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 			}
 
 			var err error
-			if proof.Commitments[i], err = pk.CommitmentKeys[i].Commit(privateCommittedValues[i]); err != nil {
+			if proof.Commitments[i], err = pk.pedersenCommit(i, privateCommittedValues[i]); err != nil {
 				return err
 			}
 
@@ -105,7 +199,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 
 	for i := range pk.CommitmentKeys {
 		var err error
-		if poks[i], err = pk.CommitmentKeys[i].ProveKnowledge(privateCommittedValues[i]); err != nil {
+		if poks[i], err = pk.pedersenProveKnowledge(i, privateCommittedValues[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -124,9 +218,10 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 
 	// H (witness reduction / FFT part)
 	var h []fr.Element
+	var errH error
 	chHDone := make(chan struct{}, 1)
 	go func() {
-		h = computeH(solution.A, solution.B, solution.C, &pk.Domain)
+		h, errH = pk.computeH(solution.A, solution.B, solution.C)
 		solution.A = nil
 		solution.B = nil
 		solution.C = nil
@@ -185,7 +280,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	chBs1Done := make(chan error, 1)
 	computeBS1 := func() {
 		<-chWireValuesB
-		if _, err := bs1.MultiExp(pk.G1.B, wireValuesB, ecc.MultiExpConfig{NbTasks: n / 2}); err != nil {
+		if err := pk.multiExpG1(&bs1, pk.G1.B, wireValuesB, n/2); err != nil {
 			chBs1Done <- err
 			close(chBs1Done)
 			return
@@ -198,7 +293,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 	chArDone := make(chan error, 1)
 	computeAR1 := func() {
 		<-chWireValuesA
-		if _, err := ar.MultiExp(pk.G1.A, wireValuesA, ecc.MultiExpConfig{NbTasks: n / 2}); err != nil {
+		if err := pk.multiExpG1(&ar, pk.G1.A, wireValuesA, n/2); err != nil {
 			chArDone <- err
 			close(chArDone)
 			return
@@ -218,7 +313,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		chKrs2Done := make(chan error, 1)
 		sizeH := int(pk.Domain.Cardinality - 1) // comes from the fact the deg(H)=(n-1)+(n-1)-n=n-2
 		go func() {
-			_, err := krs2.MultiExp(pk.G1.Z, h[:sizeH], ecc.MultiExpConfig{NbTasks: n / 2})
+			err := pk.multiExpG1(&krs2, pk.G1.Z, h[:sizeH], n/2)
 			chKrs2Done <- err
 		}()
 
@@ -228,7 +323,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 		toRemove = append(toRemove, commitmentInfo.CommitmentIndexes())
 		_wireValues := filterHeap(wireValues[r1cs.GetNbPublicVariables():], r1cs.GetNbPublicVariables(), internal.ConcatAll(toRemove...))
 
-		if _, err := krs.MultiExp(pk.G1.K, _wireValues, ecc.MultiExpConfig{NbTasks: n / 2}); err != nil {
+		if err := pk.multiExpG1(&krs, pk.G1.K, _wireValues, n/2); err != nil {
 			chKrsDone <- err
 			return
 		}
@@ -274,7 +369,7 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 			nbTasks *= 2
 		}
 		<-chWireValuesB
-		if _, err := Bs.MultiExp(pk.G2.B, wireValuesB, ecc.MultiExpConfig{NbTasks: nbTasks}); err != nil {
+		if err := pk.multiExpG2(&Bs, pk.G2.B, wireValuesB, nbTasks); err != nil {
 			return err
 		}
 
@@ -289,6 +384,9 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 
 	// wait for FFT to end, as it uses all our CPUs
 	<-chHDone
+	if errH != nil {
+		return nil, errH
+	}
 
 	// schedule our proof part computations
 	go computeKRS()

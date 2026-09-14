@@ -1,0 +1,18 @@
+import "github.com/consensys/gnark/backend/accelerated/webgpu/internal/testdata/testgen"
+
+const CurveKey = "{{ .CurveKey }}"
+
+func JSONTargets(nttMaxLog int) []testgen.JSONTarget {
+	return []testgen.JSONTarget{
+		{Path: "vectors/fr/{{ .CurveKey }}_fr_ops.json", Build: func() any { return BuildFROpsVectors() }},
+		{Path: "vectors/fr/{{ .CurveKey }}_fr_vector_ops.json", Build: func() any { return BuildFRVectorOps() }},
+		{Path: "vectors/fr/{{ .CurveKey }}_ntt_domains.json", Build: func() any { return BuildNTTDomainFile(3, nttMaxLog) }},
+		{Path: "vectors/fr/{{ .CurveKey }}_fr_ntt.json", Build: func() any { return BuildNTTVectors() }},
+		{Path: "vectors/fp/{{ .CurveKey }}_fp_ops.json", Build: func() any { return BuildFPOpsVectors() }},
+		{Path: "vectors/g1/{{ .CurveKey }}_g1_ops.json", Build: func() any { return BuildG1OpsVectors() }},
+		{Path: "vectors/g1/{{ .CurveKey }}_g1_scalar_mul.json", Build: func() any { return BuildG1ScalarVectors() }},
+		{Path: "vectors/g1/{{ .CurveKey }}_g1_msm.json", Build: func() any { return BuildG1MSMVectors() }},
+		{Path: "vectors/g2/{{ .CurveKey }}_g2_ops.json", Build: func() any { return BuildG2OpsVectors() }},
+		{Path: "vectors/g2/{{ .CurveKey }}_g2_msm.json", Build: func() any { return BuildG2MSMVectors() }},
+	}
+}

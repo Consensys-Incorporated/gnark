@@ -61,8 +61,8 @@ github.com/consensys/bavard v0.2.2-0.20260118153501-cba9f5475432 h1:4ACburMEVC+u
 github.com/consensys/bavard v0.2.2-0.20260118153501-cba9f5475432/go.mod h1:k/zVjHHC4B+PQy1Pg7fgvG3ALicQw540Crag8qx+dZs=
 github.com/consensys/compress v0.3.0 h1:HRIcHvWkW9C9req0ZWg7mhYHzBarohXhcszIwHONVkM=
 github.com/consensys/compress v0.3.0/go.mod h1:pyM+ZXiNUh7/0+AUjUf9RKUM6vSH7T/fsn5LLS0j1Tk=
-github.com/consensys/gnark-crypto v0.21.0 h1:FDHibVIk4T5LkOKAkiN38g8gEvOxNcM10mLHOqvFTD0=
-github.com/consensys/gnark-crypto v0.21.0/go.mod h1:hdTjDNjdkYJ1oVuc8emh9XEhfM1SbyZhJigFqItiOLk=
+github.com/consensys/gnark-crypto v0.21.1-0.20260913224755-1409fe592052 h1:iw/l5FVYu5PctRwOyooaOjqVWKomojbK+L9u84B9iXM=
+github.com/consensys/gnark-crypto v0.21.1-0.20260913224755-1409fe592052/go.mod h1:hdTjDNjdkYJ1oVuc8emh9XEhfM1SbyZhJigFqItiOLk=
 github.com/consensys/gnark-solidity-checker v0.2.0 h1:i5iUEzNOkUvpaKm23UEe0wajBMwj7NzyT4EI0T2N8WQ=
 github.com/consensys/gnark-solidity-checker v0.2.0/go.mod h1:cEvl4g5AH+L4qGQLDOVZjqvn5IKZIAZdhSi8zAM6BiY=
 github.com/coreos/go-semver v0.3.0/go.mod h1:nnelYz7RCh+5ahJtPPxZlU+153eP4D4r3EedlOD2RNk=

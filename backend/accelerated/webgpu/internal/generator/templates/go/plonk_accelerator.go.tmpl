@@ -1,0 +1,452 @@
+import (
+	"errors"
+	"fmt"
+	"math/big"
+	"sync"
+
+	curve "{{.CurveImport}}"
+	"{{.FpImport}}"
+	"{{.FrImport}}"
+	"{{.FFTImport}}"
+	"{{.FrImport}}/iop"
+	"github.com/consensys/gnark/backend/accelerated/webgpu/internal/bridge"
+	native "github.com/consensys/gnark/backend/plonk/{{.CurveDir}}"
+	cs "github.com/consensys/gnark/constraint/{{.CurveDir}}"
+)
+
+const curveKey = "{{.CurveKey}}"
+
+var client = bridge.Client{GlobalName: "gnarkPlonkWebGPU", ErrorPrefix: "webgpu plonk " + curveKey}
+
+// Layout of the numerator kernel inputs (see web/src/curvegpu/bridge.ts).
+const (
+	numeratorDynamicVectors = 5 // L, R, O, Z, Qk, followed by the BSB22 committed values
+	numeratorStaticVectors  = 7 // Ql, Qr, Qm, Qo, S1, S2, S3, followed by the BSB22 selectors
+	numeratorScalars        = 7 // per coset: coset, Lagrange scale, cs, cs², β, γ, α
+)
+
+// Accelerator implements native.Accelerator by running the MSMs, the quotient
+// numerator and the large inverse FFT of the PLONK prover on the browser WebGPU
+// runtime.
+type Accelerator struct {
+	pk    *native.ProvingKey
+	mu    sync.Mutex
+	key   bridge.Key
+	cache *numeratorCache
+}
+
+// Attach uploads the SRS of pk to the GPU and attaches a WebGPU accelerator to
+// pk. It is idempotent.
+func Attach(pk *native.ProvingKey) (*Accelerator, error) {
+	if acc, ok := pk.Accelerator().(*Accelerator); ok && acc.pk == pk {
+		return acc, nil
+	}
+	acc := &Accelerator{pk: pk}
+	if err := acc.prepare(); err != nil {
+		return nil, err
+	}
+	pk.SetAccelerator(acc)
+	return acc, nil
+}
+
+func (a *Accelerator) prepare() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.key.Client = client
+	bridge.AddBases(&a.key, "g1", "kzg", a.pk.Kzg.G1)
+	bridge.AddBases(&a.key, "g1", "kzgLagrange", a.pk.KzgLagrange.G1)
+	return a.key.Upload(curveKey)
+}
+
+// Release frees the GPU resources and detaches the accelerator from its proving key.
+func (a *Accelerator) Release() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pk.Accelerator() == native.Accelerator(a) {
+		a.pk.SetAccelerator(nil)
+	}
+	var err error
+	if a.cache != nil {
+		err = client.ReleaseQuotientStatics(curveKey, a.cache.key)
+		a.cache = nil
+	}
+	if e := a.key.Release(); err == nil {
+		err = e
+	}
+	return err
+}
+
+// Prewarm builds the circuit-dependent state (canonical circuit polynomials,
+// GPU-resident tables, compiled kernels) so that the first proof does not pay
+// for it. A proving key is bound to a single circuit, which must be spr.
+func (a *Accelerator) Prewarm(spr *cs.SparseR1CS) error {
+	domain0, domain1 := domains(spr)
+	trace := native.NewTrace(spr, domain0)
+	statics := staticPolys{
+		ql: trace.Ql, qr: trace.Qr, qm: trace.Qm, qo: trace.Qo,
+		s1: trace.S1, s2: trace.S2, s3: trace.S3,
+		qcp: trace.Qcp,
+	}
+	if _, err := a.numeratorCache(domain0, domain1, statics); err != nil {
+		return err
+	}
+	rho := int(domain1.Cardinality / domain0.Cardinality)
+	return client.PrewarmQuotient(curveKey, int(domain0.Cardinality), rho, len(trace.Qcp))
+}
+
+// domains mirrors the FFT domain selection of the native prover.
+func domains(spr *cs.SparseR1CS) (*fft.Domain, *fft.Domain) {
+	sizeSystem := uint64(spr.GetNbConstraints() + len(spr.Public))
+	domain0 := fft.NewDomain(sizeSystem)
+	if sizeSystem < 6 {
+		return domain0, fft.NewDomain(8*sizeSystem, fft.WithoutPrecompute())
+	}
+	return domain0, fft.NewDomain(4*sizeSystem, fft.WithoutPrecompute())
+}
+
+// MultiExp implements native.Accelerator.
+func (a *Accelerator) MultiExp(bases []curve.G1Affine, scalars []fr.Element) (curve.G1Affine, error) {
+	var res curve.G1Affine
+	if len(scalars) > len(bases) {
+		return res, errors.New(client.ErrorPrefix + ": more scalars than bases")
+	}
+	packed, err := bridge.MSM(&a.key, "g1", bases[:len(scalars)], scalarsRegularLE(scalars))
+	if err != nil || packed == nil {
+		return res, err
+	}
+	return decodeG1(packed)
+}
+
+// ToCanonical implements native.Accelerator.
+func (a *Accelerator) ToCanonical(domain *fft.Domain, p *iop.Polynomial) error {
+	if uint64(len(p.Coefficients())) != domain.Cardinality {
+		return fmt.Errorf("%s: polynomial has %d coefficients, expected %d", client.ErrorPrefix, len(p.Coefficients()), domain.Cardinality)
+	}
+	return canonicalize([]*iop.Polynomial{p})
+}
+
+// ComputeNumerator implements native.Accelerator.
+func (a *Accelerator) ComputeNumerator(in *native.NumeratorInput) (*iop.Polynomial, error) {
+	n := int(in.Domain0.Cardinality)
+	rho := int(in.Domain1.Cardinality / in.Domain0.Cardinality)
+	statics := staticPolys{
+		ql: in.Ql, qr: in.Qr, qm: in.Qm, qo: in.Qo,
+		s1: in.S1, s2: in.S2, s3: in.S3,
+		qcp: in.Qcp,
+	}
+	cache, err := a.numeratorCache(in.Domain0, in.Domain1, statics)
+	if err != nil {
+		return nil, err
+	}
+	// the prover expects the circuit polynomials in canonical form on return:
+	// point them at the cached canonical copies (read-only from here on).
+	cache.canonical.applyTo(statics)
+
+	// witness vectors, Lagrange basis, in one contiguous buffer
+	dynamic := append([]*iop.Polynomial{in.L, in.R, in.O, in.Z, in.Qk}, in.Pi...)
+	dynamicValues := make([]fr.Element, len(dynamic)*n)
+	for i, p := range dynamic {
+		if p == nil || len(p.Coefficients()) != n {
+			return nil, fmt.Errorf("%s: numerator input %d is missing or has the wrong size", client.ErrorPrefix, i)
+		}
+		copy(dynamicValues[i*n:], p.Coefficients())
+	}
+
+	// blinding polynomials, scaled per coset: bl(X) · ((s·ωⁱ)ⁿ − 1) with the
+	// power of the coset shifter folded into the coefficients
+	blinds := [][]fr.Element{in.Bl.Coefficients(), in.Br.Coefficients(), in.Bo.Coefficients(), in.Bz.Coefficients()}
+	blindCoeffCount := 0
+	for _, b := range blinds {
+		blindCoeffCount = max(blindCoeffCount, len(b))
+	}
+	blindValues := make([]fr.Element, rho*len(blinds)*blindCoeffCount)
+	scalarValues := make([]fr.Element, rho*numeratorScalars)
+	aux := &cache.aux
+	for i := 0; i < rho; i++ {
+		for j, b := range blinds {
+			out := blindValues[(i*len(blinds)+j)*blindCoeffCount:]
+			acc := aux.cosetExpMinusOnes[i]
+			for k := range b {
+				out[k].Mul(&b[k], &acc)
+				acc.Mul(&acc, &aux.cosets[i])
+			}
+		}
+		copy(scalarValues[i*numeratorScalars:], []fr.Element{
+			aux.cosets[i], aux.lagrangeScales[i], aux.cs, aux.css, in.Beta, in.Gamma, in.Alpha,
+		})
+	}
+
+	// the numerator comes back directly in the bit-reversed layout of the
+	// large domain, and the witness vectors in canonical form
+	numerator := make([]fr.Element, in.Domain1.Cardinality)
+	canonical := make([]fr.Element, len(dynamicValues))
+	if err := client.EvaluateQuotient(curveKey, cache.key,
+		bridge.Bytes(dynamicValues), bridge.Bytes(blindValues), bridge.Bytes(scalarValues),
+		n, blindCoeffCount, len(in.Pi), rho,
+		bridge.Bytes(numerator), bridge.Bytes(canonical)); err != nil {
+		return nil, err
+	}
+	for i, p := range dynamic {
+		copy(p.Coefficients(), canonical[i*n:(i+1)*n])
+		p.Basis, p.Layout = iop.Canonical, iop.Regular
+	}
+	return iop.NewPolynomial(&numerator, iop.Form{Basis: iop.LagrangeCoset, Layout: iop.BitReverse}), nil
+}
+
+// staticPolys are the circuit polynomials of the trace.
+type staticPolys struct {
+	ql, qr, qm, qo, s1, s2, s3 *iop.Polynomial
+	qcp                        []*iop.Polynomial
+}
+
+func (p staticPolys) all() []*iop.Polynomial {
+	return append([]*iop.Polynomial{p.ql, p.qr, p.qm, p.qo, p.s1, p.s2, p.s3}, p.qcp...)
+}
+
+func (p staticPolys) clone() staticPolys {
+	res := staticPolys{
+		ql: p.ql.Clone(), qr: p.qr.Clone(), qm: p.qm.Clone(), qo: p.qo.Clone(),
+		s1: p.s1.Clone(), s2: p.s2.Clone(), s3: p.s3.Clone(),
+		qcp: make([]*iop.Polynomial, len(p.qcp)),
+	}
+	for i := range p.qcp {
+		res.qcp[i] = p.qcp[i].Clone()
+	}
+	return res
+}
+
+// applyTo makes the polynomials of dst share the coefficients of p.
+func (p staticPolys) applyTo(dst staticPolys) {
+	*dst.ql, *dst.qr, *dst.qm, *dst.qo = *p.ql, *p.qr, *p.qm, *p.qo
+	*dst.s1, *dst.s2, *dst.s3 = *p.s1, *p.s2, *p.s3
+	for i := range p.qcp {
+		*dst.qcp[i] = *p.qcp[i]
+	}
+}
+
+// numeratorCache holds, for one circuit, the circuit polynomials in canonical
+// form (the prover reads them after the numerator is computed) and the small
+// per-coset tables. The canonical polynomials and the tables are uploaded once
+// to the GPU under key, where the coset evaluations are recomputed at each proof.
+type numeratorCache struct {
+	n, rho, qcpCount int
+	canonical        staticPolys
+	aux              numeratorAux
+	key              uint32
+}
+
+type numeratorAux struct {
+	cosets, cosetExpMinusOnes, lagrangeScales []fr.Element
+	cs, css                                   fr.Element
+}
+
+var (
+	cacheKeyMu   sync.Mutex
+	cacheKeyNext uint32
+)
+
+// nextCacheKey returns a process-wide unique, non-zero key for the runtime's caches.
+func nextCacheKey() uint32 {
+	cacheKeyMu.Lock()
+	defer cacheKeyMu.Unlock()
+	cacheKeyNext++
+	if cacheKeyNext == 0 {
+		cacheKeyNext = 1
+	}
+	return cacheKeyNext
+}
+
+func (a *Accelerator) numeratorCache(domain0, domain1 *fft.Domain, statics staticPolys) (*numeratorCache, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := int(domain0.Cardinality)
+	rho := int(domain1.Cardinality / domain0.Cardinality)
+	if c := a.cache; c != nil && c.n == n && c.rho == rho && c.qcpCount == len(statics.qcp) {
+		return c, nil
+	}
+	if a.cache != nil {
+		if err := client.ReleaseQuotientStatics(curveKey, a.cache.key); err != nil {
+			return nil, err
+		}
+		a.cache = nil
+	}
+
+	canonical := statics.clone()
+	if err := canonicalize(canonical.all()); err != nil {
+		return nil, err
+	}
+	all := canonical.all()
+	staticValues := make([]fr.Element, len(all)*n)
+	for i, p := range all {
+		copy(staticValues[i*n:], p.Coefficients())
+	}
+	aux, scaling, twiddles, denominators, err := buildNumeratorAux(domain0, domain1)
+	if err != nil {
+		return nil, err
+	}
+	c := &numeratorCache{n: n, rho: rho, qcpCount: len(statics.qcp), canonical: canonical, aux: aux, key: nextCacheKey()}
+	if err := client.PreloadQuotientStatics(curveKey, c.key,
+		bridge.Bytes(staticValues), bridge.Bytes(scaling), bridge.Bytes(twiddles), bridge.Bytes(denominators),
+		n, len(all), rho); err != nil {
+		return nil, err
+	}
+	a.cache = c
+	return c, nil
+}
+
+// buildNumeratorAux computes the per-coset tables of the CPU prover's
+// computeNumerator: the twiddles of the small domain, the coset scaling
+// vectors, the inverses of (s·ωⁱ − 1) used by L₁, and the per-coset scalars.
+func buildNumeratorAux(domain0, domain1 *fft.Domain) (aux numeratorAux, scaling, twiddles, denominators []fr.Element, err error) {
+	n := int(domain0.Cardinality)
+	rho := int(domain1.Cardinality / domain0.Cardinality)
+	twiddles = make([]fr.Element, n)
+	if n == 1 {
+		twiddles[0].SetOne()
+	} else {
+		tw, err := domain0.Twiddles()
+		if err != nil {
+			return aux, nil, nil, nil, err
+		}
+		copy(twiddles, tw[0])
+		w := twiddles[1]
+		for i := len(tw[0]); i < n; i++ {
+			twiddles[i].Mul(&twiddles[i-1], &w)
+		}
+	}
+	cosetTable, err := domain0.CosetTable()
+	if err != nil {
+		return aux, nil, nil, nil, err
+	}
+	aux = numeratorAux{
+		cosets:            make([]fr.Element, rho),
+		cosetExpMinusOnes: make([]fr.Element, rho),
+		lagrangeScales:    make([]fr.Element, rho),
+	}
+	aux.cs.Set(&domain1.FrMultiplicativeGen)
+	aux.css.Square(&aux.cs)
+	scaling = make([]fr.Element, rho*n)
+	denominators = make([]fr.Element, rho*n)
+	buf := make([]fr.Element, n)
+	var coset, one fr.Element
+	coset.SetOne()
+	one.SetOne()
+	bn := big.NewInt(int64(n))
+	for i := 0; i < rho; i++ {
+		if i == 0 {
+			coset.Mul(&coset, &domain1.FrMultiplicativeGen)
+		} else {
+			coset.Mul(&coset, &domain1.Generator)
+		}
+		aux.cosets[i] = coset
+		aux.cosetExpMinusOnes[i].Exp(coset, bn).Sub(&aux.cosetExpMinusOnes[i], &one)
+		aux.lagrangeScales[i].Mul(&aux.cosetExpMinusOnes[i], &domain0.CardinalityInv)
+		den := denominators[i*n : (i+1)*n]
+		for j := 0; j < n; j++ {
+			den[j].Mul(&coset, &twiddles[j]).Sub(&den[j], &one)
+		}
+		batchInvert(den, buf)
+		if i == 0 {
+			copy(scaling[:n], cosetTable)
+		} else {
+			fft.BuildExpTable(coset, scaling[i*n:(i+1)*n])
+		}
+	}
+	return aux, scaling, twiddles, denominators, nil
+}
+
+// batchInvert inverts vec in place with the Montgomery trick, using buf as scratch.
+func batchInvert(vec, buf []fr.Element) {
+	copy(buf, vec)
+	for i := 1; i < len(vec); i++ {
+		vec[i].Mul(&vec[i], &vec[i-1])
+	}
+	acc := vec[len(vec)-1]
+	acc.Inverse(&acc)
+	for i := len(vec) - 1; i > 0; i-- {
+		vec[i].Mul(&acc, &vec[i-1])
+		acc.Mul(&acc, &buf[i])
+	}
+	vec[0].Set(&acc)
+}
+
+type canonicalizeKey struct{ bitReversed, coset bool }
+
+// canonicalize converts polys in place to canonical basis, Regular layout,
+// batching the GPU inverse FFTs by input form. nil entries are skipped.
+func canonicalize(polys []*iop.Polynomial) error {
+	groups := map[canonicalizeKey][]*iop.Polynomial{}
+	n := -1
+	for _, p := range polys {
+		if p == nil {
+			continue
+		}
+		if p.Basis == iop.Canonical {
+			p.ToRegular()
+			continue
+		}
+		if n < 0 {
+			n = len(p.Coefficients())
+		} else if len(p.Coefficients()) != n {
+			return errors.New(client.ErrorPrefix + ": canonicalize: polynomials of different sizes")
+		}
+		if p.Basis != iop.Lagrange && p.Basis != iop.LagrangeCoset {
+			return fmt.Errorf("%s: unsupported polynomial basis %d", client.ErrorPrefix, p.Basis)
+		}
+		if p.Layout != iop.Regular && p.Layout != iop.BitReverse {
+			return fmt.Errorf("%s: unsupported polynomial layout %d", client.ErrorPrefix, p.Layout)
+		}
+		k := canonicalizeKey{bitReversed: p.Layout == iop.BitReverse, coset: p.Basis == iop.LagrangeCoset}
+		groups[k] = append(groups[k], p)
+	}
+	for k, group := range groups {
+		values := make([]fr.Element, len(group)*n)
+		for i, p := range group {
+			copy(values[i*n:], p.Coefficients())
+		}
+		if err := client.CanonicalizeVectors(curveKey, bridge.Bytes(values), len(group), n, k.bitReversed, k.coset, bridge.Bytes(values)); err != nil {
+			return err
+		}
+		for i, p := range group {
+			copy(p.Coefficients(), values[i*n:(i+1)*n])
+			p.Basis, p.Layout = iop.Canonical, iop.Regular
+		}
+	}
+	return nil
+}
+
+func scalarsRegularLE(scalars []fr.Element) []byte {
+	out := make([]byte, len(scalars)*fr.Bytes)
+	for i := range scalars {
+		fr.LittleEndian.PutElement((*[fr.Bytes]byte)(out[i*fr.Bytes:(i+1)*fr.Bytes]), scalars[i])
+	}
+	return out
+}
+
+var fpModulusLimbs = bridge.ModulusLimbs(fp.Modulus(), fp.Limbs)
+
+// decodeFp reads a Montgomery-form little-endian base field element and checks
+// that it is reduced.
+func decodeFp(z *fp.Element, b []byte) error {
+	if err := bridge.DecodeLimbs(z[:], b, fpModulusLimbs); err != nil {
+		return fmt.Errorf("%s: %w", client.ErrorPrefix, err)
+	}
+	return nil
+}
+
+func decodeG1(b []byte) (curve.G1Affine, error) {
+	var p curve.G1Affine
+	if len(b) != 2*fp.Bytes {
+		return p, fmt.Errorf("%s: expected %d G1 bytes, got %d", client.ErrorPrefix, 2*fp.Bytes, len(b))
+	}
+	if err := decodeFp(&p.X, b[:fp.Bytes]); err != nil {
+		return p, err
+	}
+	if err := decodeFp(&p.Y, b[fp.Bytes:]); err != nil {
+		return p, err
+	}
+	if !p.IsInfinity() && !p.IsOnCurve() {
+		return p, errors.New(client.ErrorPrefix + ": GPU returned a G1 point that is not on the curve")
+	}
+	return p, nil
+}
