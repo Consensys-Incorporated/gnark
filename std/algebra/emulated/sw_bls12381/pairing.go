@@ -813,17 +813,44 @@ func (pr *Pairing) MillerLoopAndMul(P *G1Affine, Q *G2Affine, previous *GTEl) (*
 //
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
 func (pr *Pairing) AssertMillerLoopAndFinalExpIsOne(P *G1Affine, Q *G2Affine, previous *GTEl) {
+	t2 := pr.millerLoopAndFinalExpResult([]*G1Affine{P}, []*G2Affine{Q}, previous)
+	pr.AssertIsEqual(t2, pr.Ext12.One())
+}
+
+// AssertMultiMillerLoopAndFinalExpIsOne computes the Miller loop between
+// multiple P and Q pairs and multiplies it in 𝔽p¹² by previous and
+// returns a boolean indicating if the result lies in the same equivalence
+// class as the reduced pairing purported to be 1. This check replaces the
+// final exponentiation step in-circuit and follows Section 4 of
+// [On Proving Pairings] paper by A. Novakovic and L. Eagen.
+//
+// [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
+func (pr *Pairing) AssertMultiMillerLoopAndFinalExpIsOne(P []*G1Affine, Q []*G2Affine, previous *GTEl) {
 	t2 := pr.millerLoopAndFinalExpResult(P, Q, previous)
 	pr.AssertIsEqual(t2, pr.Ext12.One())
 }
 
 // millerLoopAndFinalExpResult computes the Miller loop between P and Q,
 // multiplies it in 𝔽p¹² by previous and returns the result.
-func (pr *Pairing) millerLoopAndFinalExpResult(P *G1Affine, Q *G2Affine, previous *GTEl) *GTEl {
+func (pr *Pairing) millerLoopAndFinalExpResult(P []*G1Affine, Q []*G2Affine, previous *GTEl) *GTEl {
+	nP := len(P)
+	nQ := len(Q)
+	if nP == 0 || nP != nQ {
+		return nil
+	}
 	tower := pr.ToTower(previous)
 
+	inputs := make([]*baseEl, 0, 2*nP+4*nQ+12)
+	for _, p := range P {
+		inputs = append(inputs, &p.X, &p.Y)
+	}
+	for _, q := range Q {
+		inputs = append(inputs, &q.P.X.A0, &q.P.X.A1, &q.P.Y.A0, &q.P.Y.A1)
+	}
+	inputs = append(inputs, tower[0], tower[1], tower[2], tower[3], tower[4], tower[5], tower[6], tower[7], tower[8], tower[9], tower[10], tower[11])
+
 	// hint the non-residue witness
-	hint, err := pr.curveF.NewHint(millerLoopAndCheckFinalExpHint, 18, &P.X, &P.Y, &Q.P.X.A0, &Q.P.X.A1, &Q.P.Y.A0, &Q.P.Y.A1, tower[0], tower[1], tower[2], tower[3], tower[4], tower[5], tower[6], tower[7], tower[8], tower[9], tower[10], tower[11])
+	hint, err := pr.curveF.NewHint(millerLoopAndCheckFinalExpHint, 18, inputs...)
 	if err != nil {
 		// err is non-nil only for invalid number of inputs
 		panic(err)
@@ -859,18 +886,16 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P *G1Affine, Q *G2Affine, previou
 		A11: *pr.curveF.Zero(),
 	}
 
-	if Q.Lines == nil {
-		Qlines := pr.computeLines(&Q.P)
-		Q.Lines = &Qlines
+	lines := make([]lineEvaluations, nQ)
+	for i := range Q {
+		if Q[i].Lines == nil {
+			Qlines := pr.computeLines(&Q[i].P)
+			Q[i].Lines = &Qlines
+		}
+		lines[i] = *Q[i].Lines
 	}
-	lines := *Q.Lines
 
-	res, err := pr.millerLoopLines(
-		[]*G1Affine{P},
-		[]lineEvaluations{lines},
-		residueWitnessInv,
-		false,
-	)
+	res, err := pr.millerLoopLines(P, lines, residueWitnessInv, false)
 	if err != nil {
 		return nil
 	}
@@ -891,7 +916,6 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P *G1Affine, Q *G2Affine, previou
 	res = pr.Ext12.Mul(res, t0)
 
 	return res
-
 }
 
 // IsMillerLoopAndFinalExpOne computes the Miller loop between P and Q,
@@ -903,7 +927,7 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P *G1Affine, Q *G2Affine, previou
 //
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
 func (pr *Pairing) IsMillerLoopAndFinalExpOne(P *G1Affine, Q *G2Affine, previous *GTEl) frontend.Variable {
-	t2 := pr.millerLoopAndFinalExpResult(P, Q, previous)
+	t2 := pr.millerLoopAndFinalExpResult([]*G1Affine{P}, []*G2Affine{Q}, previous)
 
 	res := pr.IsEqual(t2, pr.Ext12.One())
 	return res

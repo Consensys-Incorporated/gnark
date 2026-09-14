@@ -223,41 +223,50 @@ func millerLoopAndCheckFinalExpHint(nativeMod *big.Int, nativeInputs, nativeOutp
 			var P bls12381.G1Affine
 			var Q bls12381.G2Affine
 			var previous bls12381.E12
+			n := len(inputs) - 12
+			p := make([]bls12381.G1Affine, 0, n/6)
+			q := make([]bls12381.G2Affine, 0, n/6)
+			// first one-third is G1 points
+			for k := 0; k < n/3; k += 2 {
+				P.X.SetBigInt(inputs[k])
+				P.Y.SetBigInt(inputs[k+1])
+				p = append(p, P)
+			}
+			// subsequent two-thirds are G2 points
+			for k := n / 3; k < n; k += 4 {
+				Q.X.A0.SetBigInt(inputs[k])
+				Q.X.A1.SetBigInt(inputs[k+1])
+				Q.Y.A0.SetBigInt(inputs[k+2])
+				Q.Y.A1.SetBigInt(inputs[k+3])
+				q = append(q, Q)
+			}
 
-			P.X.SetBigInt(inputs[0])
-			P.Y.SetBigInt(inputs[1])
-			Q.X.A0.SetBigInt(inputs[2])
-			Q.X.A1.SetBigInt(inputs[3])
-			Q.Y.A0.SetBigInt(inputs[4])
-			Q.Y.A1.SetBigInt(inputs[5])
-
-			previous.C0.B0.A0.SetBigInt(inputs[6])
-			previous.C0.B0.A1.SetBigInt(inputs[7])
-			previous.C0.B1.A0.SetBigInt(inputs[8])
-			previous.C0.B1.A1.SetBigInt(inputs[9])
-			previous.C0.B2.A0.SetBigInt(inputs[10])
-			previous.C0.B2.A1.SetBigInt(inputs[11])
-			previous.C1.B0.A0.SetBigInt(inputs[12])
-			previous.C1.B0.A1.SetBigInt(inputs[13])
-			previous.C1.B1.A0.SetBigInt(inputs[14])
-			previous.C1.B1.A1.SetBigInt(inputs[15])
-			previous.C1.B2.A0.SetBigInt(inputs[16])
-			previous.C1.B2.A1.SetBigInt(inputs[17])
+			previous.C0.B0.A0.SetBigInt(inputs[n])
+			previous.C0.B0.A1.SetBigInt(inputs[n+1])
+			previous.C0.B1.A0.SetBigInt(inputs[n+2])
+			previous.C0.B1.A1.SetBigInt(inputs[n+3])
+			previous.C0.B2.A0.SetBigInt(inputs[n+4])
+			previous.C0.B2.A1.SetBigInt(inputs[n+5])
+			previous.C1.B0.A0.SetBigInt(inputs[n+6])
+			previous.C1.B0.A1.SetBigInt(inputs[n+7])
+			previous.C1.B1.A0.SetBigInt(inputs[n+8])
+			previous.C1.B1.A1.SetBigInt(inputs[n+9])
+			previous.C1.B2.A0.SetBigInt(inputs[n+10])
+			previous.C1.B2.A1.SetBigInt(inputs[n+11])
 
 			if previous.IsZero() {
 				return errors.New("previous Miller loop result is zero")
 			}
 
-			lines := bls12381.PrecomputeLines(Q)
-			millerLoop, err := bls12381.MillerLoopFixedQ(
-				[]bls12381.G1Affine{P},
-				[][2][len(bls12381.LoopCounter) - 1]bls12381.LineEvaluationAff{lines},
-			)
+			lines := make([][2][len(bls12381.LoopCounter) - 1]bls12381.LineEvaluationAff, 0, len(q))
+			for _, qi := range q {
+				lines = append(lines, bls12381.PrecomputeLines(qi))
+			}
+			millerLoop, err := bls12381.MillerLoopFixedQ(p, lines)
 			if err != nil {
 				return err
 			}
 			millerLoop.Conjugate(&millerLoop)
-
 			millerLoop.Mul(&millerLoop, &previous)
 
 			residueWitnessInv, scalingFactor := finalExpWitness(&millerLoop)
