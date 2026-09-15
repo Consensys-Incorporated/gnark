@@ -6,6 +6,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/std/internal/logderivprecomp"
+	stdbits "github.com/consensys/gnark/std/math/bits"
 	"github.com/consensys/gnark/std/rangecheck"
 )
 
@@ -101,6 +102,22 @@ func NewBytes(api frontend.API) (*Bytes, error) {
 
 func (bf *Bytes) packInternal(val frontend.Variable) U8 {
 	return U8{Val: val, internal: true}
+}
+
+// ToBits decomposes a byte into little-endian bits and constrains the byte to
+// equal the recomposition of these bits.
+func (bf *Bytes) ToBits(a U8) []frontend.Variable {
+	return bf.api.ToBinary(a.Val, 8)
+}
+
+// FromBits packs eight little-endian bits into a byte. The input bits are
+// constrained to be boolean unless they are already marked as boolean by the
+// compiler.
+func (bf *Bytes) FromBits(bits ...frontend.Variable) U8 {
+	if len(bits) != 8 {
+		panic("expected exactly 8 bits")
+	}
+	return bf.packInternal(stdbits.FromBinary(bf.api, bits))
 }
 
 // ValueOf returns a constrainted [U8] variable. For a constant value, use
