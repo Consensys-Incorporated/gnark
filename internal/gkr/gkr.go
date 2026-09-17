@@ -53,6 +53,7 @@ type resources struct {
 	outgoingEvalPoints [][][]frontend.Variable // [levelI][outgoingClaimI] → eval point
 	nbVars             int
 	uniqueInputIndices [][]int // [wI][claimI]: w's unique-input index in the layer its claimI-th evaluation is coming from
+	wireLevels         []constraint.GkrProvingLevel
 }
 
 // zeroCheckLazyClaims is a lazy claim for sumcheck (verifier side).
@@ -250,6 +251,7 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 		outgoingEvalPoints: make([][][]frontend.Variable, len(schedule)+1),
 		nbVars:             nbVars,
 		uniqueInputIndices: c.UniqueInputIndices(schedule),
+		wireLevels:         schedule.WireLevels(),
 	}
 
 	initialChallengeI := len(schedule)
@@ -273,7 +275,7 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 			}
 		}
 		constraint.BindGkrFinalEvalProof(r.t, proof[levelI].FinalEvalProof,
-			c.UniqueGateInputs(schedule[levelI]), c.IsInput, schedule[levelI])
+			c.UniqueGateInputs(schedule[levelI]), c.IsInput, schedule[levelI], r.wireLevels)
 	}
 	return nil
 }
