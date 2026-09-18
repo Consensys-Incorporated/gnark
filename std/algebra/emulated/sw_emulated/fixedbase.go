@@ -48,12 +48,6 @@ import (
 // checks) plus a y materialization (one check). The y-coordinate is
 // materialized once, before the final complete addition.
 
-// combDefaultWindow is the default window width of the fixed-base comb. With
-// 64-bit limb emulation it is supported by all built-in curves (the recoded
-// scalar fits the scalar-field limb capacity) and is close to the
-// constraint-count optimum in R1CS.
-const combDefaultWindow = 8
-
 // combPlonkWindow is the window width used on PLONKish backends. The one-hot
 // selection's wide constant linear combinations are free in R1CS but expand
 // into one addition gate per term in PLONK, making the selector cost scale
@@ -62,12 +56,64 @@ const combDefaultWindow = 8
 // optimum measured on secp256k1.
 const combPlonkWindow = 5
 
+// combOptimalWindow returns the R1CS-optimal comb window width for the given
+// base-field limb count and scalar bit length. It minimises an estimated
+// constraint count:
+//
+//	cost(w) = (nw−1)·selectCost(w) + selectCost(tw) + (nw−1)·addCost
+//
+// where nw = ⌈n/w⌉, tw = n − w·(nw−1) is the top-window width, and
+// addCost ≈ 100·nbLimbs approximates the R1CS constraints per chain
+// addition (emulated complete addition scales roughly linearly with nbLimbs).
+// selectCost is the minimum-rb combSelect multiplication count at width w
+// (see combSelect for the bilinear one-hot formula).
+//
+// Validated against measured constraint counts:
+//
+//	secp256k1, BN254 G1 (nbLimbs=4, n≈256): optimum w=9 (−2.3 % vs w=8)
+//	BLS12-381 G1        (nbLimbs=6, n≈255): optimum w=10 (−3.2 % vs w=8)
+func combOptimalWindow(nbLimbs, n int) int {
+	oneHotCost := func(k int) int {
+		if k <= 1 {
+			return 0
+		}
+		return (1 << k) - 2
+	}
+	nbOut := 2 * nbLimbs
+	selectCost := func(w int) int {
+		if w <= 0 {
+			return 0
+		}
+		best := oneHotCost(w) // rb=0: full one-hot on all w bits
+		for rb := 1; rb <= w; rb++ {
+			if c := oneHotCost(rb) + oneHotCost(w-rb) + (1<<rb)*nbOut; c < best {
+				best = c
+			}
+		}
+		return best
+	}
+	addCost := 100 * nbLimbs
+	best, bestCost := 8, -1
+	for w := 4; w <= 16; w++ {
+		nw := (n + w - 1) / w
+		tw := n - w*(nw-1)
+		total := (nw-1)*selectCost(w) + selectCost(tw) + (nw-1)*addCost
+		if bestCost < 0 || total < bestCost {
+			bestCost = total
+			best = w
+		}
+	}
+	return best
+}
+
 // combWindow returns the comb window width for the current backend.
 func (c *Curve[B, S]) combWindow() int {
 	if _, ok := c.api.Compiler().(frontend.PlonkAPI); ok {
 		return combPlonkWindow
 	}
-	return combDefaultWindow
+	var fp B
+	var fs S
+	return combOptimalWindow(int(fp.NbLimbs()), fs.Modulus().BitLen())
 }
 
 // combData holds the compile-time data of the comb: the constant window
