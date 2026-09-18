@@ -43,6 +43,17 @@ func mimcGate(api gkr.GateAPI, input ...frontend.Variable) frontend.Variable {
 	return res
 }
 
+// mimcLastGate is the final-round gate, which also takes the initial state input (input[2]).
+// This mirrors std/permutation/gkr-mimc, where the state input feeds both the first round and the
+// final gate — making it a multi-source input.
+func mimcLastGate(api gkr.GateAPI, input ...frontend.Variable) frontend.Variable {
+	sum := api.Add(input[0], input[1])
+	sum = api.Add(sum, input[2])
+	res := api.Mul(sum, sum)
+	res = api.Mul(res, sum)
+	return res
+}
+
 func selectInput3Gate(_ gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
 	return in[2]
 }
@@ -139,11 +150,20 @@ func (c *Cache) GetGate(name string) gkr.GateFunction {
 	panic("gate not found: " + name)
 }
 
+// MiMCCircuit returns a circuit faithful to the topology of std/permutation/gkr-mimc:
+// the key input (wire 0) is fed to every round and the final gate, while the state input (wire 1)
+// seeds the chain and is also fed to the final gate. Both inputs are thus multi-source.
+// numRounds is the total number of rounds, matching the real gadget's len(constants): the first
+// numRounds-1 rounds use mimcGate, and the final round uses mimcLastGate (which additionally takes
+// the state input). Rounds are chained: wire i = mimcGate(0, i-1); the final wire is
+// mimcLastGate(0, last, 1).
 func MiMCCircuit(numRounds int) gkrcore.RawCircuit {
 	c := make(gkrcore.RawCircuit, numRounds+2)
-	for i := 2; i < len(c); i++ {
-		c[i] = gkrcore.RawWire{Gate: mimcGate, Inputs: []int{i - 1, 0}}
+	// wires 0 (key) and 1 (state): inputs
+	for i := range numRounds - 1 {
+		c[i+2] = gkrcore.RawWire{Gate: mimcGate, Inputs: []int{0, i + 1}}
 	}
+	c[numRounds+1] = gkrcore.RawWire{Gate: mimcLastGate, Inputs: []int{0, numRounds, 1}}
 	return c
 }
 

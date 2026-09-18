@@ -251,7 +251,7 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 		outgoingEvalPoints: make([][][]frontend.Variable, len(schedule)+1),
 		nbVars:             nbVars,
 		uniqueInputIndices: c.UniqueInputIndices(schedule),
-		wireLevels:         schedule.WireLevels(),
+		wireLevels:         schedule.WireLevels(len(c)),
 	}
 
 	initialChallengeI := len(schedule)
