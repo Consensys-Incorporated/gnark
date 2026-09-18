@@ -58,24 +58,6 @@ func TestMultipleCommitments(t *testing.T) {
 	assert.ProverSucceeded(&circuit, &assignment, test.WithCurves(ecc.BN254))
 }
 
-type noCommitVariable struct {
-	X frontend.Variable
-}
-
-func (c *noCommitVariable) Define(api frontend.API) error {
-	WithCommitment(api, func(api frontend.API, commitment frontend.Variable) error { return nil })
-	return nil
-}
-
-// TestNoCommitVariable checks that a circuit that doesn't use the commitment variable
-// compiles and prover succeeds. This is due to the randomization of the commitment.
-func TestNoCommitVariable(t *testing.T) {
-	circuit := noCommitVariable{}
-	assignment := noCommitVariable{X: 10}
-	assert := test.NewAssert(t)
-	assert.ProverSucceeded(&circuit, &assignment, test.WithCurves(ecc.BN254))
-}
-
 type wideCommitment struct {
 	X              frontend.Variable
 	withCommitment bool

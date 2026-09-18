@@ -350,3 +350,36 @@ func TestDivUncheckedNonZeroNumeratorZeroDenominatorFails(t *testing.T) {
 		t.Fatal("expected r1cs solver to fail")
 	}
 }
+
+type commitToAlreadyCommittedVarCircuit struct {
+	A, B frontend.Variable
+}
+
+func (c *commitToAlreadyCommittedVarCircuit) Define(api frontend.API) error {
+	cm := api.(frontend.Committer)
+	if _, err := cm.Commit(c.A); err != nil { // 1st commitment
+		return err
+	}
+	v1 := api.Mul(c.B, c.B)
+	if _, err := cm.Commit(v1); err != nil { // 2nd commitment, privately commits v1
+		return err
+	}
+	_, err := cm.Commit(v1) // re-commit v1, already covered by the 2nd commitment
+	return err
+}
+
+// commits to a variable that a prior commitment already privately committed to.
+func TestCommitToAlreadyCommittedVariable(t *testing.T) {
+	circuit := &commitToAlreadyCommittedVarCircuit{}
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), NewBuilder, circuit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wit, err := frontend.NewWitness(&commitToAlreadyCommittedVarCircuit{A: 3, B: 5}, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ccs.Solve(wit); err != nil {
+		t.Fatal(err)
+	}
+}

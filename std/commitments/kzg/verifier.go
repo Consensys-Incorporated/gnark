@@ -372,6 +372,15 @@ func NewVerifier[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.
 // commitment at point.
 func (v *Verifier[FR, G1El, G2El, GTEl]) CheckOpeningProof(commitment Commitment[G1El], proof OpeningProof[FR, G1El], point emulated.Element[FR], vk VerifyingKey[G1El, G2El]) error {
 
+	// Subgroup-check the adversarial G1 witnesses before the pairing, mirroring
+	// the native verifier (which rejects with ErrCommitmentNotInSubgroup /
+	// ErrQuotientNotNotInSubgroup). Cofactor torsion is invisible to the pairing
+	// (e([T]G₁, G₂)=1 for ord(T) coprime to r), so without these checks the
+	// verifier accepts torsion-shifted commitments/quotients that are not valid
+	// group elements — a soundness gap w.r.t. the intended KZG relation.
+	v.pairing.AssertIsOnG1(&commitment.G1El)
+	v.pairing.AssertIsOnG1(&proof.Quotient)
+
 	// [f(a)]G1 + [-a]([H(α)]G₁) = [f(a) - a*H(α)]G₁
 	pointNeg := v.scalarApi.Neg(&point)
 	totalG1, err := v.curve.MultiScalarMul([]*G1El{&vk.G1, &proof.Quotient}, []*emulated.Element[FR]{&proof.ClaimedValue, pointNeg})
@@ -395,6 +404,14 @@ func (v *Verifier[FR, G1El, G2El, GTEl]) CheckOpeningProof(commitment Commitment
 
 // BatchVerifySinglePoint verifies multiple opening proofs at a single point.
 func (v *Verifier[FR, G1El, G2El, GTEl]) BatchVerifySinglePoint(digests []Commitment[G1El], batchOpeningProof BatchOpeningProof[FR, G1El], point emulated.Element[FR], vk VerifyingKey[G1El, G2El], dataTranscript ...emulated.Element[FR]) error {
+	// Subgroup-check the raw digests before folding (matching the native
+	// verifier). A per-input check is required: folding is linear, so an
+	// in-subgroup folded digest does not imply each summand is in-subgroup.
+	// The quotient is checked inside CheckOpeningProof below (FoldProof passes
+	// batchOpeningProof.Quotient through unchanged).
+	for i := range digests {
+		v.pairing.AssertIsOnG1(&digests[i].G1El)
+	}
 	// fold the proof
 	foldedProof, foldedDigest, err := v.FoldProof(digests, batchOpeningProof, point, dataTranscript...)
 	if err != nil {
@@ -519,6 +536,15 @@ func (v *Verifier[FR, G1El, G2El, GTEl]) BatchVerifyMultiPoints(digests []Commit
 	// if only one proof go to base case
 	if len(digests) == 1 {
 		return v.CheckOpeningProof(digests[0], proofs[0], points[0], vk)
+	}
+
+	// Subgroup-check the raw digests and quotients before folding (matching the
+	// native verifier). This path does not go through CheckOpeningProof, so the
+	// checks must be done here. A per-input check is required: folding is linear,
+	// so in-subgroup folded points do not imply each summand is in-subgroup.
+	for i := range digests {
+		v.pairing.AssertIsOnG1(&digests[i].G1El)
+		v.pairing.AssertIsOnG1(&proofs[i].Quotient)
 	}
 
 	// fold the proofs

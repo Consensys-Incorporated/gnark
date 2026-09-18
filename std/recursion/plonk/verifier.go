@@ -676,6 +676,15 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) PrepareVerification(vk VerifyingKey[FR,
 	if len(proof.Bsb22Commitments) != len(vk.Qcp) {
 		return nil, nil, nil, fmt.Errorf("BSB22 commitment number mismatch")
 	}
+	// Match the native verifier (backend/plonk/.../verify.go): the claimed-values
+	// vector must hold exactly the 6 fixed openings (l, r, o, s1, s2 and the
+	// linearisation) plus one per custom BSB22 commitment. PrepareVerification
+	// indexes ClaimedValues[0..5] and ClaimedValues[6:] directly, so without this
+	// check an undersized slice panics and an oversized one is only caught later
+	// by FoldProof. Validate up front.
+	if len(proof.BatchedProof.ClaimedValues) != 6+len(vk.Qcp) {
+		return nil, nil, nil, fmt.Errorf("claimed values number mismatch: expected %d, got %d", 6+len(vk.Qcp), len(proof.BatchedProof.ClaimedValues))
+	}
 
 	fs, err := recursion.NewTranscript(v.api, fr.Modulus(), []string{"gamma", "beta", "alpha", "zeta"})
 	if err != nil {

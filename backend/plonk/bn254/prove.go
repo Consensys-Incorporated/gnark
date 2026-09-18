@@ -95,6 +95,103 @@ type Proof struct {
 	ZShiftedOpening kzg.OpeningProof
 }
 
+// Accelerator offloads the heavy operations of Prove. Implementations are
+// attached to a ProvingKey with SetAccelerator; when none is set, Prove uses
+// gnark-crypto on the CPU.
+//
+// The bases passed to MultiExp are always sub-slices of pk.Kzg.G1 or
+// pk.KzgLagrange.G1, so an implementation may cache device-side copies keyed by
+// the backing array and resolve the offset from the slice pointer. Scalars and
+// polynomial coefficients are in Montgomery form. Implementations must be safe
+// for concurrent use: Prove issues MSMs from several goroutines.
+type Accelerator interface {
+	// MultiExp returns Σ scalars[i]·bases[i].
+	MultiExp(bases []curve.G1Affine, scalars []fr.Element) (curve.G1Affine, error)
+
+	// ToCanonical converts p in place to the canonical basis with Regular layout
+	// on domain. p is in Lagrange or LagrangeCoset basis, Regular or BitReverse
+	// layout, and has exactly domain.Cardinality coefficients.
+	ToCanonical(domain *fft.Domain, p *iop.Polynomial) error
+
+	// ComputeNumerator evaluates the PLONK constraint numerator on the ρ cosets
+	// of Domain1 (ρ = Domain1.Cardinality / Domain0.Cardinality) and returns it
+	// as a polynomial in LagrangeCoset basis and BitReverse layout on Domain1,
+	// exactly like the CPU implementation. On return, every polynomial of in
+	// except the blinding polynomials must be in canonical basis and Regular
+	// layout on Domain0 (the prover opens them later); the blinding polynomials
+	// must be left unchanged.
+	ComputeNumerator(in *NumeratorInput) (*iop.Polynomial, error)
+}
+
+// NumeratorInput is the input of Accelerator.ComputeNumerator. All polynomials
+// have Domain0.Cardinality coefficients except the blinding polynomials, which
+// are small-degree canonical polynomials.
+type NumeratorInput struct {
+	Domain0, Domain1 *fft.Domain
+
+	// Witness polynomials (Lagrange basis, Regular layout): L, R, O, the
+	// permutation accumulator Z, and the completed public-input selector Qk.
+	L, R, O, Z, Qk *iop.Polynomial
+	// Circuit polynomials from the trace (Lagrange basis, Regular layout).
+	Ql, Qr, Qm, Qo, S1, S2, S3 *iop.Polynomial
+	// BSB22 selectors Qcp[i] and committed values Pi[i] (Lagrange, Regular).
+	Qcp, Pi []*iop.Polynomial
+	// Blinding polynomials of L, R, O and Z (canonical, Regular).
+	Bl, Br, Bo, Bz *iop.Polynomial
+
+	Alpha, Beta, Gamma fr.Element
+}
+
+// SetAccelerator attaches an Accelerator to the proving key. Passing nil restores
+// the CPU implementation.
+func (pk *ProvingKey) SetAccelerator(a Accelerator) {
+	pk.accelerator = a
+}
+
+// Accelerator returns the accelerator attached to the proving key, or nil.
+func (pk *ProvingKey) Accelerator() Accelerator {
+	return pk.accelerator
+}
+
+// commit computes the KZG commitment of p with key. nbTasks is a parallelism
+// hint for the CPU implementation.
+func (pk *ProvingKey) commit(key kzg.ProvingKey, p []fr.Element, nbTasks ...int) (kzg.Digest, error) {
+	if pk.accelerator == nil {
+		return kzg.Commit(p, key, nbTasks...)
+	}
+	if len(p) > len(key.G1) {
+		return kzg.Digest{}, kzg.ErrInvalidPolynomialSize
+	}
+	return pk.accelerator.MultiExp(key.G1[:len(p)], p)
+}
+
+func (pk *ProvingKey) multiExp(res *curve.G1Affine, bases []curve.G1Affine, scalars []fr.Element) error {
+	if pk.accelerator == nil {
+		_, err := res.MultiExp(bases, scalars, ecc.MultiExpConfig{})
+		return err
+	}
+	var err error
+	*res, err = pk.accelerator.MultiExp(bases, scalars)
+	return err
+}
+
+// committer returns the kzg.Committer used for KZG openings with key.
+func (pk *ProvingKey) committer(key kzg.ProvingKey) kzg.Committer {
+	if pk.accelerator == nil {
+		return key
+	}
+	return acceleratedCommitter{pk: pk, key: key}
+}
+
+type acceleratedCommitter struct {
+	pk  *ProvingKey
+	key kzg.ProvingKey
+}
+
+func (c acceleratedCommitter) Commit(p []fr.Element) (kzg.Digest, error) {
+	return c.pk.commit(c.key, p)
+}
+
 func Prove(spr *cs.SparseR1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...backend.ProverOption) (*Proof, error) {
 
 	log := logger.Logger().With().
@@ -297,7 +394,7 @@ func (s *instance) bsb22Hint(_ *big.Int, ins, outs []*big.Int) error {
 		return err
 	}
 	s.cCommitments[commDepth] = iop.NewPolynomial(&committedValues, iop.Form{Basis: iop.Lagrange, Layout: iop.Regular})
-	if s.proof.Bsb22Commitments[commDepth], err = kzg.Commit(s.cCommitments[commDepth].Coefficients(), s.pk.KzgLagrange); err != nil {
+	if s.proof.Bsb22Commitments[commDepth], err = s.pk.commit(s.pk.KzgLagrange, s.cCommitments[commDepth].Coefficients()); err != nil {
 		return err
 	}
 
@@ -435,7 +532,7 @@ func (s *instance) commitToLRO() error {
 			coeffs[i].Sub(&coeffs[i], &s0)
 		}
 		var commit curve.G1Affine
-		if _, err = commit.MultiExp(s.pk.KzgLagrange.G1[:offset], coeffs[:offset], ecc.MultiExpConfig{}); err != nil {
+		if err = s.pk.multiExp(&commit, s.pk.KzgLagrange.G1[:offset], coeffs[:offset]); err != nil {
 			return
 		}
 		for i := 0; i < offset; i++ {
@@ -454,7 +551,7 @@ func (s *instance) commitToLRO() error {
 			coeffs[i].Sub(&coeffs[i], &s0)
 		}
 		var commit curve.G1Affine
-		if _, err = commit.MultiExp(s.pk.KzgLagrange.G1[nbPublic:offset], coeffs[nbPublic:offset], ecc.MultiExpConfig{}); err != nil {
+		if err = s.pk.multiExp(&commit, s.pk.KzgLagrange.G1[nbPublic:offset], coeffs[nbPublic:offset]); err != nil {
 			return
 		}
 		for i := nbPublic; i < offset; i++ {
@@ -473,7 +570,7 @@ func (s *instance) commitToLRO() error {
 			coeffs[i].Sub(&coeffs[i], &s0)
 		}
 		var commit curve.G1Affine
-		if _, err = commit.MultiExp(s.pk.KzgLagrange.G1[nbPublic:offset], coeffs[nbPublic:offset], ecc.MultiExpConfig{}); err != nil {
+		if err = s.pk.multiExp(&commit, s.pk.KzgLagrange.G1[nbPublic:offset], coeffs[nbPublic:offset]); err != nil {
 			return
 		}
 		for i := nbPublic; i < offset; i++ {
@@ -529,7 +626,7 @@ func (s *instance) deriveGammaAndBeta() error {
 // /!\ The polynomial p is supposed to be in Lagrange form.
 func (s *instance) commitToPolyAndBlinding(p, b *iop.Polynomial) (commit curve.G1Affine, err error) {
 
-	commit, err = kzg.Commit(p.Coefficients(), s.pk.KzgLagrange)
+	commit, err = s.pk.commit(s.pk.KzgLagrange, p.Coefficients())
 
 	// we add in the blinding contribution
 	n := int(s.domain0.Cardinality)
@@ -601,18 +698,23 @@ func (s *instance) computeQuotient() (err error) {
 
 	s.x[id_ZS] = s.x[id_Z].ShallowClone().Shift(1)
 
-	numerator, err := s.computeNumerator()
+	var numerator *iop.Polynomial
+	if s.pk.accelerator == nil {
+		numerator, err = s.computeNumerator()
+	} else {
+		numerator, err = s.computeNumeratorAccelerated()
+	}
 	if err != nil {
 		return err
 	}
 
-	s.h, err = divideByZH(numerator, [2]*fft.Domain{s.domain0, s.domain1})
+	s.h, err = divideByZH(numerator, [2]*fft.Domain{s.domain0, s.domain1}, s.pk)
 	if err != nil {
 		return err
 	}
 
 	// commit to h
-	if err := commitToQuotient(s.h1(), s.h2(), s.h3(), s.proof, s.pk.Kzg); err != nil {
+	if err := commitToQuotient(s.h1(), s.h2(), s.h3(), s.proof, s.pk); err != nil {
 		return err
 	}
 
@@ -678,7 +780,7 @@ func (s *instance) openZ() (err error) {
 	zetaShifted.Mul(&s.zeta, &s.pk.Vk.Generator)
 	s.blindedZ = getBlindedCoefficients(s.x[id_Z], s.bp[id_Bz])
 	// open z at zeta
-	s.proof.ZShiftedOpening, err = kzg.Open(s.blindedZ, zetaShifted, s.pk.Kzg)
+	s.proof.ZShiftedOpening, err = kzg.OpenWithCommitter(s.blindedZ, zetaShifted, s.pk.committer(s.pk.Kzg))
 	if err != nil {
 		return err
 	}
@@ -785,7 +887,7 @@ func (s *instance) computeLinearizedPolynomial() error {
 	)
 
 	var err error
-	s.linearizedPolynomialDigest, err = kzg.Commit(s.linearizedPolynomial, s.pk.Kzg, runtime.NumCPU()*2)
+	s.linearizedPolynomialDigest, err = s.pk.commit(s.pk.Kzg, s.linearizedPolynomial, runtime.NumCPU()*2)
 	if err != nil {
 		return err
 	}
@@ -824,16 +926,69 @@ func (s *instance) batchOpening() error {
 	digestsToOpen[5] = s.pk.Vk.S[1]
 
 	var err error
-	s.proof.BatchedProof, err = kzg.BatchOpenSinglePoint(
+	s.proof.BatchedProof, err = kzg.BatchOpenSinglePointWithCommitter(
 		polysToOpen,
 		digestsToOpen,
 		s.zeta,
 		s.kzgFoldingHash,
-		s.pk.Kzg,
+		s.pk.committer(s.pk.Kzg),
 		s.proof.ZShiftedOpening.ClaimedValue.Marshal(),
 	)
 
 	return err
+}
+
+// computeNumeratorAccelerated delegates the numerator evaluation to the
+// proving key's Accelerator. Like computeNumerator, it leaves the polynomials
+// in x in canonical regular form; unlike it, the restoration is synchronous.
+func (s *instance) computeNumeratorAccelerated() (*iop.Polynomial, error) {
+	// wait for chQk to be closed (or ctx.Done())
+	select {
+	case <-s.ctx.Done():
+		return nil, errContextDone
+	case <-s.chQk:
+	}
+
+	in := &NumeratorInput{
+		Domain0: s.domain0,
+		Domain1: s.domain1,
+		L:       s.x[id_L],
+		R:       s.x[id_R],
+		O:       s.x[id_O],
+		Z:       s.x[id_Z],
+		Qk:      s.x[id_Qk],
+		Ql:      s.x[id_Ql],
+		Qr:      s.x[id_Qr],
+		Qm:      s.x[id_Qm],
+		Qo:      s.x[id_Qo],
+		S1:      s.x[id_S1],
+		S2:      s.x[id_S2],
+		S3:      s.x[id_S3],
+		Qcp:     make([]*iop.Polynomial, len(s.commitmentInfo)),
+		Pi:      make([]*iop.Polynomial, len(s.commitmentInfo)),
+		Bl:      s.bp[id_Bl],
+		Br:      s.bp[id_Br],
+		Bo:      s.bp[id_Bo],
+		Bz:      s.bp[id_Bz],
+		Alpha:   s.alpha,
+		Beta:    s.beta,
+		Gamma:   s.gamma,
+	}
+	for i := range s.commitmentInfo {
+		in.Qcp[i] = s.x[id_Qci+2*i]
+		in.Pi[i] = s.x[id_Qci+2*i+1]
+	}
+
+	res, err := s.pk.accelerator.ComputeNumerator(in)
+	if err != nil {
+		return nil, err
+	}
+
+	s.x[id_ZS] = nil
+	s.x[id_Qk] = nil
+	close(s.chRestoreLRO)
+
+	return res, nil
 }
 
 // evaluate the full set of constraints, all polynomials in x are back in
@@ -1260,21 +1415,21 @@ func coefficients(p []*iop.Polynomial) [][]fr.Element {
 	return res
 }
 
-func commitToQuotient(h1, h2, h3 []fr.Element, proof *Proof, kzgPk kzg.ProvingKey) error {
+func commitToQuotient(h1, h2, h3 []fr.Element, proof *Proof, pk *ProvingKey) error {
 	g := new(errgroup.Group)
 
 	g.Go(func() (err error) {
-		proof.H[0], err = kzg.Commit(h1, kzgPk)
+		proof.H[0], err = pk.commit(pk.Kzg, h1)
 		return
 	})
 
 	g.Go(func() (err error) {
-		proof.H[1], err = kzg.Commit(h2, kzgPk)
+		proof.H[1], err = pk.commit(pk.Kzg, h2)
 		return
 	})
 
 	g.Go(func() (err error) {
-		proof.H[2], err = kzg.Commit(h3, kzgPk)
+		proof.H[2], err = pk.commit(pk.Kzg, h3)
 		return
 	})
 
@@ -1284,7 +1439,7 @@ func commitToQuotient(h1, h2, h3 []fr.Element, proof *Proof, kzgPk kzg.ProvingKe
 // divideByZH
 // The input must be in LagrangeCoset.
 // The result is in Canonical Regular. (in place using a)
-func divideByZH(a *iop.Polynomial, domains [2]*fft.Domain) (*iop.Polynomial, error) {
+func divideByZH(a *iop.Polynomial, domains [2]*fft.Domain, pk *ProvingKey) (*iop.Polynomial, error) {
 	smallDomain, bigDomain := domains[0], domains[1]
 	if smallDomain == nil || bigDomain == nil {
 		return nil, errors.New("invalid domain")
@@ -1315,6 +1470,13 @@ func divideByZH(a *iop.Polynomial, domains [2]*fft.Domain) (*iop.Polynomial, err
 			r[i].Mul(&r[i], &xnMinusOneInverseLagrangeCoset[int(iRev)%rho])
 		}
 	})
+
+	if pk.accelerator != nil {
+		if err := pk.accelerator.ToCanonical(bigDomain, a); err != nil {
+			return nil, err
+		}
+		return a, nil
+	}
 
 	// since a is in bit reverse order, ToRegular shouldn't do anything
 	a.ToCanonical(bigDomain).ToRegular()

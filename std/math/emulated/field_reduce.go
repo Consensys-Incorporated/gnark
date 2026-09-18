@@ -28,9 +28,11 @@ func (f *Field[T]) reduce(a *Element[T], strict bool) *Element[T] {
 	//   - in strict case and element was not recently reduced (even if it has no overflow)
 	//   - in non-strict case and the element has overflow
 
-	// sanity check
-	if _, aConst := f.constantValue(a); aConst {
-		panic("trying to reduce a constant, which happen to have an overflow flag set")
+	// Lazy operations can algebraically cancel variables and leave an element
+	// which the compiler recognizes as constant while its conservative overflow
+	// metadata remains non-zero. Fold it before entering the hint-based path.
+	if ca, aConst := f.constantValue(a); aConst {
+		return newConstElement[T](f.api.Compiler().Field(), ca, false)
 	}
 	// slow path - use hint to reduce value
 	return f.mulMod(a, f.One(), 0, nil)

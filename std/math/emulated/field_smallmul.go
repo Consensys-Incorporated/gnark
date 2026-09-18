@@ -3,7 +3,6 @@ package emulated
 import (
 	"fmt"
 	"math/big"
-	"math/bits"
 
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/profile"
@@ -14,13 +13,10 @@ import (
 //   - a, b: the operands (single limb each since NbLimbs == 1)
 //   - r: the remainder (reduced result, single limb)
 //   - q: the quotient (single limb)
-//   - qBits: the number of bits needed to represent q (depends on input overflow)
 type smallMulEntry struct {
-	a, b      frontend.Variable // operands
-	r         frontend.Variable // remainder
-	q         frontend.Variable // quotient
-	qBits     int               // bits needed for quotient
-	checkZero bool              // indicates if this is a zero check (a ≡ 0 mod p). Indicates a, b, r are all zero.
+	a, b frontend.Variable // operands
+	r    frontend.Variable // remainder
+	q    frontend.Variable // quotient
 }
 
 // smallMulCheck implements the deferredChecker interface for small field
@@ -32,23 +28,17 @@ type smallMulEntry struct {
 // This approach is much cheaper for single-limb emulation because:
 //   - No polynomial evaluation needed
 //   - No carry polynomial needed
-//   - Quotients are range-checked via a single batched sum check (in check method)
-//   - Only remainders need individual range checks
+//   - Quotients and remainders are range-checked before the deferred check
 type smallMulCheck[T FieldParams] struct {
 	f       *Field[T]
 	entries []smallMulEntry
 	// gamma stores the random challenge received during eval rounds
 	gamma frontend.Variable
-	// maxQBits tracks the maximum quotient bits across all entries
-	maxQBits int
 }
 
 // addEntry adds a new multiplication entry to the batch.
-func (mc *smallMulCheck[T]) addEntry(a, b, r, q frontend.Variable, qBits int, checkZero bool) {
-	mc.entries = append(mc.entries, smallMulEntry{a: a, b: b, r: r, q: q, qBits: qBits, checkZero: checkZero})
-	if qBits > mc.maxQBits {
-		mc.maxQBits = qBits
-	}
+func (mc *smallMulCheck[T]) addEntry(a, b, r, q frontend.Variable) {
+	mc.entries = append(mc.entries, smallMulEntry{a: a, b: b, r: r, q: q})
 }
 
 // toCommit returns all variables that should be committed to for the random challenge.
@@ -80,11 +70,6 @@ func (mc *smallMulCheck[T]) evalRound2(at []frontend.Variable) {
 
 // check performs the batched verification:
 // Σ γ^i * (a_i * b_i) = Σ γ^i * r_i + (Σ γ^i * q_i) * p
-//
-// Additionally, it range-checks the sum of quotients to ensure soundness.
-// Without this range check, a malicious prover could use wrap-around in the
-// native field to provide incorrect quotients that satisfy the batched equation
-// modulo the native field but not over the integers.
 func (mc *smallMulCheck[T]) check(api frontend.API, peval, coef frontend.Variable) {
 	if len(mc.entries) == 0 {
 		return
@@ -92,32 +77,7 @@ func (mc *smallMulCheck[T]) check(api frontend.API, peval, coef frontend.Variabl
 
 	n := len(mc.entries)
 
-	// First, compute the unweighted sum of quotients and range-check it.
-	// This ensures soundness: each honest q_i is bounded, so Σ q_i is bounded.
-	// A dishonest q' ≈ native/p would cause the sum to exceed this bound.
-	//
-	// We use bit decomposition for range checking since we're inside a deferred
-	// callback where the commitment-based range checker is already closed.
-	sumQUnweighted := mc.entries[0].q
-	for i := 1; i < n; i++ {
-		sumQUnweighted = api.Add(sumQUnweighted, mc.entries[i].q)
-	}
-
-	// Compute the number of bits needed for the sum:
-	// Each q_i < 2^maxQBits (tracked during addEntry based on input overflow).
-	// So Σ q_i < N * 2^maxQBits = 2^(maxQBits + ceil(log2(N)))
-	var sumBits int
-	if n == 1 {
-		sumBits = mc.maxQBits
-	} else {
-		sumBits = mc.maxQBits + bits.Len(uint(n-1)) + 1
-	}
-
-	// Range check via bit decomposition: decompose sumQUnweighted into sumBits bits
-	// and verify it reconstructs correctly. This constrains sumQUnweighted < 2^sumBits.
-	_ = api.ToBinary(sumQUnweighted, sumBits)
-
-	// Now proceed with the batched verification using random challenge γ
+	// Proceed with the batched verification using random challenge γ.
 	gamma := mc.gamma
 	if gamma == nil {
 		panic("smallMulCheck: gamma not set, evalRound1 was not called")
@@ -131,41 +91,15 @@ func (mc *smallMulCheck[T]) check(api frontend.API, peval, coef frontend.Variabl
 	// Using Horner's method: a_0 + γ(a_1 + γ(a_2 + ...))
 	// We iterate backwards from the last entry.
 
-	// Additionally, when we have zero checks (a_i ≡ 0 mod p), we skip those entries
-	// as we already perform a == q * p check before adding entry. We only have an entry
-	// to ensure that q is also included in the unweighted sum above for range checking.
-
-	// Find the last non-zero-check entry to initialize Horner's method.
-	var sumAB, sumR, sumQ frontend.Variable
-	startIdx := -1
-	for i := n - 1; i >= 0; i-- {
-		if !mc.entries[i].checkZero {
-			startIdx = i
-			break
-		}
-	}
-
-	if startIdx == -1 {
-		// All entries are zero checks: there is no non-trivial multiplication to batch.
-		// Initialize the accumulators to zero; the loop below will keep them at zero
-		// because all entries are skipped.
-		sumAB = 0
-		sumR = 0
-		sumQ = 0
-	} else {
-		// Start with the last non-zero-check entry
-		lastEntry := mc.entries[startIdx]
-		sumAB = api.Mul(lastEntry.a, lastEntry.b)
-		sumR = lastEntry.r
-		sumQ = lastEntry.q
-	}
+	// Start with the last entry.
+	lastEntry := mc.entries[n-1]
+	sumAB := api.Mul(lastEntry.a, lastEntry.b)
+	sumR := lastEntry.r
+	sumQ := lastEntry.q
 
 	// Process remaining entries using Horner's method (backwards)
-	for i := startIdx - 1; i >= 0; i-- {
+	for i := n - 2; i >= 0; i-- {
 		e := mc.entries[i]
-		if e.checkZero {
-			continue
-		}
 
 		// sumAB = a_i * b_i + γ * sumAB
 		ab := api.Mul(e.a, e.b)
@@ -207,7 +141,7 @@ func (f *Field[T]) smallMulMod(a, b *Element[T]) *Element[T] {
 		panic(fmt.Sprintf("small mul hint: %v", err))
 	}
 
-	// Range check the remainder (quotient is range-checked via batched sum in check)
+	// Range check the remainder.
 	modBits := f.fParams.Modulus().BitLen()
 	f.rangeCheck(r, modBits+f.smallAdditionalOverflow())
 
@@ -219,9 +153,12 @@ func (f *Field[T]) smallMulMod(a, b *Element[T]) *Element[T] {
 	//   - q = floor(a*b / p) < 2^(2*bitsPerLimb + overflow_a + overflow_b - modBits + 1)
 	bitsPerLimb := int(f.fParams.BitsPerLimb())
 	qBits := 2*bitsPerLimb + int(a.overflow) + int(b.overflow) - modBits + 1
+	// Bound each quotient individually. Range-checking only their unweighted sum
+	// would allow forged quotients to cancel modulo the native field modulus.
+	f.rangeCheck(q, qBits)
 
 	// Add entry to the batch
-	smc.addEntry(a.Limbs[0], b.Limbs[0], r, q, qBits, false)
+	smc.addEntry(a.Limbs[0], b.Limbs[0], r, q)
 
 	// Record operation for profiling
 	profile.RecordOperation("emulated.SmallMulMod", 3)
@@ -300,8 +237,6 @@ func (f *Field[T]) smallCheckZero(a *Element[T]) {
 		panic("smallCheckZero requires single-limb element")
 	}
 
-	smc := f.getOrCreateSmallMulCheck()
-
 	// Call hint to get quotient only
 	q, err := f.callSmallCheckZeroHint(a.Limbs[0])
 	if err != nil {
@@ -316,11 +251,15 @@ func (f *Field[T]) smallCheckZero(a *Element[T]) {
 	bitsPerLimb := int(f.fParams.BitsPerLimb())
 	qBits := bitsPerLimb + int(a.overflow) - modBits + 1
 
-	// Add entry: a * 1 = q * p + 0
-	// We use 0 directly as the remainder (not from hint) to ensure soundness.
-	// The batch check will verify a = q * p, proving a ≡ 0 (mod p).
+	// Individually range-check the quotient. The native equality below
+	// (a == q*p mod P_native) is on its own vacuous: for any a a prover can set
+	// q = a*p⁻¹ mod P_native and it holds. Binding q to qBits keeps q*p below
+	// the native modulus, so a == q*p holds over the integers and proves
+	// a ≡ 0 (mod p).
+	f.rangeCheck(q, qBits)
+
+	// Verify a = q * p, proving a ≡ 0 (mod p).
 	f.api.AssertIsEqual(a.Limbs[0], f.api.Mul(q, f.fParams.Modulus()))
-	smc.addEntry(0, 0, 0, q, qBits, true)
 
 	// Record operation for profiling
 	profile.RecordOperation("emulated.SmallCheckZero", 1)

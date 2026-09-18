@@ -1,0 +1,356 @@
+{{/*
+  Shared fragments for a prime field over 32-bit limbs. Dot is a wgslField.
+
+  field_types  : the limb struct ({{.Type}}).
+  field_consts : the modulus (32-bit and 16-bit limbs) and the Montgomery
+                 constant used by the multiplication (and q-2 when .Inverse).
+  field_core   : the arithmetic (zero/one, adc/sbb, branchless add/sub/neg/
+                 double/normalize, Montgomery mul via 16-bit digits, square,
+                 and optionally Fermat inverse).
+  adc_sbb      : the two carry/borrow helpers (unprefixed, shared by Fp and Fr).
+
+  Every operation is branch-free: candidates are computed unconditionally
+  and the result is picked with select() on the carry/borrow bit, so
+  divergent lanes never serialize. Results are always canonical (< q).
+*/}}
+
+{{- define "field_types" -}}
+struct {{.Type}} {
+  limbs: array<u32, {{.Limbs}}>,
+}
+{{- end -}}
+
+{{- define "field_consts" -}}
+const {{.UPrefix}}_LIMB16_MASK: u32 = 0xffffu;
+const {{.UPrefix}}_QINV_NEG_16: u32 = {{hex16 .QInvNeg16}};
+
+const {{.UPrefix}}_MODULUS32: array<u32, {{.Limbs}}> = array<u32, {{.Limbs}}>(
+{{- range .Modulus}}
+  {{hex32 .}},
+{{- end}}
+);
+
+const {{.UPrefix}}_MODULUS16: array<u32, {{.Limbs16}}> = array<u32, {{.Limbs16}}>(
+{{- range pairs .Modulus16}}
+  {{hex16 (index . 0)}}, {{hex16 (index . 1)}},
+{{- end}}
+);
+{{- if .Inverse}}
+
+const {{.UPrefix}}_MODULUS_MINUS_TWO: array<u32, {{.Limbs}}> = array<u32, {{.Limbs}}>(
+{{- range .ModulusMinusTwo}}
+  {{hex32 .}},
+{{- end}}
+);
+{{- end}}
+{{- end -}}
+
+{{- define "adc_sbb" -}}
+fn adc(a: u32, b: u32, carry: u32) -> vec2<u32> {
+  let sum0 = a + b;
+  let sum1 = sum0 + carry;
+  return vec2<u32>(sum1, u32(sum0 < a) | u32(sum1 < sum0));
+}
+
+fn sbb(a: u32, b: u32, borrow: u32) -> vec2<u32> {
+  let diff0 = a - b;
+  let diff1 = diff0 - borrow;
+  return vec2<u32>(diff1, u32(a < b) | u32(diff1 > diff0));
+}
+{{- end -}}
+
+{{/*
+  sub_q: emit "var t = x - q" as an sbb chain, leaving the final borrow in
+  `lane.y`. Dot is a dict with Field, Var (result variable), Src (limb
+  expression prefix, e.g. "z") and Indent.
+*/}}
+{{- define "sub_q" -}}
+{{- $f := .Field -}}{{- $v := .Var -}}{{- $s := .Src -}}{{- $ind := .Indent -}}
+{{- range $i := iterate 0 $f.Limbs}}
+{{$ind}}lane = sbb({{$s}}.limbs[{{$i}}], {{$f.UPrefix}}_MODULUS32[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
+{{$ind}}{{$v}}.limbs[{{$i}}] = lane.x;
+{{- end}}
+{{- end -}}
+
+{{/*
+  select_limbs: emit "Out.limbs[i] = select(A.limbs[i], B.limbs[i], Cond)".
+*/}}
+{{- define "select_limbs" -}}
+{{- range $i := iterate 0 .Limbs}}
+  {{$.Out}}.limbs[{{$i}}] = select({{$.A}}.limbs[{{$i}}], {{$.B}}.limbs[{{$i}}], {{$.Cond}});
+{{- end}}
+{{- end -}}
+
+{{/*
+  mul_row: one CIOS iteration over 16-bit digits. The accumulator is the
+  scalars t0..tN16 (kept in registers), the digits of the first operand are
+  a0..a(N16-1), and the current digit of the second operand is `{{.BI}}`.
+*/}}
+{{- define "mul_row" -}}
+{{- $f := .Field -}}{{- $P := $f.UPrefix -}}{{- $n16 := $f.Limbs16 -}}{{- $bi := .BI -}}
+{{- range $j := iterate 0 $n16}}
+    uv = t{{$j}} + a{{$j}} * {{$bi}}{{if $j}} + c{{end}};
+    {{if lt $j (sub $n16 1)}}t{{$j}} = uv & {{$P}}_LIMB16_MASK;
+    c = uv >> 16u;{{else}}t{{$j}} = uv & {{$P}}_LIMB16_MASK;
+    t{{$n16}} = uv >> 16u;{{end}}
+{{- end}}
+    m = (t0 * {{$P}}_QINV_NEG_16) & {{$P}}_LIMB16_MASK;
+    // (t0 + m*q0) is 0 mod 2^16 by construction: only its carry survives.
+    c = (t0 + m * {{$P}}_MODULUS16[0]) >> 16u;
+{{- range $j := iterate 1 $n16}}
+    uv = t{{$j}} + m * {{$P}}_MODULUS16[{{$j}}] + c;
+    t{{sub $j 1}} = uv & {{$P}}_LIMB16_MASK;
+    c = uv >> 16u;
+{{- end}}
+    uv = t{{$n16}} + c;
+    t{{sub $n16 1}} = uv & {{$P}}_LIMB16_MASK;
+    t{{$n16}} = uv >> 16u;
+{{- end -}}
+
+{{- define "field_core" -}}
+{{- $p := .Prefix -}}
+{{- $P := .UPrefix -}}
+{{- $T := .Type -}}
+{{- $n := .Limbs -}}
+{{- $n16 := .Limbs16 -}}
+{{- $last := sub .Limbs 1 -}}
+{{- $f := . -}}
+fn {{$p}}_zero() -> {{$T}} {
+  var z: {{$T}};
+{{- range $i := iterate 0 $n}}
+  z.limbs[{{$i}}] = 0u;
+{{- end}}
+  return z;
+}
+
+fn {{$p}}_one() -> {{$T}} {
+  var z: {{$T}};
+{{- range $i, $v := .One}}
+  z.limbs[{{$i}}] = {{hex32 $v}};
+{{- end}}
+  return z;
+}
+
+fn {{$p}}_one_regular() -> {{$T}} {
+  var z = {{$p}}_zero();
+  z.limbs[0] = 1u;
+  return z;
+}
+
+fn {{$p}}_rsquare_regular() -> {{$T}} {
+  var z: {{$T}};
+{{- range $i, $v := .RSquare}}
+  z.limbs[{{$i}}] = {{hex32 $v}};
+{{- end}}
+  return z;
+}
+
+fn {{$p}}_predicate(value: bool) -> {{$T}} {
+  let one = {{$p}}_one();
+  var z: {{$T}};
+{{- range $i := iterate 0 $n}}
+  z.limbs[{{$i}}] = select(0u, one.limbs[{{$i}}], value);
+{{- end}}
+  return z;
+}
+
+{{template "adc_sbb" .}}
+
+fn {{$p}}_is_zero(x: {{$T}}) -> bool {
+  return ({{range $i := iterate 0 $n}}{{if $i}}{{if eq (mod $i 4) 0}} |
+    {{else}} | {{end}}{{end}}x.limbs[{{$i}}]{{end}}) == 0u;
+}
+
+fn {{$p}}_equal(x: {{$T}}, y: {{$T}}) -> bool {
+  return {{range $i := iterate 0 $n}}{{if $i}} &&
+    {{end}}(x.limbs[{{$i}}] == y.limbs[{{$i}}]){{end}};
+}
+
+// x + y mod q: z = x + y, t = z - q; the result is t when the addition
+// carried or the subtraction did not borrow (z >= q), else z.
+fn {{$p}}_add(x: {{$T}}, y: {{$T}}) -> {{$T}} {
+  var z: {{$T}};
+  var t: {{$T}};
+{{- range $i := iterate 0 $n}}
+  {{if eq $i 0}}var {{end}}lane = adc(x.limbs[{{$i}}], y.limbs[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
+  z.limbs[{{$i}}] = lane.x;
+{{- end}}
+  let carry = lane.y;
+{{- template "sub_q" (dict "Field" $f "Var" "t" "Src" "z" "Indent" "  ")}}
+  let use_t = (carry != 0u) || (lane.y == 0u);
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "z" "B" "t" "Cond" "use_t")}}
+  return z;
+}
+
+// x - y mod q: z = x - y, t = z + q; the result is t when the subtraction
+// borrowed, else z.
+fn {{$p}}_sub(x: {{$T}}, y: {{$T}}) -> {{$T}} {
+  var z: {{$T}};
+  var t: {{$T}};
+{{- range $i := iterate 0 $n}}
+  {{if eq $i 0}}var {{end}}lane = sbb(x.limbs[{{$i}}], y.limbs[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
+  z.limbs[{{$i}}] = lane.x;
+{{- end}}
+  let use_t = lane.y != 0u;
+{{- range $i := iterate 0 $n}}
+  lane = adc(z.limbs[{{$i}}], {{$P}}_MODULUS32[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
+  t.limbs[{{$i}}] = lane.x;
+{{- end}}
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "z" "B" "t" "Cond" "use_t")}}
+  return z;
+}
+
+// -x mod q: q - x, or zero when x is zero.
+fn {{$p}}_neg(x: {{$T}}) -> {{$T}} {
+  var t: {{$T}};
+{{- range $i := iterate 0 $n}}
+  {{if eq $i 0}}var {{end}}lane = sbb({{$P}}_MODULUS32[{{$i}}], x.limbs[{{$i}}], {{if eq $i 0}}0u{{else}}lane.y{{end}});
+  t.limbs[{{$i}}] = lane.x;
+{{- end}}
+  let nonzero = !{{$p}}_is_zero(x);
+  var z: {{$T}};
+{{- range $i := iterate 0 $n}}
+  z.limbs[{{$i}}] = select(0u, t.limbs[{{$i}}], nonzero);
+{{- end}}
+  return z;
+}
+
+// 2x mod q: a left shift by one bit, then the same conditional subtraction
+// as {{$p}}_add.
+fn {{$p}}_double(x: {{$T}}) -> {{$T}} {
+  var z: {{$T}};
+  var t: {{$T}};
+  z.limbs[0] = x.limbs[0] << 1u;
+{{- range $i := iterate 1 $n}}
+  z.limbs[{{$i}}] = (x.limbs[{{$i}}] << 1u) | (x.limbs[{{sub $i 1}}] >> 31u);
+{{- end}}
+  let carry = x.limbs[{{$last}}] >> 31u;
+  var lane: vec2<u32>;
+{{- template "sub_q" (dict "Field" $f "Var" "t" "Src" "z" "Indent" "  ")}}
+  let use_t = (carry != 0u) || (lane.y == 0u);
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "z" "B" "t" "Cond" "use_t")}}
+  return z;
+}
+
+// Reduce a value in [0, 2q) to [0, q).
+fn {{$p}}_normalize(x: {{$T}}) -> {{$T}} {
+  var t: {{$T}};
+  var z: {{$T}};
+  var lane: vec2<u32>;
+{{- template "sub_q" (dict "Field" $f "Var" "t" "Src" "x" "Indent" "  ")}}
+  let use_t = lane.y == 0u;
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "x" "B" "t" "Cond" "use_t")}}
+  return z;
+}
+
+// Montgomery multiplication (CIOS) over 16-bit digits: R = 2^(16*{{$n16}}).
+// Each 16x16 partial product plus carries fits in a u32 without overflow.
+// The digit loops are unrolled so the accumulator lives in registers; the
+// final conditional subtraction is branch-free.
+fn {{$p}}_mul(x: {{$T}}, y: {{$T}}) -> {{$T}} {
+{{- range $j := iterate 0 $n16}}
+  let a{{$j}} = x.limbs[{{div $j 2}}] {{if eq (mod $j 2) 0}}& {{$P}}_LIMB16_MASK{{else}}>> 16u{{end}};
+{{- end}}
+{{- if .MulUnrollOuter}}
+{{- range $j := iterate 0 $n16}}
+  let b{{$j}} = y.limbs[{{div $j 2}}] {{if eq (mod $j 2) 0}}& {{$P}}_LIMB16_MASK{{else}}>> 16u{{end}};
+{{- end}}
+{{- end}}
+{{- range $j := iterate 0 (add $n16 1)}}
+  var t{{$j}} = 0u;
+{{- end}}
+  var uv = 0u;
+  var c = 0u;
+  var m = 0u;
+{{- if .MulUnrollOuter}}
+{{- range $i := iterate 0 $n16}}
+  {
+{{- template "mul_row" (dict "Field" $f "BI" (printf "b%d" $i))}}
+  }
+{{- end}}
+{{- else}}
+  for (var i = 0u; i < {{$n}}u; i = i + 1u) {
+    let w = y.limbs[i];
+    let b_lo = w & {{$P}}_LIMB16_MASK;
+    let b_hi = w >> 16u;
+{{- template "mul_row" (dict "Field" $f "BI" "b_lo")}}
+{{- template "mul_row" (dict "Field" $f "BI" "b_hi")}}
+  }
+{{- end}}
+
+  var z: {{$T}};
+{{- range $i := iterate 0 $n}}
+  z.limbs[{{$i}}] = t{{mul $i 2}} | (t{{add (mul $i 2) 1}} << 16u);
+{{- end}}
+  var t: {{$T}};
+  var lane: vec2<u32>;
+{{- template "sub_q" (dict "Field" $f "Var" "t" "Src" "z" "Indent" "  ")}}
+  let use_t = (t{{$n16}} != 0u) || (lane.y == 0u);
+{{- template "select_limbs" (dict "Limbs" $n "Out" "z" "A" "z" "B" "t" "Cond" "use_t")}}
+  return z;
+}
+
+fn {{$p}}_square(x: {{$T}}) -> {{$T}} {
+  return {{$p}}_mul(x, x);
+}
+{{- if .Inverse}}
+
+// Fermat inversion: x^(q-2). Returns zero for zero.
+fn {{$p}}_inverse(x: {{$T}}) -> {{$T}} {
+  if ({{$p}}_is_zero(x)) {
+    return {{$p}}_zero();
+  }
+  var acc = {{$p}}_one();
+  for (var word_index: i32 = {{$last}}; word_index >= 0; word_index = word_index - 1) {
+    let word = {{$P}}_MODULUS_MINUS_TWO[u32(word_index)];
+    for (var bit_index: i32 = 31; bit_index >= 0; bit_index = bit_index - 1) {
+      acc = {{$p}}_square(acc);
+      if (((word >> u32(bit_index)) & 1u) != 0u) {
+        acc = {{$p}}_mul(acc, x);
+      }
+    }
+  }
+  return acc;
+}
+{{- end}}
+{{- end -}}
+
+{{/*
+  load_limbs / store_limbs: unrolled copies between a flat u32 storage buffer
+  and a field element. Dot is a dict with Buffer, Limbs, Indent (string),
+  and Var (the element variable name).
+*/}}
+{{- define "load_limbs" -}}
+{{- $buf := .Buffer -}}{{- $ind := .Indent -}}{{- $v := .Var -}}
+{{- range $i := iterate 0 .Limbs}}
+{{$ind}}{{$v}}.limbs[{{$i}}] = {{$buf}}[base + {{$i}}u];
+{{- end}}
+{{- end -}}
+
+{{- define "store_limbs" -}}
+{{- $buf := .Buffer -}}{{- $ind := .Indent -}}{{- $v := .Var -}}
+{{- range $i := iterate 0 .Limbs}}
+{{$ind}}{{$buf}}[base + {{$i}}u] = {{$v}}.limbs[{{$i}}];
+{{- end}}
+{{- end -}}
+
+{{/*
+  field_io_ab: load/store helpers for the group shaders, which read points from
+  input_a / input_b (selected by buffer_kind) and write to output. Dot is a
+  wgslField.
+*/}}
+{{- define "field_io_ab" -}}
+fn {{.Prefix}}_load_from(buffer_kind: u32, base: u32) -> {{.Type}} {
+  var z: {{.Type}};
+  if (buffer_kind == 0u) {
+{{- template "load_limbs" (dict "Buffer" "input_a" "Limbs" .Limbs "Indent" "    " "Var" "z")}}
+    return z;
+  }
+{{- template "load_limbs" (dict "Buffer" "input_b" "Limbs" .Limbs "Indent" "  " "Var" "z")}}
+  return z;
+}
+
+fn {{.Prefix}}_store(base: u32, value: {{.Type}}) {
+{{- template "store_limbs" (dict "Buffer" "output" "Limbs" .Limbs "Indent" "  " "Var" "value")}}
+}
+{{- end -}}

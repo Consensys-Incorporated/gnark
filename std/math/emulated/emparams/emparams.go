@@ -12,20 +12,17 @@
 //
 // If in addition the parameters should be aware of the underlying native field,
 // then the type should implement [DynamicFieldParams] interface. For example,
-// by adding the methods:
+// by adding the method:
 //
-//	 func (SmallField) NbLimbsDynamic(field *big.Int) uint {
-//	     if smallfields.IsSmallField(field) {
-//		     return 2
-//	     }
-//	     return 1
-//	 }
 //	 func (SmallField) BitsPerLimbDynamic(field *big.Int) uint {
 //		if smallfields.IsSmallField(field) {
 //			return 6
 //	    }
 //	    return 11
 //	 }
+//
+// The number of limbs is not part of the interface - it is always derived from
+// the limb size and the modulus.
 package emparams
 
 import (
@@ -37,38 +34,25 @@ import (
 	"github.com/consensys/gnark/internal/smallfields"
 )
 
+// Small native fields need narrower emulated limbs so that multiplication
+// carries admit an integer lift below the native modulus. The widths below are
+// maximal for the corresponding parameter families over the supported 31-bit
+// native fields (BabyBear and KoalaBear).
+const (
+	smallFieldFourLimbBits   uint = 11
+	smallFieldSixLimbBits    uint = 10
+	smallFieldTwelveLimbBits uint = 10
+	smallFieldOneLimbBits    uint = 12
+)
+
 type fourLimbPrimeField struct{}
 
 func (fourLimbPrimeField) NbLimbs() uint     { return 4 }
 func (fourLimbPrimeField) BitsPerLimb() uint { return 64 }
 func (fourLimbPrimeField) IsPrime() bool     { return true }
-func (f fourLimbPrimeField) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 16
-	}
-	return f.NbLimbs()
-}
 func (f fourLimbPrimeField) BitsPerLimbDynamic(field *big.Int) uint {
 	if smallfields.IsSmallField(field) {
-		return 16
-	}
-	return f.BitsPerLimb()
-}
-
-type fiveLimbPrimeField struct{}
-
-func (fiveLimbPrimeField) NbLimbs() uint     { return 5 }
-func (fiveLimbPrimeField) BitsPerLimb() uint { return 64 }
-func (fiveLimbPrimeField) IsPrime() bool     { return true }
-func (f fiveLimbPrimeField) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 20
-	}
-	return f.NbLimbs()
-}
-func (f fiveLimbPrimeField) BitsPerLimbDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 16
+		return smallFieldFourLimbBits
 	}
 	return f.BitsPerLimb()
 }
@@ -78,15 +62,9 @@ type sixLimbPrimeField struct{}
 func (sixLimbPrimeField) NbLimbs() uint     { return 6 }
 func (sixLimbPrimeField) BitsPerLimb() uint { return 64 }
 func (sixLimbPrimeField) IsPrime() bool     { return true }
-func (f sixLimbPrimeField) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 24
-	}
-	return f.NbLimbs()
-}
 func (f sixLimbPrimeField) BitsPerLimbDynamic(field *big.Int) uint {
 	if smallfields.IsSmallField(field) {
-		return 16
+		return smallFieldSixLimbBits
 	}
 	return f.BitsPerLimb()
 }
@@ -96,15 +74,9 @@ type twelveLimbPrimeField struct{}
 func (twelveLimbPrimeField) NbLimbs() uint     { return 12 }
 func (twelveLimbPrimeField) BitsPerLimb() uint { return 64 }
 func (twelveLimbPrimeField) IsPrime() bool     { return true }
-func (f twelveLimbPrimeField) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 48
-	}
-	return f.NbLimbs()
-}
 func (f twelveLimbPrimeField) BitsPerLimbDynamic(field *big.Int) uint {
 	if smallfields.IsSmallField(field) {
-		return 16
+		return smallFieldTwelveLimbBits
 	}
 	return f.BitsPerLimb()
 }
@@ -113,12 +85,6 @@ type oneLimbPrimeField struct{}
 
 func (oneLimbPrimeField) NbLimbs() uint { return 1 }
 func (oneLimbPrimeField) IsPrime() bool { return true }
-func (f oneLimbPrimeField) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 4
-	}
-	return f.NbLimbs()
-}
 
 // Goldilocks provides type parametrization for field emulation:
 //   - limbs: 1
@@ -134,7 +100,7 @@ func (Goldilocks) BitsPerLimb() uint { return 64 }
 func (Goldilocks) Modulus() *big.Int { return goldilocks.Modulus() }
 func (Goldilocks) BitsPerLimbDynamic(field *big.Int) uint {
 	if smallfields.IsSmallField(field) {
-		return 16
+		return smallFieldOneLimbBits
 	}
 	return 64
 }
@@ -409,15 +375,9 @@ func (Mod1e4096) Modulus() *big.Int {
 	val, _ := new(big.Int).SetString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 16)
 	return val
 }
-func (f Mod1e4096) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 256
-	}
-	return f.NbLimbs()
-}
 func (f Mod1e4096) BitsPerLimbDynamic(field *big.Int) uint {
 	if smallfields.IsSmallField(field) {
-		return 16
+		return 9
 	}
 	return f.BitsPerLimb()
 }
@@ -440,15 +400,9 @@ func (Mod1e512) Modulus() *big.Int {
 	val, _ := new(big.Int).SetString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 16)
 	return val
 }
-func (f Mod1e512) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 32
-	}
-	return f.NbLimbs()
-}
 func (f Mod1e512) BitsPerLimbDynamic(field *big.Int) uint {
 	if smallfields.IsSmallField(field) {
-		return 16
+		return 10
 	}
 	return f.BitsPerLimb()
 }
@@ -471,15 +425,9 @@ func (Mod1e256) Modulus() *big.Int {
 	val, _ := new(big.Int).SetString("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 16)
 	return val
 }
-func (f Mod1e256) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 16
-	}
-	return f.NbLimbs()
-}
 func (f Mod1e256) BitsPerLimbDynamic(field *big.Int) uint {
 	if smallfields.IsSmallField(field) {
-		return 16
+		return 11
 	}
 	return f.BitsPerLimb()
 }
@@ -499,15 +447,9 @@ type BabyBear struct{ oneLimbPrimeField }
 
 func (BabyBear) BitsPerLimb() uint { return 31 }
 func (BabyBear) Modulus() *big.Int { return big.NewInt(2013265921) }
-func (f BabyBear) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 2
-	}
-	return f.NbLimbs()
-}
 func (f BabyBear) BitsPerLimbDynamic(field *big.Int) uint {
 	if smallfields.IsSmallField(field) {
-		return 16
+		return smallFieldOneLimbBits
 	}
 	return f.BitsPerLimb()
 }
@@ -527,15 +469,9 @@ type KoalaBear struct{ oneLimbPrimeField }
 
 func (KoalaBear) BitsPerLimb() uint { return 31 }
 func (KoalaBear) Modulus() *big.Int { return big.NewInt(2130706433) }
-func (f KoalaBear) NbLimbsDynamic(field *big.Int) uint {
-	if smallfields.IsSmallField(field) {
-		return 2
-	}
-	return f.NbLimbs()
-}
 func (f KoalaBear) BitsPerLimbDynamic(field *big.Int) uint {
 	if smallfields.IsSmallField(field) {
-		return 16
+		return smallFieldOneLimbBits
 	}
 	return f.BitsPerLimb()
 }
