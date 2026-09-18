@@ -1906,9 +1906,9 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 	}
 	var st S
 	// LLL Hermite bound (gnark-crypto/algebra/lattice): u1, u2, v1, v2 are
-	// bounded by γ₄·r^(1/4) ≈ 1.25·r^(1/4), which fits in (BitLen+3)/4 + 2 bits.
-	// This is tighter than the previous heuristic BitLen/4 + 9 (saves ~7 iters).
-	nbits := (st.Modulus().BitLen()+3)/4 + 2
+	// bounded by γ₄·r^(1/4) ≈ 1.25·r^(1/4), which fits in (BitLen+3)/4 + 1 bits.
+	// This is tighter than the previous heuristic BitLen/4 + 9 (saves ~8 iters).
+	nbits := (st.Modulus().BitLen()+3)/4 + 1
 
 	// handle 0-scalar and (-1)-scalar cases
 	var isScalarZero, isScalarZeroOrMinusOne, isScalarOne, isScalarMinusOne frontend.Variable
