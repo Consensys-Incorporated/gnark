@@ -23,7 +23,13 @@ import (
 )
 
 func init() {
-	solver.RegisterHint(xor3Hint, chiHint)
+	solver.RegisterHint(GetHints()...)
+}
+
+// GetHints returns the hints used by the R1CS path of this package.
+// Register them via solver.RegisterHint when using serialized constraint systems.
+func GetHints() []solver.Hint {
+	return []solver.Hint{xor3Hint, chiHint}
 }
 
 var rc = [24]uint64{
@@ -130,7 +136,7 @@ func permuteBitsGeneric(api frontend.API, st [25][64]frontend.Variable) [25][64]
 			}
 			for i := 0; i < 5; i++ {
 				for z := 0; z < 64; z++ {
-					st[j+i][z] = api.Xor(st[j+i][z], andNot(api, bc[(i+1)%5][z], bc[(i+2)%5][z]))
+					st[j+i][z] = api.Xor(bc[i][z], andNot(api, bc[(i+1)%5][z], bc[(i+2)%5][z]))
 				}
 			}
 		}
