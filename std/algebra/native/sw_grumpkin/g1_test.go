@@ -634,7 +634,8 @@ func TestJointScalarMulG1EdgeCases(t *testing.T) {
 	witness.Zero = 0
 
 	assert := test.NewAssert(t)
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254))
+	// the circuit declares inputs it does not reference.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 type g1JointScalarMul struct {

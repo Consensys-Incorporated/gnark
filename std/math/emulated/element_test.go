@@ -1667,7 +1667,9 @@ func testFastPaths[T FieldParams](t *testing.T) {
 	circuit := &FastPathsCircuit[T]{}
 	assignment := &FastPathsCircuit[T]{Rand: ValueOf[T](randVal), Zero: ValueOf[T](0)}
 
-	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment))
+	// every operation short-circuits on the constant zero, so Rand is never
+	// read by a constraint.
+	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 type TestAssertIsDifferentCircuit[T FieldParams] struct {

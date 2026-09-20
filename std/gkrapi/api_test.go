@@ -700,7 +700,8 @@ func TestNoInstance(t *testing.T) {
 	var circuit testNoInstanceCircuit
 	assignment := testNoInstanceCircuit{0}
 
-	test.NewAssert(t).CheckCircuit(&circuit, test.WithValidAssignment(&assignment))
+	// Dummy exists only so that the witness is not empty; nothing reads it.
+	test.NewAssert(t).CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 type testNoInstanceCircuit struct {

@@ -65,9 +65,10 @@ func TestKeyValue(t *testing.T) {
 	err = test.IsSolved(&Circuit[string]{}, &Circuit[string]{A: "1234"}, ecc.BN254.ScalarField())
 	assert.NoError(err)
 
-	// test during compilation
-	_, err = frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &Circuit[int]{})
+	// test during compilation; the circuit exercises the key-value store and
+	// never constrains its input.
+	_, err = frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &Circuit[int]{}, frontend.IgnoreUnconstrainedInputs())
 	assert.NoError(err)
-	_, err = frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &Circuit[int]{})
+	_, err = frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &Circuit[int]{}, frontend.IgnoreUnconstrainedInputs())
 	assert.NoError(err)
 }

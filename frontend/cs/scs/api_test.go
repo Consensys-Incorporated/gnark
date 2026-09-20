@@ -146,7 +146,8 @@ func (c *IssueDiv0Circuit) Define(api frontend.API) error {
 
 func TestExistDiv0(t *testing.T) {
 	assert := test.NewAssert(t)
-	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &IssueDiv0Circuit{})
+	// the circuit divides by a constant zero and emits no constraint.
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &IssueDiv0Circuit{}, frontend.IgnoreUnconstrainedInputs())
 	assert.NoError(err)
 	w, err := frontend.NewWitness(&IssueDiv0Circuit{
 		A1: 11, B1: 21,
@@ -218,7 +219,9 @@ func (c *TestZeroMulNoConstraintCircuit) Define(api frontend.API) error {
 
 func TestZeroMulNoConstraint(t *testing.T) {
 	assert := test.NewAssert(t)
-	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &TestZeroMulNoConstraintCircuit{})
+	// the circuit is degenerate on purpose: it emits no constraint, so its
+	// inputs are unconstrained.
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &TestZeroMulNoConstraintCircuit{}, frontend.IgnoreUnconstrainedInputs())
 	assert.NoError(err)
 	if ccs.GetNbConstraints() != 0 {
 		t.Fatal("expected 0 constraints")
@@ -263,7 +266,9 @@ func (c *subSameNoConstraintCircuit) Define(api frontend.API) error {
 
 func TestSubSameNoConstraint(t *testing.T) {
 	assert := test.NewAssert(t)
-	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &subSameNoConstraintCircuit{})
+	// the circuit is degenerate on purpose: it emits no constraint, so its
+	// inputs are unconstrained.
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &subSameNoConstraintCircuit{}, frontend.IgnoreUnconstrainedInputs())
 	assert.NoError(err)
 	if ccs.GetNbConstraints() != 0 {
 		t.Fatal("expected 0 constraints")
@@ -309,7 +314,8 @@ func TestDivUncheckedZeroSolveFails(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assert := test.NewAssert(t)
 			circuit := &divUncheckedZeroCircuit{Case: tc.mode}
-			ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, circuit)
+			// dividing by a constant zero emits no constraint for some cases.
+			ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, circuit, frontend.IgnoreUnconstrainedInputs())
 			if !tc.solveFail {
 				if err == nil {
 					t.Fatal("expected compile-time error")
@@ -418,7 +424,8 @@ func TestRegressionLookup2ConstantSelector(t *testing.T) {
 		{2, 0, 10}, {2, 1, 20},
 		{3, 0, 30}, {3, 1, 40},
 	} {
-		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &regressionLookup2ConstantSelector{Mode: tc.mode})
+		// a constant selector leaves some of the table inputs unconstrained.
+		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &regressionLookup2ConstantSelector{Mode: tc.mode}, frontend.IgnoreUnconstrainedInputs())
 		assert.NoError(err)
 		w, err := frontend.NewWitness(&regressionLookup2ConstantSelector{
 			B:    tc.bit,

@@ -101,9 +101,11 @@ func TestWideCommitment(t *testing.T) {
 	assert.Error(err)
 
 	// should pass as we provide with builder with WideCommitment support
-	_, err = frontend.CompileU32(f, widecommitter.From(r1cs.NewBuilder), &wideCommitment{withCommitment: false})
+	// the test wide committer only calls a hint and binds nothing, so X is
+	// left unconstrained in the compiled system.
+	_, err = frontend.CompileU32(f, widecommitter.From(r1cs.NewBuilder), &wideCommitment{withCommitment: false}, frontend.IgnoreUnconstrainedInputs())
 	assert.NoError(err)
-	_, err = frontend.CompileU32(f, widecommitter.From(scs.NewBuilder), &wideCommitment{withCommitment: false})
+	_, err = frontend.CompileU32(f, widecommitter.From(scs.NewBuilder), &wideCommitment{withCommitment: false}, frontend.IgnoreUnconstrainedInputs())
 	assert.NoError(err)
 
 	// shouldn't pass if we have mixed WithCommitment and WithWideCommitment
