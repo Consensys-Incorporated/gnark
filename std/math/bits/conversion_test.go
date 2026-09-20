@@ -146,6 +146,7 @@ func TestFromBinaryConstantInput(t *testing.T) {
 		}
 		assert.Run(func(assert *test.Assert) {
 			assert.Run(func(assert *test.Assert) {
+				// ThirdVariableBit is only wired in when allConstant is false.
 				assert.CheckCircuit(&testFromBinaryCircuitConstantInput{
 					Inputs:      bts,
 					allConstant: true,
@@ -153,7 +154,7 @@ func TestFromBinaryConstantInput(t *testing.T) {
 					test.WithValidAssignment(&testFromBinaryCircuitConstantInput{
 						ThirdVariableBit: 0,
 						Expected:         val,
-					}))
+					}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 			}, "allconstant=true")
 			if v > 2 {
 				assert.Run(func(assert *test.Assert) {
@@ -203,8 +204,9 @@ func TestFromBinaryInvalidInput(t *testing.T) {
 		ConstantInputs: []*big.Int{big.NewInt(2), big.NewInt(1)},
 	})
 	assert.Error(err)
+	// Variable is only used in the constant-input branch.
 	assert.CheckCircuit(&testFromBinaryInvalidInput{VariableInputs: make([]frontend.Variable, 2)}, test.WithInvalidAssignment(&testFromBinaryInvalidInput{
 		VariableInputs: []frontend.Variable{2, 1},
 		Variable:       big.NewInt(3),
-	}))
+	}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }

@@ -59,9 +59,11 @@ func (c *rshiftCircuit) Define(api frontend.API) error {
 func TestRshift(t *testing.T) {
 	assert := test.NewAssert(t)
 	assert.CheckCircuit(&rshiftCircuit{Shift: 4}, test.WithValidAssignment(&rshiftCircuit{Shift: 4, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 4)}))
-	assert.CheckCircuit(&rshiftCircuit{Shift: 12}, test.WithValidAssignment(&rshiftCircuit{Shift: 12, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 12)}))
+	// a shift of a full byte or more drops In[0] without reading it.
+	assert.CheckCircuit(&rshiftCircuit{Shift: 12}, test.WithValidAssignment(&rshiftCircuit{Shift: 12, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 12)}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 	assert.CheckCircuit(&rshiftCircuit{Shift: 3}, test.WithValidAssignment(&rshiftCircuit{Shift: 3, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 3)}))
-	assert.CheckCircuit(&rshiftCircuit{Shift: 11}, test.WithValidAssignment(&rshiftCircuit{Shift: 11, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 11)}))
+	// a shift of a full byte or more drops In[0] without reading it.
+	assert.CheckCircuit(&rshiftCircuit{Shift: 11}, test.WithValidAssignment(&rshiftCircuit{Shift: 11, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 11)}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 type valueOfCircuit[T Long] struct {
@@ -210,7 +212,8 @@ func (c *ToValueCircuit) Define(api frontend.API) error {
 func TestToValue(t *testing.T) {
 	assert := test.NewAssert(t)
 	assert.CheckCircuit(&ToValueCircuit{withCheck: true}, test.WithValidAssignment(&ToValueCircuit{In: NewU32(0x12345678), Expected: 0x12345678}))
-	assert.CheckCircuit(&ToValueCircuit{withCheck: false}, test.WithInvalidAssignment(&ToValueCircuit{In: [4]U8{{Val: 0x780}, {Val: 0x56}, {Val: 0x34}, {Val: 0x12}}, Expected: 0x12345678}))
+	// without the check, Expected is never read.
+	assert.CheckCircuit(&ToValueCircuit{withCheck: false}, test.WithInvalidAssignment(&ToValueCircuit{In: [4]U8{{Val: 0x780}, {Val: 0x56}, {Val: 0x34}, {Val: 0x12}}, Expected: 0x12345678}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 type ValueWitnessCircuit struct {

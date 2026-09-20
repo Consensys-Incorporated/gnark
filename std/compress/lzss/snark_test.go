@@ -208,8 +208,10 @@ func TestOutBufTooShort(t *testing.T) {
 		ExpectedDLength: -1,
 	}
 
+	// Decompress writes into D, so the wires the circuit declares for it are
+	// never read by a constraint.
 	RegisterHints()
-	test.NewAssert(t).CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BLS12_377))
+	test.NewAssert(t).CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BLS12_377), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 // Fuzz test the decompression
@@ -352,19 +354,23 @@ func (c *decompressionLengthTestCircuit) Define(api frontend.API) error {
 }
 
 func TestBuildDecompress1KBto7KB(t *testing.T) {
+	// Decompress writes into D, so the wires the circuit declares for it are
+	// never read by a constraint.
 	cs, err := frontend.Compile(ecc.BLS12_377.ScalarField(), scs.NewBuilder, &decompressionLengthTestCircuit{
 		C: make([]frontend.Variable, 1024),
 		D: make([]frontend.Variable, 7*1024),
-	})
+	}, frontend.IgnoreUnconstrainedInputs())
 	assert.NoError(t, err)
 	fmt.Println(cs.GetNbConstraints())
 }
 
 func TestBuildDecompress1KBto9KB(t *testing.T) {
+	// Decompress writes into D, so the wires the circuit declares for it are
+	// never read by a constraint.
 	cs, err := frontend.Compile(ecc.BLS12_377.ScalarField(), scs.NewBuilder, &decompressionLengthTestCircuit{
 		C: make([]frontend.Variable, 1024),
 		D: make([]frontend.Variable, 9*1024),
-	})
+	}, frontend.IgnoreUnconstrainedInputs())
 	assert.NoError(t, err)
 	fmt.Println(cs.GetNbConstraints())
 }
