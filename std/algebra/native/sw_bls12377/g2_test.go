@@ -215,7 +215,8 @@ func TestConstantScalarMulG2EdgeCases(t *testing.T) {
 	circuit.R = br
 
 	assert := test.NewAssert(t)
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
+	// a constant scalar folds the point away, leaving its wires unreferenced.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 
 }
 

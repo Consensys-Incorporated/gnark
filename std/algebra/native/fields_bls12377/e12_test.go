@@ -291,7 +291,8 @@ func TestFrobeniusFp12(t *testing.T) {
 
 	// cs values
 	assert := test.NewAssert(t)
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
+	// the circuit declares inputs it does not reference.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 type fp12Inverse struct {
