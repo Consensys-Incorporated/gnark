@@ -231,7 +231,8 @@ func TestValueOfProof(t *testing.T) {
 func TestValueOfVerifyingKey(t *testing.T) {
 	assert := test.NewAssert(t)
 	assert.Run(func(assert *test.Assert) {
-		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &WitnessCircut{})
+		// WitnessCircut declares an input and has an empty Define.
+		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &WitnessCircut{}, frontend.IgnoreUnconstrainedInputs())
 		assert.NoError(err)
 		_, vk, err := groth16.Setup(ccs)
 		assert.NoError(err)
@@ -240,7 +241,8 @@ func TestValueOfVerifyingKey(t *testing.T) {
 		_ = vvk
 	}, "bn254")
 	assert.Run(func(assert *test.Assert) {
-		ccs, err := frontend.Compile(ecc.BLS12_377.ScalarField(), r1cs.NewBuilder, &WitnessCircut{})
+		// WitnessCircut declares an input and has an empty Define.
+		ccs, err := frontend.Compile(ecc.BLS12_377.ScalarField(), r1cs.NewBuilder, &WitnessCircut{}, frontend.IgnoreUnconstrainedInputs())
 		assert.NoError(err)
 		_, vk, err := groth16.Setup(ccs)
 		assert.NoError(err)
@@ -249,7 +251,8 @@ func TestValueOfVerifyingKey(t *testing.T) {
 		_ = vvk
 	}, "bls12377")
 	assert.Run(func(assert *test.Assert) {
-		ccs, err := frontend.Compile(ecc.BLS12_381.ScalarField(), r1cs.NewBuilder, &WitnessCircut{})
+		// WitnessCircut declares an input and has an empty Define.
+		ccs, err := frontend.Compile(ecc.BLS12_381.ScalarField(), r1cs.NewBuilder, &WitnessCircut{}, frontend.IgnoreUnconstrainedInputs())
 		assert.NoError(err)
 		_, vk, err := groth16.Setup(ccs)
 		assert.NoError(err)
