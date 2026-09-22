@@ -138,6 +138,11 @@ func (bf *BinaryField[T]) zero() T {
 	return res
 }
 
+// API returns the underlying frontend API.
+func (bf *BinaryField[T]) API() frontend.API {
+	return bf.Bytes.api
+}
+
 // ByteValueOf converts a frontend.Variable into a single byte. If the input
 // doesn't fit into a byte then solver fails.
 func (bf *BinaryField[T]) ByteValueOf(a frontend.Variable) U8 {
@@ -192,6 +197,29 @@ func (bf *BinaryField[T]) PackLSB(a ...U8) T {
 	var ret T
 	for i := range a {
 		ret[i] = a[i]
+	}
+	return ret
+}
+
+// ToBits decomposes a long integer into little-endian bits and constrains each
+// byte to equal the recomposition of its bits.
+func (bf *BinaryField[T]) ToBits(a T) []frontend.Variable {
+	ret := make([]frontend.Variable, 0, bf.lenBts()*8)
+	for i := 0; i < bf.lenBts(); i++ {
+		ret = append(ret, bf.Bytes.ToBits(a[i])...)
+	}
+	return ret
+}
+
+// FromBits packs little-endian bits into a long integer. The number of bits
+// must match the width of T.
+func (bf *BinaryField[T]) FromBits(bits ...frontend.Variable) T {
+	if len(bits) != bf.lenBts()*8 {
+		panic("incorrect number of bits")
+	}
+	var ret T
+	for i := 0; i < bf.lenBts(); i++ {
+		ret[i] = bf.Bytes.FromBits(bits[8*i : 8*(i+1)]...)
 	}
 	return ret
 }
