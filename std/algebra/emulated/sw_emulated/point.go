@@ -475,6 +475,20 @@ func naf4Digits(k *big.Int) []int8 {
 //
 // The R = O case (encoded (0,0)) has no affine preimage, so a dummy in-subgroup
 // point is substituted and the equality is made vacuous to preserve completeness.
+// AssertIsInSubgroup asserts that R lies in the prime-order subgroup of the
+// curve. It is a no-op on prime-order curves (params.CofactorClearing == nil).
+//
+// R must already be known to be on the curve; this method does not check that.
+// The (0,0) infinity encoding is accepted.
+//
+// It is the point-based binding described on [Curve.assertPointInSubgroup]: a
+// preimage S is hinted and [c]S == R asserted, which is cheaper than a
+// [r]-order check and, on BLS12-381 G1, cheaper than the endomorphism test
+// phi(P) = [-x^2]P.
+func (c *Curve[B, S]) AssertIsInSubgroup(R *AffinePoint[B]) {
+	c.assertPointInSubgroup(R)
+}
+
 func (c *Curve[B, S]) assertPointInSubgroup(R *AffinePoint[B]) {
 	cc := c.params.CofactorClearing
 	if cc == nil {

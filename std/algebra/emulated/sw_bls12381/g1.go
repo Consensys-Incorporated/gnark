@@ -237,14 +237,21 @@ func (g1 *G1) AssertIsOnG1(P *G1Affine) {
 	// 1- Check P is on the curve
 	g1.AssertIsOnCurve(P)
 
-	// 2- Check P has the right subgroup order
-	// [x²]ϕ(P)
-	phiP := g1.phi(P)
-	_P := g1.scalarMulBySeedSquare(phiP)
-	_P = g1.neg(_P)
-
-	// [r]Q == 0 <==>  P = -[x²]ϕ(P)
-	g1.AssertIsEqual(_P, P)
+	// 2- Check P is in the prime-order subgroup.
+	//
+	// We hint a preimage S and assert [x-1]S == P. Since the G1 cofactor
+	// torsion has rank 2 its exponent is (x-1), so [x-1]E(Fp) = G1 exactly: a
+	// point carrying cofactor torsion has no on-curve preimage. Completeness
+	// holds because gcd(x-1, r) = 1 makes [x-1] a bijection on G1. See
+	// [sw_emulated.CurveParams.CofactorClearing].
+	//
+	// This replaces the endomorphism test P = -[x²]ϕ(P) (Bowe, eprint
+	// 2019/814), which needs a 128-bit ladder where this needs a 64-bit one.
+	curve, err := sw_emulated.New[BaseField, ScalarField](g1.api, sw_emulated.GetBLS12381Params())
+	if err != nil {
+		panic(fmt.Sprintf("new emulated curve: %v", err))
+	}
+	curve.AssertIsInSubgroup(P)
 }
 
 // AssertIsEqual asserts that p and q are the same point.

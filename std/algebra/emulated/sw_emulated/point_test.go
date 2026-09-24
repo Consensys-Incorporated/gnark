@@ -8,6 +8,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
+	fp_bls381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 	fr_bls381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	fr_bn "github.com/consensys/gnark-crypto/ecc/bn254/fr"
@@ -2708,5 +2709,60 @@ func TestScalarMulGLVAndFakeGLV_TrivialDecompositionRegression(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("malicious all-zeros Eisenstein decomposition was accepted — soundness break")
+	}
+}
+
+// TestBLS12381CofactorClearingConstant pins the arithmetic facts that make the
+// 64-bit constant c = |x-1| sound and complete in place of the 126-bit full
+// cofactor h = (x-1)^2/3:
+//
+//   - c divides h,
+//   - gcd(c, r) = 1, so [c] is a bijection on G1 (completeness),
+//   - [c]E(Fp) = G1, so a torsion-tainted point has no preimage (soundness).
+func TestBLS12381CofactorClearingConstant(t *testing.T) {
+	assert := test.NewAssert(t)
+	c := GetBLS12381Params().CofactorClearing
+	assert.NotNil(c, "BLS12-381 G1 must have a clearing constant")
+
+	xm1 := new(big.Int).SetUint64(0xd201000000010001)
+	assert.Equal(0, c.Cmp(xm1), "clearing constant must be |x-1|")
+	assert.Equal(64, c.BitLen())
+
+	h := new(big.Int).Mul(xm1, xm1)
+	h.Div(h, big.NewInt(3))
+	assert.Equal(0, new(big.Int).Mod(h, c).Sign(), "c must divide h")
+
+	assert.Equal(0, new(big.Int).GCD(nil, nil, c, fr_bls381.Modulus()).Cmp(big.NewInt(1)),
+		"gcd(c, r) must be 1 for [c] to be invertible on G1")
+
+	for i := 0; i < 64; i++ {
+		p := randomBLS12381CurvePoint()
+		var j, cj bls12381.G1Jac
+		j.FromAffine(&p)
+		cj.ScalarMultiplication(&j, c)
+		var cp bls12381.G1Affine
+		cp.FromJacobian(&cj)
+		assert.True(cp.IsInSubGroup(), "[c]P must land in G1")
+	}
+}
+
+// randomBLS12381CurvePoint returns a uniformly random point of E(Fp), which is
+// almost never in G1 (the cofactor is ~2^126).
+func randomBLS12381CurvePoint() bls12381.G1Affine {
+	var four fp_bls381.Element
+	four.SetUint64(4)
+	for {
+		var x, y2 fp_bls381.Element
+		x.SetRandom()
+		y2.Square(&x).Mul(&y2, &x).Add(&y2, &four)
+		if y2.Legendre() != 1 {
+			continue
+		}
+		var y fp_bls381.Element
+		y.Sqrt(&y2)
+		p := bls12381.G1Affine{X: x, Y: y}
+		if p.IsOnCurve() {
+			return p
+		}
 	}
 }

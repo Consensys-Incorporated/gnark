@@ -29,10 +29,17 @@ type CurveParams struct {
 
 	// CofactorClearing is the constant c used to bind the hinted output of the
 	// fake-GLV / GLV+fake-GLV scalar multiplications into the prime-order
-	// subgroup, via a preimage check [c]S == R. It must be divisible by every
-	// cofactor prime-power ℓ^k with ℓ^k < 2^nbits (nbits = the sub-scalar range),
-	// i.e. every torsion order reachable by the r^(1/4)/√r sub-scalars. For
-	// prime-order groups (cofactor 1) it is nil and the check is skipped.
+	// subgroup, via a preimage check [c]S == R.
+	//
+	// Soundness requires [c]E(Fp) ⊆ G1, i.e. c must be divisible by the
+	// *exponent* of the cofactor torsion subgroup. Completeness requires
+	// gcd(c, r) = 1 so that [c] stays a bijection on G1. Clearing every
+	// cofactor prime-power ℓ^k ∥ h is sufficient but usually not necessary:
+	// when the torsion has rank > 1 the exponent is strictly smaller than h,
+	// and the smaller constant is what should be used (see BLS12-381 G1, where
+	// the exponent is (x-1) and h = (x-1)²/3).
+	//
+	// For prime-order groups (cofactor 1) it is nil and the check is skipped.
 	CofactorClearing *big.Int
 
 	// PreferClassicGLV routes [Curve.ScalarMul] through classic GLV instead of
@@ -95,20 +102,20 @@ func GetBLS12381Params() CurveParams {
 		Gm:           computeBLS12381Table(),
 		Eigenvalue:   lambda,
 		ThirdRootOne: omega,
-		// G1 cofactor h = 3·11²·10177²·859267²·52437899² fully factors into
-		// primes whose powers are all < 2^nbits, so the entire cofactor is
-		// reachable by a chosen-scalar torsion forgery and must be cleared. (A
-		// smaller c covering only {3,11,10177} would leave order-859267 and
-		// order-52437899 torsion forgeries open, since [c] stays invertible on
-		// that torsion.)
-		CofactorClearing: func() *big.Int {
-			c := big.NewInt(3)
-			c.Mul(c, big.NewInt(11*11))
-			c.Mul(c, big.NewInt(10177*10177))
-			c.Mul(c, new(big.Int).Mul(big.NewInt(859267), big.NewInt(859267)))
-			c.Mul(c, new(big.Int).Mul(big.NewInt(52437899), big.NewInt(52437899)))
-			return c
-		}(),
+		// c = |x-1| = 0xd201000000010001 (64 bits), NOT the full cofactor
+		// h = (x-1)²/3 = 3·11²·10177²·859267²·52437899² (126 bits).
+		//
+		// E(Fp) ≅ Z_{(x-1)/3} × Z_{(x-1)·r} (Wahby-Boneh, eprint 2019/403 §5),
+		// so the cofactor torsion has *rank 2* and its exponent is (x-1), not
+		// h: every prime ℓ | h has ℓ² | h but E(Fp)[ℓ^∞] ≅ Z_ℓ × Z_ℓ, so the
+		// squares are redundant. Hence [x-1]E(Fp) = G1 exactly, which is what
+		// the binding needs — a torsion-tainted R has no on-curve preimage
+		// under [x-1]. Completeness holds because gcd(x-1, r) = 1 makes [x-1]
+		// a bijection on G1, so an honest R keeps a preimage (take it in G1).
+		//
+		// This is the same constant gnark-crypto's G1 ClearCofactor uses.
+		// Halving the bit length halves the binding ladder: 178k -> 80k R1CS.
+		CofactorClearing: new(big.Int).SetUint64(0xd201000000010001),
 		// classic GLV is cheaper here than GLV+fake-GLV once the (expensive)
 		// cofactor clearing is included — see benchmarks.
 		PreferClassicGLV: true,
