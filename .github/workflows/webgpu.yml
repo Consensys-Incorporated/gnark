@@ -36,6 +36,8 @@ jobs:
           cache-dependency-path: backend/accelerated/webgpu/web/package-lock.json
       - run: npm ci
       - run: npx playwright install chromium
+      - name: wasm runtime unit tests
+        run: GOOS=js GOARCH=wasm go test -exec="$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ../internal/wasmruntime
       - name: generated shaders and accelerators are up to date
         run: |
           (cd ../internal/generator && go run .)
