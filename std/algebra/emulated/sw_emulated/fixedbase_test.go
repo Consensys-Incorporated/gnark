@@ -10,6 +10,7 @@ import (
 	fr_bn "github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/secp256k1"
 	fr_secp "github.com/consensys/gnark-crypto/ecc/secp256k1/fr"
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -163,15 +164,32 @@ func TestScalarMulBaseCombConstraints(t *testing.T) {
 		t.Skip()
 	}
 	assert := test.NewAssert(t)
-	for _, w := range []int{4, 6, 8, 10} {
-		circuit := ScalarMulBaseCombTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{w: w}
-		ccs, err := frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder, &circuit)
-		if err != nil {
-			t.Log("w =", w, "compile error:", err)
-			continue
+	curves := []struct {
+		name string
+		fn   func(w int) (constraint.ConstraintSystem, error)
+	}{
+		{"secp256k1", func(w int) (constraint.ConstraintSystem, error) {
+			return frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder,
+				&ScalarMulBaseCombTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{w: w})
+		}},
+		{"BN254-G1", func(w int) (constraint.ConstraintSystem, error) {
+			return frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder,
+				&ScalarMulBaseCombTest[emulated.BN254Fp, emulated.BN254Fr]{w: w})
+		}},
+		{"BLS12-381-G1", func(w int) (constraint.ConstraintSystem, error) {
+			return frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder,
+				&ScalarMulBaseCombTest[emulated.BLS12381Fp, emulated.BLS12381Fr]{w: w})
+		}},
+	}
+	for _, crv := range curves {
+		for _, w := range []int{7, 8, 9, 10, 11, 12} {
+			ccs, err := crv.fn(w)
+			if err != nil {
+				t.Logf("%s w=%d compile error: %v", crv.name, w, err)
+				continue
+			}
+			t.Logf("comb r1cs %s w=%d constraints=%d", crv.name, w, ccs.GetNbConstraints())
 		}
-		assert.NoError(err)
-		t.Log("comb r1cs", "w =", w, "constraints =", ccs.GetNbConstraints())
 	}
 	baseline := ScalarMulBaseTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{}
 	ccs, err := frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder, &baseline)
