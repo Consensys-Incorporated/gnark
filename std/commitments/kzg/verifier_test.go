@@ -833,7 +833,9 @@ func TestKZGVerificationEmulated3Precomputed(t *testing.T) {
 	circuit := KZGVerificationCircuit[sw_bw6761.ScalarField, sw_bw6761.G1Affine, sw_bw6761.G2Affine, sw_bw6761.GTEl]{
 		VerifyingKey: PlaceholderVerifyingKey[sw_bw6761.G1Affine, sw_bw6761.G2Affine](),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BN254))
+	// the fixed G2 points come with precomputed lines, so Pair never reads their
+	// coordinates nor the addition lines at the zero bits of the loop counter.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BN254), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestKZGVerificationEmulatedConstantVk(t *testing.T) {
@@ -924,7 +926,9 @@ func TestKZGVerificationEmulatedPrecomputed(t *testing.T) {
 	circuit := KZGVerificationCircuit[sw_bn254.ScalarField, sw_bn254.G1Affine, sw_bn254.G2Affine, sw_bn254.GTEl]{
 		VerifyingKey: PlaceholderVerifyingKey[sw_bn254.G1Affine, sw_bn254.G2Affine](),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BN254))
+	// the fixed G2 points come with precomputed lines, so Pair never reads their
+	// coordinates nor the addition lines at the zero bits of the loop counter.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BN254), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestKZGVerificationEmulated2ConstantVk(t *testing.T) {
@@ -1015,7 +1019,9 @@ func TestKZGVerificationEmulated2Precomputed(t *testing.T) {
 	circuit := KZGVerificationCircuit[sw_bls12381.ScalarField, sw_bls12381.G1Affine, sw_bls12381.G2Affine, sw_bls12381.GTEl]{
 		VerifyingKey: PlaceholderVerifyingKey[sw_bls12381.G1Affine, sw_bls12381.G2Affine](),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BN254))
+	// the fixed G2 points come with precomputed lines, so Pair never reads their
+	// coordinates nor the addition lines at the zero bits of the loop counter.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BN254), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestKZGVerificationTwoChainPrecomputed(t *testing.T) {
@@ -1061,7 +1067,9 @@ func TestKZGVerificationTwoChainPrecomputed(t *testing.T) {
 	circuit := KZGVerificationCircuit[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine, sw_bls12377.GT]{
 		VerifyingKey: PlaceholderVerifyingKey[sw_bls12377.G1Affine, sw_bls12377.G2Affine](),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BW6_761))
+	// the fixed G2 points come with precomputed lines, so Pair never reads their
+	// coordinates nor the addition lines at the zero bits of the loop counter.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCurves(ecc.BW6_761), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 
 }
 

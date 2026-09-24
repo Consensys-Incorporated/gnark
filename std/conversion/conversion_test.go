@@ -530,6 +530,11 @@ func TestAssertBytesLeq(t *testing.T) {
 			circuit := &AssertBytesLeq{In: make([]uints.U8, len(val)), bound: boundInt, disallowEquality: disallowEquality}
 			witness := &AssertBytesLeq{In: uints.NewU8Array(val)}
 			var opts []test.TestingOption
+			if len(val) < len(bound) {
+				// a value with fewer bytes than the bound is below it whatever the
+				// bytes hold, so the circuit never reads them.
+				opts = append(opts, test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+			}
 			if isSuccess {
 				opts = append(opts, test.WithValidAssignment(witness))
 			} else {

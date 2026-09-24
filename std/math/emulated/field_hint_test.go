@@ -64,7 +64,9 @@ func testHint[T FieldParams](t *testing.T) {
 		Denominator: ValueOf[T](b),
 		Expected:    ValueOf[T](c),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithSolverOpts(solver.WithHints(nnaHint)))
+	// the inputs are only passed to the hint, which does not constrain them;
+	// the circuit checks the hint plumbing and asserts nothing that reads them.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithSolverOpts(solver.WithHints(nnaHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestHint(t *testing.T) {
@@ -122,7 +124,9 @@ func testHintNativeInput[T FieldParams](t *testing.T) {
 		Denominator: b,
 		Expected:    ValueOf[T](c),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(testCurve), test.WithSolverOpts(solver.WithHints(nativeInputHint)))
+	// the inputs are only passed to the hint, which does not constrain them;
+	// the circuit checks the hint plumbing and asserts nothing that reads them.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(testCurve), test.WithSolverOpts(solver.WithHints(nativeInputHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestHintNativeInput(t *testing.T) {
@@ -181,7 +185,9 @@ func testHintNativeOutput[T FieldParams](t *testing.T) {
 		Denominator: ValueOf[T](b),
 		Expected:    c,
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(testCurve), test.WithSolverOpts(solver.WithHints(nativeOutputHint)))
+	// the inputs are only passed to the hint, which does not constrain them;
+	// the circuit checks the hint plumbing and asserts nothing that reads them.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(testCurve), test.WithSolverOpts(solver.WithHints(nativeOutputHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestHintNativeOutput(t *testing.T) {
@@ -250,7 +256,9 @@ func testGenericHintNativeInNativeOut[T FieldParams](t *testing.T) {
 		Denominator: b,
 		Expected:    c,
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintNativeInNativeOut)))
+	// the inputs are only passed to the hint, which does not constrain them;
+	// the circuit checks the hint plumbing and asserts nothing that reads them.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintNativeInNativeOut)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestGenericHintNativeInNativeOut(t *testing.T) {
@@ -324,7 +332,9 @@ func testGenericHintNativeInEmulatedOut[T FieldParams](t *testing.T) {
 		Denominator: b,
 		Expected:    ValueOf[T](c),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintNativeInEmulatedOut)))
+	// the inputs are only passed to the hint, which does not constrain them;
+	// the circuit checks the hint plumbing and asserts nothing that reads them.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintNativeInEmulatedOut)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestGenericHintNativeInEmulatedOut(t *testing.T) {
@@ -397,7 +407,9 @@ func testGenericHintEmulatedInEmulatedOut[T FieldParams](t *testing.T) {
 		Denominator: ValueOf[T](b),
 		Expected:    ValueOf[T](c),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithSolverOpts(solver.WithHints(hintEmulatedInEmulatedOut)))
+	// the inputs are only passed to the hint, which does not constrain them;
+	// the circuit checks the hint plumbing and asserts nothing that reads them.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithSolverOpts(solver.WithHints(hintEmulatedInEmulatedOut)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestGenericHintEmulatedInEmulatedOut(t *testing.T) {
@@ -472,7 +484,9 @@ func testGenericHintEmulatedInNativeOut[T FieldParams](t *testing.T) {
 		Denominator: ValueOf[T](b),
 		Expected:    c,
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintEmulatedInNativeOut)))
+	// the inputs are only passed to the hint, which does not constrain them;
+	// the circuit checks the hint plumbing and asserts nothing that reads them.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintEmulatedInNativeOut)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestGenericHintEmulatedInNativeOut(t *testing.T) {
@@ -575,7 +589,9 @@ func testCrossFieldHint[T1, T2 FieldParams](t *testing.T) {
 		ExpectedEmulated1: ValueOf[T1](res2),
 		ExpectedEmulated2: ValueOf[T2](res3),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(crossfieldHint)))
+	// the inputs are only passed to the hint, which does not constrain them;
+	// the circuit checks the hint plumbing and asserts nothing that reads them.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(crossfieldHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestCrossFieldHint(t *testing.T) {
@@ -656,7 +672,9 @@ func testMatchingFieldHint[T FieldParams](t *testing.T) {
 		ExpectedNative:   res1,
 		ExpectedEmulated: ValueOf[T](res2),
 	}
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(utils.FieldToCurve(fr.Modulus())), test.WithSolverOpts(solver.WithHints(matchingFieldHint)))
+	// the inputs are only passed to the hint, which does not constrain them;
+	// the circuit checks the hint plumbing and asserts nothing that reads them.
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(utils.FieldToCurve(fr.Modulus())), test.WithSolverOpts(solver.WithHints(matchingFieldHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 }
 
 func TestMatchingFieldHint(t *testing.T) {
