@@ -59,13 +59,14 @@ func (ct *CoeffTable) fromBytes(buf []byte) error {
 	ctLen := binary.LittleEndian.Uint64(buf[:8])
 	buf = buf[8:]
 
-	if uint64(len(buf)) < ctLen*fr.Bytes {
+	if ctLen > uint64(len(buf)/fr.Bytes) {
 		return errors.New("invalid buffer size")
 	}
-	ct.Coefficients = make([]fr.Element, ctLen)
-	for i := uint64(0); i < ctLen; i++ {
+	ctLenInt := int(ctLen)
+	ct.Coefficients = make([]fr.Element, ctLenInt)
+	for i := 0; i < ctLenInt; i++ {
 		var c fr.Element
-		k := int(i) * fr.Bytes
+		k := i * fr.Bytes
 		for j := 0; j < fr.Limbs; j++ {
 			c[j] = binary.LittleEndian.Uint32(buf[k+j*4 : k+(j+1)*4])
 		}

@@ -2,8 +2,21 @@ package ioutils
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 )
+
+func TestReadAndDecompressRejectsMalformedLength(t *testing.T) {
+	input := make([]byte, 8)
+	binary.LittleEndian.PutUint64(input, ^uint64(0))
+
+	if _, _, _, err := ReadAndDecompressUints32(input, nil); err == nil {
+		t.Fatal("expected ReadAndDecompressUints32 error")
+	}
+	if _, _, err := ReadAndDecompressUints64(input); err == nil {
+		t.Fatal("expected ReadAndDecompressUints64 error")
+	}
+}
 
 func FuzzIntcomp32(f *testing.F) {
 	f.Fuzz(func(t *testing.T, in []byte) {

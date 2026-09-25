@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"slices"
 
@@ -76,22 +77,23 @@ func (system *System) FromBytes(data []byte) (int, error) {
 	h := new(header)
 	h.fromBytes(data)
 
-	if len(data) < headerLen+int(h.levelsLen)+int(h.instructionsLen)+int(h.calldataLen)+int(h.bodyLen) {
-		return 0, errors.New("invalid data length")
+	levelsEnd, instructionsEnd, calldataEnd, bodyEnd, err := h.sectionBoundaries(len(data))
+	if err != nil {
+		return 0, err
 	}
 
 	// read the sections in parallel
 	var g errgroup.Group
 	g.Go(func() error {
-		return system.levelsFromBytes(data[headerLen : headerLen+h.levelsLen])
+		return system.levelsFromBytes(data[headerLen:levelsEnd])
 	})
 
 	g.Go(func() error {
-		return system.instructionsFromBytes(data[headerLen+h.levelsLen : headerLen+h.levelsLen+h.instructionsLen])
+		return system.instructionsFromBytes(data[levelsEnd:instructionsEnd])
 	})
 
 	g.Go(func() error {
-		return system.calldataFromBytes(data[headerLen+h.levelsLen+h.instructionsLen : headerLen+h.levelsLen+h.instructionsLen+h.calldataLen])
+		return system.calldataFromBytes(data[instructionsEnd:calldataEnd])
 	})
 
 	// CBOR decoding of the constraint system (except what we do directly in binary)
@@ -104,13 +106,15 @@ func (system *System) FromBytes(data []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	decoder := dm.NewDecoder(bytes.NewReader(data[headerLen+h.levelsLen+h.instructionsLen+h.calldataLen : headerLen+h.levelsLen+h.instructionsLen+h.calldataLen+h.bodyLen]))
+	decoder := dm.NewDecoder(bytes.NewReader(data[calldataEnd:bodyEnd]))
 
 	if err := decoder.Decode(&system); err != nil {
+		_ = g.Wait()
 		return 0, err
 	}
 
 	if err := system.CheckSerializationHeader(); err != nil {
+		_ = g.Wait()
 		return 0, err
 	}
 
@@ -125,7 +129,7 @@ func (system *System) FromBytes(data []byte) (int, error) {
 		return 0, err
 	}
 
-	return headerLen + int(h.levelsLen) + int(h.instructionsLen) + int(h.calldataLen) + int(h.bodyLen), nil
+	return bodyEnd, nil
 }
 
 func (system *System) toBytes() ([]byte, error) {
@@ -173,6 +177,29 @@ func (h *header) fromBytes(buf []byte) {
 	h.instructionsLen = binary.LittleEndian.Uint64(buf[8:16])
 	h.calldataLen = binary.LittleEndian.Uint64(buf[16:24])
 	h.bodyLen = binary.LittleEndian.Uint64(buf[24:32])
+}
+
+func (h header) sectionBoundaries(dataLen int) (levelsEnd, instructionsEnd, calldataEnd, bodyEnd int, err error) {
+	if levelsEnd, err = sectionEnd(headerLen, h.levelsLen, dataLen); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if instructionsEnd, err = sectionEnd(levelsEnd, h.instructionsLen, dataLen); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if calldataEnd, err = sectionEnd(instructionsEnd, h.calldataLen, dataLen); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if bodyEnd, err = sectionEnd(calldataEnd, h.bodyLen, dataLen); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return levelsEnd, instructionsEnd, calldataEnd, bodyEnd, nil
+}
+
+func sectionEnd(start int, sectionLen uint64, dataLen int) (int, error) {
+	if start < 0 || start > dataLen || sectionLen > uint64(dataLen-start) {
+		return 0, errors.New("invalid data length")
+	}
+	return start + int(sectionLen), nil
 }
 
 func (system *System) calldataToBytes() ([]byte, error) {
@@ -253,10 +280,16 @@ func (system *System) levelsToBytes() ([]byte, error) {
 }
 
 func (system *System) levelsFromBytes(in []byte) error {
+	if len(in) < 8 {
+		return io.ErrUnexpectedEOF
+	}
 
 	levelsLen := binary.LittleEndian.Uint64(in[:8])
 
 	in = in[8:]
+	if levelsLen > uint64(len(in)/8) {
+		return errors.New("invalid data length")
+	}
 
 	var (
 		buf32 []uint32
@@ -321,9 +354,15 @@ func (system *System) instructionsFromBytes(in []byte) error {
 }
 
 func (system *System) calldataFromBytes(buf []byte) error {
+	if len(buf) < 8 {
+		return io.ErrUnexpectedEOF
+	}
 	calldataLen := binary.LittleEndian.Uint64(buf[:8])
-	system.CallData = make([]uint32, calldataLen)
 	buf = buf[8:]
+	if calldataLen > uint64(len(buf)) {
+		return errors.New("invalid calldata")
+	}
+	system.CallData = make([]uint32, int(calldataLen))
 	for i := uint64(0); i < calldataLen; i++ {
 		v, n := binary.Uvarint(buf[:min(len(buf), binary.MaxVarintLen64)])
 		if n <= 0 {

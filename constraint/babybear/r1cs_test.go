@@ -7,6 +7,8 @@ package cs_test
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -64,13 +66,27 @@ func TestSerialization(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				serialized := append([]byte(nil), buffer.Bytes()...)
 				var reconstructed cs.R1CS
-				read, err = reconstructed.ReadFrom(&buffer)
+				read, err = reconstructed.ReadFrom(bytes.NewReader(serialized))
 				if err != nil {
 					t.Fatal(err)
 				}
 				if written != read {
 					t.Fatal("didn't read same number of bytes we wrote")
+				}
+
+				path := filepath.Join(t.TempDir(), "r1cs.bin")
+				if err := os.WriteFile(path, serialized, 0600); err != nil {
+					t.Fatal(err)
+				}
+				var reconstructedFromFile cs.R1CS
+				read, err = reconstructedFromFile.ReadFromFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if written != read {
+					t.Fatal("didn't read same number of bytes from file")
 				}
 
 				// compare original and reconstructed
@@ -93,6 +109,18 @@ func TestSerialization(t *testing.T) {
 						"System.SymbolTable",
 						"System.bitLen")); diff != "" {
 					t.Fatalf("round trip mismatch (-want +got):\n%s", diff)
+				}
+				if diff := cmp.Diff(r1cs1, &reconstructedFromFile,
+					blueprintComparer,
+					cmpopts.IgnoreFields(cs.R1CS{},
+						"System.q",
+						"field",
+						"CoeffTable.mCoeffs",
+						"System.lbWireLevel",
+						"System.genericHint",
+						"System.SymbolTable",
+						"System.bitLen")); diff != "" {
+					t.Fatalf("file round trip mismatch (-want +got):\n%s", diff)
 				}
 			}
 

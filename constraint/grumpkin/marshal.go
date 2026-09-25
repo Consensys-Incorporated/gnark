@@ -9,9 +9,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/blang/semver/v4"
+	"github.com/consensys/gnark/internal/backend/ioutils/mmap"
 )
+
+const serializedCSHeaderLen = 4 * 8
 
 // WriteTo encodes R1CS into provided io.Writer using cbor
 func (cs *system) WriteTo(w io.Writer) (int64, error) {
@@ -52,33 +56,73 @@ func (cs *system) WriteTo(w io.Writer) (int64, error) {
 
 // ReadFrom attempts to decode R1CS from io.Reader using cbor
 func (cs *system) ReadFrom(r io.Reader) (int64, error) {
-	var totalLen uint64
-	if err := binary.Read(r, binary.LittleEndian, &totalLen); err != nil {
+	h, err := readSerializationHeader(r)
+	if err != nil {
 		return 0, err
+	}
+	if err := h.validate(); err != nil {
+		return 0, err
+	}
+	if !serializedCSPayloadLenFits(h.totalLen) {
+		return 0, fmt.Errorf("serialized constraint system is too large: %d bytes", h.totalLen)
 	}
 
-	var major, minor, patch uint64
-	if err := binary.Read(r, binary.LittleEndian, &major); err != nil {
-		return 0, err
-	}
-	if err := binary.Read(r, binary.LittleEndian, &minor); err != nil {
-		return 0, err
-	}
-	if err := binary.Read(r, binary.LittleEndian, &patch); err != nil {
-		return 0, err
-	}
-	// TODO @gbotrel validate version, duplicate logic with core.go CheckSerializationHeader
-	if major != 0 || minor < 10 {
-		return 0, fmt.Errorf("unsupported gnark version %d.%d.%d", major, minor, patch)
-	}
-
-	data := make([]byte, totalLen)
+	data := make([]byte, h.totalLen)
 	if _, err := io.ReadFull(r, data); err != nil {
 		return 0, err
 	}
+	return cs.readPayload(data, h.totalLen)
+}
+
+// ReadFromFile decodes a constraint system from path.
+//
+// On platforms that support mmap, ReadFromFile decodes directly from mapped
+// file pages and avoids allocating a temporary copy of the serialized payload.
+// It falls back to ReadFrom on unsupported platforms.
+func (cs *system) ReadFromFile(path string) (n int64, err error) {
+	if !mmap.Supported() {
+		f, err := os.Open(path)
+		if err != nil {
+			return 0, err
+		}
+		defer f.Close()
+		return cs.ReadFrom(f)
+	}
+
+	mapping, err := mmap.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if closeErr := mapping.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+
+	return cs.readFromBytes(mapping.Data)
+}
+
+func (cs *system) readFromBytes(data []byte) (int64, error) {
+	h, err := parseSerializationHeader(data)
+	if err != nil {
+		return 0, err
+	}
+	if err := h.validate(); err != nil {
+		return 0, err
+	}
+	if h.totalLen > uint64(len(data)-serializedCSHeaderLen) {
+		return 0, io.ErrUnexpectedEOF
+	}
+	return cs.readPayload(data[serializedCSHeaderLen:serializedCSHeaderLen+int(h.totalLen)], h.totalLen)
+}
+
+func (cs *system) readPayload(data []byte, totalLen uint64) (int64, error) {
 	n, err := cs.System.FromBytes(data)
 	if err != nil {
 		return 0, err
+	}
+	if n > len(data) {
+		return 0, io.ErrUnexpectedEOF
 	}
 	data = data[n:]
 
@@ -86,5 +130,44 @@ func (cs *system) ReadFrom(r io.Reader) (int64, error) {
 		return 0, err
 	}
 
-	return int64(totalLen) + 4*8, nil
+	return int64(totalLen) + serializedCSHeaderLen, nil
+}
+
+type serializationHeader struct {
+	totalLen uint64
+	major    uint64
+	minor    uint64
+	patch    uint64
+}
+
+func readSerializationHeader(r io.Reader) (serializationHeader, error) {
+	var buf [serializedCSHeaderLen]byte
+	if _, err := io.ReadFull(r, buf[:]); err != nil {
+		return serializationHeader{}, err
+	}
+	return parseSerializationHeader(buf[:])
+}
+
+func parseSerializationHeader(data []byte) (serializationHeader, error) {
+	if len(data) < serializedCSHeaderLen {
+		return serializationHeader{}, io.ErrUnexpectedEOF
+	}
+	return serializationHeader{
+		totalLen: binary.LittleEndian.Uint64(data[:8]),
+		major:    binary.LittleEndian.Uint64(data[8:16]),
+		minor:    binary.LittleEndian.Uint64(data[16:24]),
+		patch:    binary.LittleEndian.Uint64(data[24:32]),
+	}, nil
+}
+
+func (h serializationHeader) validate() error {
+	if h.major != 0 || h.minor < 10 {
+		return fmt.Errorf("unsupported gnark version %d.%d.%d", h.major, h.minor, h.patch)
+	}
+	return nil
+}
+
+func serializedCSPayloadLenFits(payloadLen uint64) bool {
+	maxInt := uint64(int(^uint(0) >> 1))
+	return payloadLen <= maxInt-serializedCSHeaderLen
 }

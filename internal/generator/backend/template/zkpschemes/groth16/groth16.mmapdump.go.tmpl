@@ -1,0 +1,681 @@
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"runtime"
+	"runtime/debug"
+	"unsafe"
+
+	{{ template "import_curve" . }}
+	{{ template "import_pedersen" . }}
+	"github.com/consensys/gnark/internal/backend/ioutils/mmap"
+)
+
+const (
+	mmapProvingKeyFormat  = "gnark.groth16.{{ toLower .Curve }}.proving_key.mmap"
+	mmapProvingKeyVersion = 1
+	mmapProvingKeyAlign   = 64
+)
+
+var mmapProvingKeyMagic = [16]byte{'g', 'n', 'a', 'r', 'k', 'p', 'k', 'm', 'm', 'a', 'p', 'v', '1', '\r', '\n', 0}
+
+// MmapDumpOption configures ReadMmapDump.
+type MmapDumpOption func(*mmapDumpConfig)
+
+type mmapDumpConfig struct {
+	disableDomainPrecompute     bool
+	domainNoPrecomputeThreshold uint64
+}
+
+// WithMmapDumpNoDomainPrecompute disables FFT domain precomputation while
+// loading a mapped dump once the serialized domain cardinality is greater than
+// or equal to threshold. Passing 0 disables precomputation for every domain.
+func WithMmapDumpNoDomainPrecompute(threshold uint64) MmapDumpOption {
+	return func(cfg *mmapDumpConfig) {
+		cfg.disableDomainPrecompute = true
+		cfg.domainNoPrecomputeThreshold = threshold
+	}
+}
+
+// MmapProvingKey is a Groth16 {{ .Curve }} proving key backed by a read-only memory
+// mapping. Close must not be called while the proving key is in use.
+type MmapProvingKey struct {
+	ProvingKey
+
+	mapping io.Closer
+}
+
+// Close releases the memory mapping backing pk. The key must not be used after
+// Close returns.
+func (pk *MmapProvingKey) Close() error {
+	if pk == nil || pk.mapping == nil {
+		return nil
+	}
+	err := pk.mapping.Close()
+	pk.mapping = nil
+	pk.ProvingKey = ProvingKey{}
+	return err
+}
+
+type mmapDumpMeta struct {
+	Format      string `json:"format"`
+	Version     int    `json:"version"`
+	Curve       string `json:"curve"`
+	GOOS        string `json:"goos"`
+	GOARCH      string `json:"goarch"`
+	GoCompiler  string `json:"go_compiler"`
+	GoVersion   string `json:"go_version"`
+	Endian      string `json:"endian"`
+	PointerSize int    `json:"pointer_size"`
+
+	GnarkVersion       string `json:"gnark_version,omitempty"`
+	GnarkCryptoVersion string `json:"gnark_crypto_version,omitempty"`
+
+	Sizes mmapDumpSizes `json:"sizes"`
+
+	NbInfinityA uint64 `json:"nb_infinity_a"`
+	NbInfinityB uint64 `json:"nb_infinity_b"`
+
+	Domain mmapDumpSection `json:"domain"`
+
+	AlphaG1 mmapDumpSection `json:"alpha_g1"`
+	BetaG1  mmapDumpSection `json:"beta_g1"`
+	DeltaG1 mmapDumpSection `json:"delta_g1"`
+	BetaG2  mmapDumpSection `json:"beta_g2"`
+	DeltaG2 mmapDumpSection `json:"delta_g2"`
+
+	G1A mmapDumpSection `json:"g1_a"`
+	G1B mmapDumpSection `json:"g1_b"`
+	G1Z mmapDumpSection `json:"g1_z"`
+	G1K mmapDumpSection `json:"g1_k"`
+	G2B mmapDumpSection `json:"g2_b"`
+
+	InfinityA mmapDumpSection `json:"infinity_a"`
+	InfinityB mmapDumpSection `json:"infinity_b"`
+
+	CommitmentKeys []mmapDumpCommitmentKey `json:"commitment_keys,omitempty"`
+}
+
+type mmapDumpSizes struct {
+	G1Affine int `json:"g1_affine"`
+	G2Affine int `json:"g2_affine"`
+	Bool     int `json:"bool"`
+}
+
+type mmapDumpSection struct {
+	Offset      int64 `json:"offset"`
+	Len         int64 `json:"len"`
+	ElementSize int64 `json:"element_size"`
+}
+
+type mmapDumpCommitmentKey struct {
+	Basis         mmapDumpSection `json:"basis"`
+	BasisExpSigma mmapDumpSection `json:"basis_exp_sigma"`
+}
+
+// WriteMmapDump writes pk to path using an aligned, file-backed dump format.
+//
+// The dump stores large proving-key slices as raw Go memory. It is intended for
+// trusted local artifacts only and is not portable across incompatible gnark
+// versions, gnark-crypto versions, architectures, endianness, or Go type
+// layouts.
+func (pk *ProvingKey) WriteMmapDump(path string) (err error) {
+	if !mmap.Supported() {
+		return fmt.Errorf("mmap is unsupported on this platform")
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+	}()
+
+	w := mmapDumpWriter{w: f}
+	meta := newMmapDumpMeta(pk)
+
+	var domain bytes.Buffer
+	if _, err := pk.Domain.WriteTo(&domain); err != nil {
+		return fmt.Errorf("write domain: %w", err)
+	}
+
+	if meta.Domain, err = w.writeBytes(domain.Bytes(), 1); err != nil {
+		return fmt.Errorf("write domain section: %w", err)
+	}
+
+	if meta.AlphaG1, err = writeMmapDumpValue(&w, &pk.G1.Alpha); err != nil {
+		return fmt.Errorf("write G1.Alpha: %w", err)
+	}
+	if meta.BetaG1, err = writeMmapDumpValue(&w, &pk.G1.Beta); err != nil {
+		return fmt.Errorf("write G1.Beta: %w", err)
+	}
+	if meta.DeltaG1, err = writeMmapDumpValue(&w, &pk.G1.Delta); err != nil {
+		return fmt.Errorf("write G1.Delta: %w", err)
+	}
+	if meta.BetaG2, err = writeMmapDumpValue(&w, &pk.G2.Beta); err != nil {
+		return fmt.Errorf("write G2.Beta: %w", err)
+	}
+	if meta.DeltaG2, err = writeMmapDumpValue(&w, &pk.G2.Delta); err != nil {
+		return fmt.Errorf("write G2.Delta: %w", err)
+	}
+
+	if meta.G1A, err = writeMmapDumpSlice(&w, pk.G1.A); err != nil {
+		return fmt.Errorf("write G1.A: %w", err)
+	}
+	if meta.G1B, err = writeMmapDumpSlice(&w, pk.G1.B); err != nil {
+		return fmt.Errorf("write G1.B: %w", err)
+	}
+	if meta.G1Z, err = writeMmapDumpSlice(&w, pk.G1.Z); err != nil {
+		return fmt.Errorf("write G1.Z: %w", err)
+	}
+	if meta.G1K, err = writeMmapDumpSlice(&w, pk.G1.K); err != nil {
+		return fmt.Errorf("write G1.K: %w", err)
+	}
+	if meta.G2B, err = writeMmapDumpSlice(&w, pk.G2.B); err != nil {
+		return fmt.Errorf("write G2.B: %w", err)
+	}
+	if meta.InfinityA, err = writeMmapDumpSlice(&w, pk.InfinityA); err != nil {
+		return fmt.Errorf("write InfinityA: %w", err)
+	}
+	if meta.InfinityB, err = writeMmapDumpSlice(&w, pk.InfinityB); err != nil {
+		return fmt.Errorf("write InfinityB: %w", err)
+	}
+
+	if len(pk.CommitmentKeys) > 0 {
+		meta.CommitmentKeys = make([]mmapDumpCommitmentKey, len(pk.CommitmentKeys))
+		for i := range pk.CommitmentKeys {
+			if meta.CommitmentKeys[i].Basis, err = writeMmapDumpSlice(&w, pk.CommitmentKeys[i].Basis); err != nil {
+				return fmt.Errorf("write commitment key %d basis: %w", i, err)
+			}
+			if meta.CommitmentKeys[i].BasisExpSigma, err = writeMmapDumpSlice(&w, pk.CommitmentKeys[i].BasisExpSigma); err != nil {
+				return fmt.Errorf("write commitment key %d basis exp sigma: %w", i, err)
+			}
+		}
+	}
+
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal metadata: %w", err)
+	}
+	if _, err := f.Write(metaBytes); err != nil {
+		return fmt.Errorf("write metadata: %w", err)
+	}
+	if err := binary.Write(f, binary.LittleEndian, uint64(len(metaBytes))); err != nil {
+		return fmt.Errorf("write metadata length: %w", err)
+	}
+	if _, err := f.Write(mmapProvingKeyMagic[:]); err != nil {
+		return fmt.Errorf("write magic: %w", err)
+	}
+
+	return nil
+}
+
+// ReadMmapDump maps path into memory and returns a proving key whose large
+// slices are backed by the mapped file. The caller must keep the returned key
+// open while it is used and call Close after proving is complete.
+//
+// Mmap dumps are unsafe raw-memory artifacts. ReadMmapDump validates the dump
+// metadata against the current process, but it does not validate curve points or
+// subgroup membership.
+func ReadMmapDump(path string, opts ...MmapDumpOption) (*MmapProvingKey, error) {
+	var cfg mmapDumpConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	mapping, err := mmap.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	pk := &MmapProvingKey{mapping: mapping}
+	if err := pk.ProvingKey.readMmapDump(mapping.Data, cfg); err != nil {
+		_ = mapping.Close()
+		return nil, err
+	}
+	return pk, nil
+}
+
+func (pk *ProvingKey) readMmapDump(data []byte, cfg mmapDumpConfig) error {
+	meta, payloadLen, err := readMmapDumpMeta(data)
+	if err != nil {
+		return err
+	}
+	if err := validateMmapDumpMeta(meta); err != nil {
+		return err
+	}
+	if err := validateMmapDumpSections(meta, payloadLen); err != nil {
+		return err
+	}
+	payload := data[:payloadLen]
+
+	pk.NbInfinityA = meta.NbInfinityA
+	pk.NbInfinityB = meta.NbInfinityB
+
+	domainBytes, err := sectionBytes(payload, meta.Domain)
+	if err != nil {
+		return fmt.Errorf("domain section: %w", err)
+	}
+	domainBytes = append([]byte(nil), domainBytes...)
+	if cfg.disableDomainPrecompute && len(domainBytes) > 0 {
+		disableDomainPrecompute(domainBytes, cfg.domainNoPrecomputeThreshold)
+	}
+	if _, err := pk.Domain.ReadFrom(bytes.NewReader(domainBytes)); err != nil {
+		return fmt.Errorf("read domain: %w", err)
+	}
+
+	if pk.G1.Alpha, err = sectionValue[curve.G1Affine](payload, meta.AlphaG1); err != nil {
+		return fmt.Errorf("read G1.Alpha: %w", err)
+	}
+	if pk.G1.Beta, err = sectionValue[curve.G1Affine](payload, meta.BetaG1); err != nil {
+		return fmt.Errorf("read G1.Beta: %w", err)
+	}
+	if pk.G1.Delta, err = sectionValue[curve.G1Affine](payload, meta.DeltaG1); err != nil {
+		return fmt.Errorf("read G1.Delta: %w", err)
+	}
+	if pk.G2.Beta, err = sectionValue[curve.G2Affine](payload, meta.BetaG2); err != nil {
+		return fmt.Errorf("read G2.Beta: %w", err)
+	}
+	if pk.G2.Delta, err = sectionValue[curve.G2Affine](payload, meta.DeltaG2); err != nil {
+		return fmt.Errorf("read G2.Delta: %w", err)
+	}
+
+	if pk.G1.A, err = sectionSlice[curve.G1Affine](payload, meta.G1A); err != nil {
+		return fmt.Errorf("read G1.A: %w", err)
+	}
+	if pk.G1.B, err = sectionSlice[curve.G1Affine](payload, meta.G1B); err != nil {
+		return fmt.Errorf("read G1.B: %w", err)
+	}
+	if pk.G1.Z, err = sectionSlice[curve.G1Affine](payload, meta.G1Z); err != nil {
+		return fmt.Errorf("read G1.Z: %w", err)
+	}
+	if pk.G1.K, err = sectionSlice[curve.G1Affine](payload, meta.G1K); err != nil {
+		return fmt.Errorf("read G1.K: %w", err)
+	}
+	if pk.G2.B, err = sectionSlice[curve.G2Affine](payload, meta.G2B); err != nil {
+		return fmt.Errorf("read G2.B: %w", err)
+	}
+	if pk.InfinityA, err = sectionSlice[bool](payload, meta.InfinityA); err != nil {
+		return fmt.Errorf("read InfinityA: %w", err)
+	}
+	if pk.InfinityB, err = sectionSlice[bool](payload, meta.InfinityB); err != nil {
+		return fmt.Errorf("read InfinityB: %w", err)
+	}
+
+	if len(meta.CommitmentKeys) > 0 {
+		pk.CommitmentKeys = make([]pedersen.ProvingKey, len(meta.CommitmentKeys))
+		for i := range meta.CommitmentKeys {
+			if pk.CommitmentKeys[i].Basis, err = sectionSlice[curve.G1Affine](payload, meta.CommitmentKeys[i].Basis); err != nil {
+				return fmt.Errorf("read commitment key %d basis: %w", i, err)
+			}
+			if pk.CommitmentKeys[i].BasisExpSigma, err = sectionSlice[curve.G1Affine](payload, meta.CommitmentKeys[i].BasisExpSigma); err != nil {
+				return fmt.Errorf("read commitment key %d basis exp sigma: %w", i, err)
+			}
+		}
+	} else {
+		pk.CommitmentKeys = nil
+	}
+
+	return validateMmapDumpProvingKey(pk)
+}
+
+type mmapDumpWriter struct {
+	w   io.Writer
+	pos int64
+}
+
+func writeMmapDumpValue[T any](w *mmapDumpWriter, v *T) (mmapDumpSection, error) {
+	var zero T
+	size := int64(unsafe.Sizeof(zero))
+	b := unsafe.Slice((*byte)(unsafe.Pointer(v)), int(size))
+	return w.writeBytes(b, size)
+}
+
+func writeMmapDumpSlice[S ~[]E, E any](w *mmapDumpWriter, s S) (mmapDumpSection, error) {
+	var zero E
+	size := int64(unsafe.Sizeof(zero))
+	if len(s) == 0 {
+		return w.writeBytes(nil, size)
+	}
+	b := unsafe.Slice((*byte)(unsafe.Pointer(&s[0])), len(s)*int(size))
+	return w.writeBytes(b, size)
+}
+
+func (w *mmapDumpWriter) writeBytes(b []byte, elementSize int64) (mmapDumpSection, error) {
+	if elementSize <= 0 {
+		return mmapDumpSection{}, fmt.Errorf("invalid element size %d", elementSize)
+	}
+	if err := w.padTo(mmapProvingKeyAlign); err != nil {
+		return mmapDumpSection{}, err
+	}
+	section := mmapDumpSection{
+		Offset:      w.pos,
+		ElementSize: elementSize,
+	}
+	if len(b)%int(elementSize) != 0 {
+		return mmapDumpSection{}, fmt.Errorf("section length %d is not a multiple of element size %d", len(b), elementSize)
+	}
+	section.Len = int64(len(b)) / elementSize
+	if len(b) == 0 {
+		return section, nil
+	}
+	n, err := w.w.Write(b)
+	w.pos += int64(n)
+	if err != nil {
+		return mmapDumpSection{}, err
+	}
+	if n != len(b) {
+		return mmapDumpSection{}, io.ErrShortWrite
+	}
+	return section, nil
+}
+
+func (w *mmapDumpWriter) padTo(alignment int64) error {
+	rem := w.pos % alignment
+	if rem == 0 {
+		return nil
+	}
+	padding := make([]byte, alignment-rem)
+	n, err := w.w.Write(padding)
+	w.pos += int64(n)
+	if err != nil {
+		return err
+	}
+	if n != len(padding) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func newMmapDumpMeta(pk *ProvingKey) mmapDumpMeta {
+	gnarkVersion, gnarkCryptoVersion := dependencyVersions()
+	return mmapDumpMeta{
+		Format:             mmapProvingKeyFormat,
+		Version:            mmapProvingKeyVersion,
+		Curve:              "{{ toLower .Curve }}",
+		GOOS:               runtime.GOOS,
+		GOARCH:             runtime.GOARCH,
+		GoCompiler:         runtime.Compiler,
+		GoVersion:          runtime.Version(),
+		Endian:             nativeEndian(),
+		PointerSize:        int(unsafe.Sizeof(uintptr(0))),
+		GnarkVersion:       gnarkVersion,
+		GnarkCryptoVersion: gnarkCryptoVersion,
+		Sizes:              currentMmapDumpSizes(),
+		NbInfinityA:        pk.NbInfinityA,
+		NbInfinityB:        pk.NbInfinityB,
+		CommitmentKeys:     nil,
+	}
+}
+
+func currentMmapDumpSizes() mmapDumpSizes {
+	return mmapDumpSizes{
+		G1Affine: int(unsafe.Sizeof(curve.G1Affine{})),
+		G2Affine: int(unsafe.Sizeof(curve.G2Affine{})),
+		Bool:     int(unsafe.Sizeof(false)),
+	}
+}
+
+func readMmapDumpMeta(data []byte) (mmapDumpMeta, int, error) {
+	var meta mmapDumpMeta
+	trailerLen := 8 + len(mmapProvingKeyMagic)
+	if len(data) < trailerLen {
+		return meta, 0, fmt.Errorf("file too small")
+	}
+	magicOff := len(data) - len(mmapProvingKeyMagic)
+	if !bytes.Equal(data[magicOff:], mmapProvingKeyMagic[:]) {
+		return meta, 0, fmt.Errorf("invalid mmap dump magic")
+	}
+	metaLenOff := magicOff - 8
+	metaLen := binary.LittleEndian.Uint64(data[metaLenOff:magicOff])
+	if metaLen == 0 || metaLen > uint64(metaLenOff) {
+		return meta, 0, fmt.Errorf("invalid metadata length %d", metaLen)
+	}
+	metaOff := metaLenOff - int(metaLen)
+	if err := json.Unmarshal(data[metaOff:metaLenOff], &meta); err != nil {
+		return meta, 0, fmt.Errorf("unmarshal metadata: %w", err)
+	}
+	return meta, metaOff, nil
+}
+
+func validateMmapDumpMeta(meta mmapDumpMeta) error {
+	if meta.Format != mmapProvingKeyFormat {
+		return fmt.Errorf("unsupported format %q", meta.Format)
+	}
+	if meta.Version != mmapProvingKeyVersion {
+		return fmt.Errorf("unsupported mmap dump version %d", meta.Version)
+	}
+	if meta.Curve != "{{ toLower .Curve }}" {
+		return fmt.Errorf("unsupported curve %q", meta.Curve)
+	}
+	if meta.GOOS != runtime.GOOS {
+		return fmt.Errorf("goos mismatch: dump=%s runtime=%s", meta.GOOS, runtime.GOOS)
+	}
+	if meta.GOARCH != runtime.GOARCH {
+		return fmt.Errorf("goarch mismatch: dump=%s runtime=%s", meta.GOARCH, runtime.GOARCH)
+	}
+	if meta.GoCompiler != "" && meta.GoCompiler != runtime.Compiler {
+		return fmt.Errorf("go compiler mismatch: dump=%s runtime=%s", meta.GoCompiler, runtime.Compiler)
+	}
+	if meta.GoVersion != "" && meta.GoVersion != runtime.Version() {
+		return fmt.Errorf("go version mismatch: dump=%s runtime=%s", meta.GoVersion, runtime.Version())
+	}
+	if meta.Endian != nativeEndian() {
+		return fmt.Errorf("endianness mismatch: dump=%s runtime=%s", meta.Endian, nativeEndian())
+	}
+	if meta.PointerSize != int(unsafe.Sizeof(uintptr(0))) {
+		return fmt.Errorf("pointer size mismatch: dump=%d runtime=%d", meta.PointerSize, unsafe.Sizeof(uintptr(0)))
+	}
+	if meta.Sizes != currentMmapDumpSizes() {
+		return fmt.Errorf("type size mismatch: dump=%+v runtime=%+v", meta.Sizes, currentMmapDumpSizes())
+	}
+	gnarkVersion, gnarkCryptoVersion := dependencyVersions()
+	if meta.GnarkVersion != "" && gnarkVersion != "" && meta.GnarkVersion != gnarkVersion {
+		return fmt.Errorf("gnark version mismatch: dump=%s runtime=%s", meta.GnarkVersion, gnarkVersion)
+	}
+	if meta.GnarkCryptoVersion != "" && gnarkCryptoVersion != "" && meta.GnarkCryptoVersion != gnarkCryptoVersion {
+		return fmt.Errorf("gnark-crypto version mismatch: dump=%s runtime=%s", meta.GnarkCryptoVersion, gnarkCryptoVersion)
+	}
+	return nil
+}
+
+type namedMmapDumpSection struct {
+	name    string
+	section mmapDumpSection
+}
+
+func validateMmapDumpSections(meta mmapDumpMeta, payloadLen int) error {
+	sections := []namedMmapDumpSection{
+		{"domain", meta.Domain},
+		{"alpha_g1", meta.AlphaG1},
+		{"beta_g1", meta.BetaG1},
+		{"delta_g1", meta.DeltaG1},
+		{"beta_g2", meta.BetaG2},
+		{"delta_g2", meta.DeltaG2},
+		{"g1_a", meta.G1A},
+		{"g1_b", meta.G1B},
+		{"g1_z", meta.G1Z},
+		{"g1_k", meta.G1K},
+		{"g2_b", meta.G2B},
+		{"infinity_a", meta.InfinityA},
+		{"infinity_b", meta.InfinityB},
+	}
+	for i := range meta.CommitmentKeys {
+		sections = append(sections,
+			namedMmapDumpSection{fmt.Sprintf("commitment_keys[%d].basis", i), meta.CommitmentKeys[i].Basis},
+			namedMmapDumpSection{fmt.Sprintf("commitment_keys[%d].basis_exp_sigma", i), meta.CommitmentKeys[i].BasisExpSigma},
+		)
+	}
+
+	ranges := make([]struct {
+		name       string
+		start, end int64
+	}, 0, len(sections))
+	for _, named := range sections {
+		start, end, err := mmapDumpSectionRange(named.name, named.section, payloadLen)
+		if err != nil {
+			return err
+		}
+		if start == end {
+			continue
+		}
+		for _, prev := range ranges {
+			if start < prev.end && prev.start < end {
+				return fmt.Errorf("section %s overlaps section %s", named.name, prev.name)
+			}
+		}
+		ranges = append(ranges, struct {
+			name       string
+			start, end int64
+		}{named.name, start, end})
+	}
+	return nil
+}
+
+func mmapDumpSectionRange(name string, section mmapDumpSection, payloadLen int) (int64, int64, error) {
+	if section.Offset < 0 || section.Len < 0 || section.ElementSize <= 0 {
+		return 0, 0, fmt.Errorf("invalid section %s: %+v", name, section)
+	}
+	if section.Offset%mmapProvingKeyAlign != 0 {
+		return 0, 0, fmt.Errorf("section %s offset %d is not aligned to %d", name, section.Offset, mmapProvingKeyAlign)
+	}
+	if section.Offset > int64(payloadLen) {
+		return 0, 0, fmt.Errorf("section %s starts outside payload: offset=%d payload=%d", name, section.Offset, payloadLen)
+	}
+	if section.Len == 0 {
+		return section.Offset, section.Offset, nil
+	}
+	const maxInt64 = int64(^uint64(0) >> 1)
+	if section.Len > maxInt64/section.ElementSize {
+		return 0, 0, fmt.Errorf("section %s size overflow", name)
+	}
+	size := section.Len * section.ElementSize
+	if size > int64(payloadLen)-section.Offset {
+		return 0, 0, fmt.Errorf("section %s out of bounds: offset=%d len=%d element_size=%d payload=%d", name, section.Offset, section.Len, section.ElementSize, payloadLen)
+	}
+	return section.Offset, section.Offset + size, nil
+}
+
+func validateMmapDumpProvingKey(pk *ProvingKey) error {
+	if pk.NbInfinityA > uint64(len(pk.InfinityA)) {
+		return fmt.Errorf("NbInfinityA=%d exceeds InfinityA length %d", pk.NbInfinityA, len(pk.InfinityA))
+	}
+	if pk.NbInfinityB > uint64(len(pk.InfinityB)) {
+		return fmt.Errorf("NbInfinityB=%d exceeds InfinityB length %d", pk.NbInfinityB, len(pk.InfinityB))
+	}
+	if uint64(len(pk.G1.A))+pk.NbInfinityA != uint64(len(pk.InfinityA)) {
+		return fmt.Errorf("inconsistent G1.A and InfinityA lengths: len(G1.A)=%d NbInfinityA=%d len(InfinityA)=%d", len(pk.G1.A), pk.NbInfinityA, len(pk.InfinityA))
+	}
+	if uint64(len(pk.G1.B))+pk.NbInfinityB != uint64(len(pk.InfinityB)) {
+		return fmt.Errorf("inconsistent G1.B and InfinityB lengths: len(G1.B)=%d NbInfinityB=%d len(InfinityB)=%d", len(pk.G1.B), pk.NbInfinityB, len(pk.InfinityB))
+	}
+	if len(pk.G2.B) != len(pk.G1.B) {
+		return fmt.Errorf("inconsistent B vector lengths: len(G1.B)=%d len(G2.B)=%d", len(pk.G1.B), len(pk.G2.B))
+	}
+	if uint64(len(pk.G1.Z))+1 != pk.Domain.Cardinality {
+		return fmt.Errorf("inconsistent Z length: len(G1.Z)=%d domain cardinality=%d", len(pk.G1.Z), pk.Domain.Cardinality)
+	}
+	for i := range pk.CommitmentKeys {
+		if len(pk.CommitmentKeys[i].Basis) != len(pk.CommitmentKeys[i].BasisExpSigma) {
+			return fmt.Errorf("inconsistent commitment key %d lengths: len(Basis)=%d len(BasisExpSigma)=%d", i, len(pk.CommitmentKeys[i].Basis), len(pk.CommitmentKeys[i].BasisExpSigma))
+		}
+	}
+	return nil
+}
+
+func sectionValue[T any](data []byte, section mmapDumpSection) (T, error) {
+	var zero T
+	s, err := sectionSlice[T](data, section)
+	if err != nil {
+		return zero, err
+	}
+	if len(s) != 1 {
+		return zero, fmt.Errorf("expected one element, got %d", len(s))
+	}
+	return s[0], nil
+}
+
+func sectionSlice[T any](data []byte, section mmapDumpSection) ([]T, error) {
+	var zero T
+	size := int64(unsafe.Sizeof(zero))
+	align := int64(unsafe.Alignof(zero))
+	if section.ElementSize != size {
+		return nil, fmt.Errorf("element size mismatch: section=%d type=%d", section.ElementSize, size)
+	}
+	if section.Len == 0 {
+		return nil, nil
+	}
+	if section.Offset%align != 0 {
+		return nil, fmt.Errorf("section offset %d is not aligned to %d", section.Offset, align)
+	}
+	b, err := sectionBytes(data, section)
+	if err != nil {
+		return nil, err
+	}
+	if uintptr(unsafe.Pointer(&b[0]))%uintptr(align) != 0 {
+		return nil, fmt.Errorf("mapped section address is not aligned to %d", align)
+	}
+	return unsafe.Slice((*T)(unsafe.Pointer(&b[0])), int(section.Len)), nil
+}
+
+func sectionBytes(data []byte, section mmapDumpSection) ([]byte, error) {
+	if section.Offset < 0 || section.Len < 0 || section.ElementSize <= 0 {
+		return nil, fmt.Errorf("invalid section %+v", section)
+	}
+	if section.Len == 0 {
+		return nil, nil
+	}
+	const maxInt64 = int64(^uint64(0) >> 1)
+	if section.Len > maxInt64/section.ElementSize {
+		return nil, fmt.Errorf("section size overflow")
+	}
+	size := section.Len * section.ElementSize
+	if section.Offset > int64(len(data)) || size > int64(len(data))-section.Offset {
+		return nil, fmt.Errorf("section out of bounds: offset=%d len=%d element_size=%d file=%d", section.Offset, section.Len, section.ElementSize, len(data))
+	}
+	return data[section.Offset : section.Offset+size], nil
+}
+
+func disableDomainPrecompute(domain []byte, threshold uint64) {
+	if len(domain) < 9 {
+		return
+	}
+	cardinality := binary.BigEndian.Uint64(domain[:8])
+	if cardinality >= threshold {
+		// fft.Domain.WriteTo serializes the withPrecompute bool as the final byte.
+		domain[len(domain)-1] = 0
+	}
+}
+
+func nativeEndian() string {
+	var x uint16 = 1
+	if *(*byte)(unsafe.Pointer(&x)) == 1 {
+		return "little"
+	}
+	return "big"
+}
+
+func dependencyVersions() (string, string) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "", ""
+	}
+	var gnarkVersion, gnarkCryptoVersion string
+	if info.Main.Path == "github.com/consensys/gnark" {
+		gnarkVersion = info.Main.Version
+	}
+	for _, dep := range info.Deps {
+		switch dep.Path {
+		case "github.com/consensys/gnark":
+			gnarkVersion = dep.Version
+		case "github.com/consensys/gnark-crypto":
+			gnarkCryptoVersion = dep.Version
+		}
+	}
+	return gnarkVersion, gnarkCryptoVersion
+}

@@ -38,21 +38,23 @@ func ReadAndDecompressUints32(in []byte, buf32 []uint32) (outbuf32 []uint32, rea
 		return buf32, 0, nil, io.ErrUnexpectedEOF
 	}
 	length := binary.LittleEndian.Uint64(in[:8])
-	if uint64(len(in)) < 8+4*length {
+	if length > uint64((len(in)-8)/4) {
 		return buf32, 0, nil, io.ErrUnexpectedEOF
 	}
-	in = in[8 : 8+4*length]
-	if cap(buf32) < int(length) {
-		buf32 = make([]uint32, length)
+	lengthInt := int(length)
+	read = 8 + 4*lengthInt
+	in = in[8:read]
+	if cap(buf32) < lengthInt {
+		buf32 = make([]uint32, lengthInt)
 	} else {
-		buf32 = buf32[:length]
+		buf32 = buf32[:lengthInt]
 	}
 
-	for i := 0; i < int(length); i++ {
+	for i := 0; i < lengthInt; i++ {
 		buf32[i] = binary.LittleEndian.Uint32(in[4*i : 4*(i+1)])
 	}
 
-	return buf32, 8 + 4*int(length), intcomp.UncompressUint32(buf32, nil), nil
+	return buf32, read, intcomp.UncompressUint32(buf32, nil), nil
 }
 
 // ReadAndDecompressUints64 reads a compressed slice of uint64 from r and decompresses it.
@@ -62,13 +64,15 @@ func ReadAndDecompressUints64(in []byte) (int, []uint64, error) {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
 	length := binary.LittleEndian.Uint64(in[:8])
-	if uint64(len(in)) < 8+8*length {
+	if length > uint64((len(in)-8)/8) {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
-	in = in[8 : 8+8*length]
-	buffer := make([]uint64, length)
-	for i := 0; i < int(length); i++ {
+	lengthInt := int(length)
+	read := 8 + 8*lengthInt
+	in = in[8:read]
+	buffer := make([]uint64, lengthInt)
+	for i := 0; i < lengthInt; i++ {
 		buffer[i] = binary.LittleEndian.Uint64(in[8*i : 8*(i+1)])
 	}
-	return 8 + 8*int(length), intcomp.UncompressUint64(buffer, nil), nil
+	return read, intcomp.UncompressUint64(buffer, nil), nil
 }

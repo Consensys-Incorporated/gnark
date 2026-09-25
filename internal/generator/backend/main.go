@@ -185,7 +185,9 @@ func main() {
 				{File: filepath.Join(groth16Dir, "prove.go"), Templates: []string{"groth16/groth16.prove.go.tmpl", importCurve}},
 				{File: filepath.Join(groth16Dir, "setup.go"), Templates: []string{"groth16/groth16.setup.go.tmpl", importCurve}},
 				{File: filepath.Join(groth16Dir, "marshal.go"), Templates: []string{"groth16/groth16.marshal.go.tmpl", importCurve}},
+				{File: filepath.Join(groth16Dir, "mmapdump.go"), Templates: []string{"groth16/groth16.mmapdump.go.tmpl", importCurve}},
 				{File: filepath.Join(groth16Dir, "marshal_test.go"), Templates: []string{"groth16/tests/groth16.marshal.go.tmpl", importCurve}},
+				{File: filepath.Join(groth16Dir, "mmapdump_test.go"), Templates: []string{"groth16/tests/groth16.mmapdump.go.tmpl", importCurve}},
 			}
 			if err := bgen.Generate(d, "groth16", "./template/zkpschemes/", entries...); err != nil {
 				panic(err) // TODO handle

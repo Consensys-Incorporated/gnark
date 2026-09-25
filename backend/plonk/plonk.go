@@ -9,6 +9,7 @@
 package plonk
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -189,6 +190,43 @@ func NewCS(curveID ecc.ID) constraint.ConstraintSystem {
 		panic("not implemented")
 	}
 	return r1cs
+}
+
+// ReadCSFromFile instantiates a concrete curve-typed SparseR1CS and decodes it
+// from path.
+//
+// On platforms that support mmap, ReadCSFromFile avoids allocating a temporary
+// copy of the serialized payload while reading. It falls back to regular
+// ReadFrom semantics on unsupported platforms.
+func ReadCSFromFile(curveID ecc.ID, path string) (constraint.ConstraintSystem, error) {
+	switch curveID {
+	case ecc.BN254:
+		r1cs := &cs_bn254.SparseR1CS{}
+		if _, err := r1cs.ReadFromFile(path); err != nil {
+			return nil, err
+		}
+		return r1cs, nil
+	case ecc.BLS12_377:
+		r1cs := &cs_bls12377.SparseR1CS{}
+		if _, err := r1cs.ReadFromFile(path); err != nil {
+			return nil, err
+		}
+		return r1cs, nil
+	case ecc.BLS12_381:
+		r1cs := &cs_bls12381.SparseR1CS{}
+		if _, err := r1cs.ReadFromFile(path); err != nil {
+			return nil, err
+		}
+		return r1cs, nil
+	case ecc.BW6_761:
+		r1cs := &cs_bw6761.SparseR1CS{}
+		if _, err := r1cs.ReadFromFile(path); err != nil {
+			return nil, err
+		}
+		return r1cs, nil
+	default:
+		return nil, fmt.Errorf("unsupported Plonk curve %s", curveID)
+	}
 }
 
 // NewProvingKey instantiates a curve-typed ProvingKey and returns an interface
