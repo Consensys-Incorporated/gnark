@@ -9,6 +9,7 @@
 package groth16
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -77,6 +78,33 @@ type ProvingKey interface {
 	IsDifferent(any) bool
 }
 
+// MmapProvingKey is a Groth16 proving key backed by a read-only memory mapping.
+//
+// The caller must keep the key open while it is used and call Close after
+// proving is complete.
+type MmapProvingKey interface {
+	ProvingKey
+	io.Closer
+}
+
+// MmapDumpOption configures ReadMmapDump.
+type MmapDumpOption func(*mmapDumpConfig)
+
+type mmapDumpConfig struct {
+	disableDomainPrecompute     bool
+	domainNoPrecomputeThreshold uint64
+}
+
+// WithMmapDumpNoDomainPrecompute disables FFT domain precomputation while
+// loading a mapped dump once the serialized domain cardinality is greater than
+// or equal to threshold. Passing 0 disables precomputation for every domain.
+func WithMmapDumpNoDomainPrecompute(threshold uint64) MmapDumpOption {
+	return func(cfg *mmapDumpConfig) {
+		cfg.disableDomainPrecompute = true
+		cfg.domainNoPrecomputeThreshold = threshold
+	}
+}
+
 // VerifyingKey represents a Groth16 VerifyingKey
 //
 // it's underlying implementation is strongly typed with the curve (see gnark/internal/backend)
@@ -143,6 +171,57 @@ func Verify(proof Proof, vk VerifyingKey, publicWitness witness.Witness, opts ..
 	}
 }
 
+// WriteMmapDump writes pk to path using an aligned, file-backed dump format.
+//
+// Mmap dumps store large proving-key slices as raw Go memory. They are intended
+// for trusted local artifacts only and are not portable across incompatible
+// gnark versions, gnark-crypto versions, operating systems, architectures,
+// endianness, or Go type layouts.
+func WriteMmapDump(pk ProvingKey, path string) error {
+	switch pk := pk.(type) {
+	case *groth16_bls12377.ProvingKey:
+		return pk.WriteMmapDump(path)
+	case *groth16_bls12377.MmapProvingKey:
+		return pk.ProvingKey.WriteMmapDump(path)
+	case *groth16_bls12381.ProvingKey:
+		return pk.WriteMmapDump(path)
+	case *groth16_bls12381.MmapProvingKey:
+		return pk.ProvingKey.WriteMmapDump(path)
+	case *groth16_bn254.ProvingKey:
+		return pk.WriteMmapDump(path)
+	case *groth16_bn254.MmapProvingKey:
+		return pk.ProvingKey.WriteMmapDump(path)
+	case *groth16_bw6761.ProvingKey:
+		return pk.WriteMmapDump(path)
+	case *groth16_bw6761.MmapProvingKey:
+		return pk.ProvingKey.WriteMmapDump(path)
+	default:
+		return fmt.Errorf("unsupported Groth16 proving key type %T", pk)
+	}
+}
+
+// ReadMmapDump maps path into memory and returns a curve-typed proving key
+// through the generic Groth16 interface.
+//
+// Mmap dumps are unsafe raw-memory artifacts. ReadMmapDump validates dump
+// metadata against the current process, but it does not validate curve points or
+// subgroup membership.
+func ReadMmapDump(curveID ecc.ID, path string, opts ...MmapDumpOption) (MmapProvingKey, error) {
+	cfg := newMmapDumpConfig(opts...)
+	switch curveID {
+	case ecc.BLS12_377:
+		return groth16_bls12377.ReadMmapDump(path, cfg.bls12377Options()...)
+	case ecc.BLS12_381:
+		return groth16_bls12381.ReadMmapDump(path, cfg.bls12381Options()...)
+	case ecc.BN254:
+		return groth16_bn254.ReadMmapDump(path, cfg.bn254Options()...)
+	case ecc.BW6_761:
+		return groth16_bw6761.ReadMmapDump(path, cfg.bw6761Options()...)
+	default:
+		return nil, fmt.Errorf("unsupported Groth16 curve %s", curveID)
+	}
+}
+
 // Prove runs the groth16.Prove algorithm.
 //
 // if the force flag is set:
@@ -153,19 +232,123 @@ func Verify(proof Proof, vk VerifyingKey, publicWitness witness.Witness, opts ..
 func Prove(r1cs constraint.ConstraintSystem, pk ProvingKey, fullWitness witness.Witness, opts ...backend.ProverOption) (Proof, error) {
 	switch _r1cs := r1cs.(type) {
 	case *cs_bls12377.R1CS:
-		return groth16_bls12377.Prove(_r1cs, pk.(*groth16_bls12377.ProvingKey), fullWitness, opts...)
+		_pk, ok := bls12377ProvingKey(pk)
+		if !ok {
+			return nil, fmt.Errorf("invalid BLS12-377 proving key type %T", pk)
+		}
+		return groth16_bls12377.Prove(_r1cs, _pk, fullWitness, opts...)
 
 	case *cs_bls12381.R1CS:
-		return groth16_bls12381.Prove(_r1cs, pk.(*groth16_bls12381.ProvingKey), fullWitness, opts...)
+		_pk, ok := bls12381ProvingKey(pk)
+		if !ok {
+			return nil, fmt.Errorf("invalid BLS12-381 proving key type %T", pk)
+		}
+		return groth16_bls12381.Prove(_r1cs, _pk, fullWitness, opts...)
 
 	case *cs_bn254.R1CS:
-		return groth16_bn254.Prove(_r1cs, pk.(*groth16_bn254.ProvingKey), fullWitness, opts...)
+		_pk, ok := bn254ProvingKey(pk)
+		if !ok {
+			return nil, fmt.Errorf("invalid BN254 proving key type %T", pk)
+		}
+		return groth16_bn254.Prove(_r1cs, _pk, fullWitness, opts...)
 
 	case *cs_bw6761.R1CS:
-		return groth16_bw6761.Prove(_r1cs, pk.(*groth16_bw6761.ProvingKey), fullWitness, opts...)
+		_pk, ok := bw6761ProvingKey(pk)
+		if !ok {
+			return nil, fmt.Errorf("invalid BW6-761 proving key type %T", pk)
+		}
+		return groth16_bw6761.Prove(_r1cs, _pk, fullWitness, opts...)
 
 	default:
 		panic("unrecognized R1CS curve type")
+	}
+}
+
+func newMmapDumpConfig(opts ...MmapDumpOption) mmapDumpConfig {
+	var cfg mmapDumpConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return cfg
+}
+
+func (cfg mmapDumpConfig) bls12377Options() []groth16_bls12377.MmapDumpOption {
+	if !cfg.disableDomainPrecompute {
+		return nil
+	}
+	return []groth16_bls12377.MmapDumpOption{
+		groth16_bls12377.WithMmapDumpNoDomainPrecompute(cfg.domainNoPrecomputeThreshold),
+	}
+}
+
+func (cfg mmapDumpConfig) bls12381Options() []groth16_bls12381.MmapDumpOption {
+	if !cfg.disableDomainPrecompute {
+		return nil
+	}
+	return []groth16_bls12381.MmapDumpOption{
+		groth16_bls12381.WithMmapDumpNoDomainPrecompute(cfg.domainNoPrecomputeThreshold),
+	}
+}
+
+func (cfg mmapDumpConfig) bn254Options() []groth16_bn254.MmapDumpOption {
+	if !cfg.disableDomainPrecompute {
+		return nil
+	}
+	return []groth16_bn254.MmapDumpOption{
+		groth16_bn254.WithMmapDumpNoDomainPrecompute(cfg.domainNoPrecomputeThreshold),
+	}
+}
+
+func (cfg mmapDumpConfig) bw6761Options() []groth16_bw6761.MmapDumpOption {
+	if !cfg.disableDomainPrecompute {
+		return nil
+	}
+	return []groth16_bw6761.MmapDumpOption{
+		groth16_bw6761.WithMmapDumpNoDomainPrecompute(cfg.domainNoPrecomputeThreshold),
+	}
+}
+
+func bls12377ProvingKey(pk ProvingKey) (*groth16_bls12377.ProvingKey, bool) {
+	switch pk := pk.(type) {
+	case *groth16_bls12377.ProvingKey:
+		return pk, true
+	case *groth16_bls12377.MmapProvingKey:
+		return &pk.ProvingKey, true
+	default:
+		return nil, false
+	}
+}
+
+func bls12381ProvingKey(pk ProvingKey) (*groth16_bls12381.ProvingKey, bool) {
+	switch pk := pk.(type) {
+	case *groth16_bls12381.ProvingKey:
+		return pk, true
+	case *groth16_bls12381.MmapProvingKey:
+		return &pk.ProvingKey, true
+	default:
+		return nil, false
+	}
+}
+
+func bn254ProvingKey(pk ProvingKey) (*groth16_bn254.ProvingKey, bool) {
+	switch pk := pk.(type) {
+	case *groth16_bn254.ProvingKey:
+		return pk, true
+	case *groth16_bn254.MmapProvingKey:
+		return &pk.ProvingKey, true
+	default:
+		return nil, false
+	}
+}
+
+func bw6761ProvingKey(pk ProvingKey) (*groth16_bw6761.ProvingKey, bool) {
+	switch pk := pk.(type) {
+	case *groth16_bw6761.ProvingKey:
+		return pk, true
+	case *groth16_bw6761.MmapProvingKey:
+		return &pk.ProvingKey, true
+	default:
+		return nil, false
 	}
 }
 
