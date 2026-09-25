@@ -888,12 +888,50 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, cfg *icic
 		return nil
 	}))
 
-	_solution, err := r1cs.Solve(fullWitness, solverOpts...)
-	if err != nil {
-		return nil, err
+	cachePath := opt.SolutionCachePath
+	canCache := cachePath != "" && len(commitmentInfo) == 0
+
+	var solution *cs.R1CSSolution
+
+	if canCache {
+		if cached, err := cs.LoadR1CSSolution(cachePath); err == nil {
+			// Validate every dimension against the circuit, not just the wire
+			// count: a circuit edit can keep the wire count while changing
+			// the constraint count, and computeH pads A/B/C with
+			// Domain.Cardinality-len(a) — wrong-sized vectors panic there or
+			// produce a proof for a stale assignment.
+			expectedWires := r1cs.GetNbPublicVariables() + r1cs.GetNbSecretVariables() + r1cs.GetNbInternalVariables()
+			expectedConstraints := r1cs.GetNbConstraints()
+			if len(cached.W) != expectedWires ||
+				len(cached.A) != expectedConstraints ||
+				len(cached.B) != expectedConstraints ||
+				len(cached.C) != expectedConstraints {
+				log.Warn().Str("file", cachePath).
+					Int("wires", len(cached.W)).Int("expectedWires", expectedWires).
+					Int("constraints", len(cached.A)).Int("expectedConstraints", expectedConstraints).
+					Msg("ignoring cached Groth16 solution: dimension mismatch (stale cache?)")
+			} else {
+				solution = cached
+				log.Debug().Str("file", cachePath).Msg("loaded cached Groth16 solution, skipping solver")
+			}
+		}
 	}
 
-	solution := _solution.(*cs.R1CSSolution)
+	if solution == nil {
+		_solution, err := r1cs.Solve(fullWitness, solverOpts...)
+		if err != nil {
+			return nil, err
+		}
+		solution = _solution.(*cs.R1CSSolution)
+
+		if canCache {
+			if err := cs.SaveR1CSSolution(cachePath, solution); err != nil {
+				log.Warn().Err(err).Msg("failed to cache Groth16 solution")
+			} else {
+				log.Debug().Str("file", cachePath).Msg("cached Groth16 solution to disk")
+			}
+		}
+	}
 	wireValues := []fr.Element(solution.W)
 
 	start := time.Now()
