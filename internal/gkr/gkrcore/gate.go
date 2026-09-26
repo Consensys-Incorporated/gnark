@@ -54,6 +54,12 @@ func (g *GateBytecode) NbConstants() int {
 	return len(g.Constants)
 }
 
+// EvaluatorSize returns the scratch size a gateEvaluator needs to evaluate this
+// gate on nbIn inputs: one slot per constant, per input, and per instruction.
+func (g GateBytecode) EvaluatorSize(nbIn int) int {
+	return g.NbConstants() + nbIn + len(g.Instructions)
+}
+
 // EstimateDegree returns an upper bound on the degree of the gate
 func (g *GateBytecode) EstimateDegree(nbIn int) int {
 	frameSize := len(g.Constants) + nbIn

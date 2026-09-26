@@ -3,6 +3,7 @@ package gkrcore
 import (
 	"errors"
 	"math/big"
+	"slices"
 
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
@@ -90,28 +91,19 @@ func (c Circuit[GateExecutable]) ClaimPropagationInfo(wireIndex int) (injection,
 	return
 }
 
-func (c Circuit[GateExecutable]) maxGateDegree() int {
-	res := 1
+// MemoryRequirements returns the strictly increasing vector of memory
+// allocation sizes required for proving a GKR statement on this circuit.
+func MemoryRequirements(c SerializableCircuit, nbInstances int) []int {
+	largest := IdentityBytecode().EvaluatorSize(1)
 	for i := range c {
 		if !c[i].IsInput() {
-			res = max(res, c[i].Gate.Degree)
-		}
-	}
-	return res
-}
-
-// MemoryRequirements returns an increasing vector of memory allocation sizes required for proving a GKR statement
-func (c Circuit[GateExecutable]) MemoryRequirements(nbInstances int) []int {
-	res := []int{256, nbInstances, nbInstances * (c.maxGateDegree() + 1)}
-
-	if res[0] > res[1] { // make sure it's sorted
-		res[0], res[1] = res[1], res[0]
-		if res[1] > res[2] {
-			res[1], res[2] = res[2], res[1]
+			largest = max(largest, c[i].Gate.Evaluate.EvaluatorSize(len(c[i].Inputs)))
 		}
 	}
 
-	return res
+	res := []int{nbInstances, largest}
+	slices.Sort(res)
+	return slices.Compact(res)
 }
 
 // Inputs returns the list of input wire indices.

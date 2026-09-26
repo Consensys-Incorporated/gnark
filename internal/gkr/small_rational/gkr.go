@@ -59,7 +59,7 @@ func newResources(c Circuit, schedule constraint.GkrProvingSchedule, assignment 
 		outgoingEvalPoints: make([][][]small_rational.SmallRational, len(schedule)+1),
 		nbVars:             nbVars,
 		assignment:         assignment,
-		memPool:            polynomial.NewPool(c.MemoryRequirements(nbInstances)...),
+		memPool:            polynomial.NewPool(gkrcore.MemoryRequirements(c, nbInstances)...),
 		workers:            utils.NewWorkerPool(),
 		circuit:            c,
 		schedule:           schedule,
@@ -282,9 +282,9 @@ func newGateEvaluator(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polyn
 		nbIn: nbIn,
 	}
 	if len(elementPool) > 0 {
-		e.vars = elementPool[0].Make(gate.NbConstants() + nbIn + len(gate.Instructions))
+		e.vars = elementPool[0].Make(gate.EvaluatorSize(nbIn))
 	} else {
-		e.vars = make([]small_rational.SmallRational, gate.NbConstants()+nbIn+len(gate.Instructions))
+		e.vars = make([]small_rational.SmallRational, gate.EvaluatorSize(nbIn))
 	}
 	e.vars = e.vars[:gate.NbConstants()]
 	for i, constVal := range gate.Constants {
