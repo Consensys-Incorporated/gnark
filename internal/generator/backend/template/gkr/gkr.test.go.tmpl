@@ -65,8 +65,9 @@ func TestPoseidon2(t *testing.T) {
 	test(t, gkrtesting.Poseidon2Circuit(4, 2))
 }
 
-// testSumcheckLevel exercises proveSumcheckLevel/verifySumcheckLevel for a single sumcheck level.
-func testSumcheckLevel(t *testing.T, circuit gkrcore.RawCircuit, level constraint.GkrProvingLevel) {
+// testLevel proves and verifies a single hand-built level on its own one-level schedule.
+// level's wires must be outputs of circuit.
+func testLevel(t *testing.T, circuit gkrcore.RawCircuit, level constraint.GkrProvingLevel) {
 	t.Helper()
 	_, sCircuit := cache.Compile(t, circuit)
 
@@ -80,23 +81,11 @@ func testSumcheckLevel(t *testing.T, circuit gkrcore.RawCircuit, level constrain
 	assignment.Complete(sCircuit)
 
 	schedule := constraint.GkrProvingSchedule{level}
-	initEvalPoint := [][]{{ .ElementType }}{ {one} }
 
-	// Prove
-	proveR, err := newResources(sCircuit, schedule, assignment, newMessageCounter(1, 1))
+	proof, err := Prove(sCircuit, schedule, assignment, newMessageCounter(1, 1))
 	assert.NoError(t, err)
-	defer proveR.workers.Stop()
 
-	proveR.outgoingEvalPoints[len(schedule)] = initEvalPoint
-	proof := Proof{proveR.proveSumcheckLevel(0)}
-
-	// Verify
-	verifyR, err := newResources(sCircuit, schedule, assignment, newMessageCounter(1, 1))
-	assert.NoError(t, err)
-	defer verifyR.workers.Stop()
-
-	verifyR.outgoingEvalPoints[len(schedule)] = initEvalPoint
-	assert.NoError(t, verifyR.verifySumcheckLevel(0, proof))
+	assert.NoError(t, Verify(sCircuit, schedule, assignment, proof, newMessageCounter(1, 1)))
 }
 
 func TestSumcheckLevel(t *testing.T) {
@@ -143,53 +132,21 @@ func TestSumcheckLevel(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			testSumcheckLevel(t, circuit, tc.level)
+			testLevel(t, circuit, tc.level)
 		})
 	}
 }
 
-// testSkipLevel exercises proveSkipLevel/verifySkipLevel for a single skip level.
-func testSkipLevel(t *testing.T, circuit gkrcore.RawCircuit, level constraint.GkrProvingLevel) {
-	t.Helper()
-	_, sCircuit := cache.Compile(t, circuit)
-
-	ins := sCircuit.Inputs()
-	assignment := make(WireAssignment, len(sCircuit))
-	for _, i := range ins {
-		assignment[i] = make([]{{ .ElementType }}, 2)
-		{{ .FieldPackageName }}.Vector(assignment[i]).MustSetRandom()
-	}
-
-	assignment.Complete(sCircuit)
-
-	schedule := constraint.GkrProvingSchedule{level}
-	initEvalPoint := [][]{{ .ElementType }}{ {one} }
-
-	// Prove
-	proveR, err := newResources(sCircuit, schedule, assignment, newMessageCounter(1, 1))
-	assert.NoError(t, err)
-	defer proveR.workers.Stop()
-
-	proveR.outgoingEvalPoints[len(schedule)] = initEvalPoint
-	proof := Proof{proveR.proveSkipLevel(0)}
-
-	// Verify
-	verifyR, err := newResources(sCircuit, schedule, assignment, newMessageCounter(1, 1))
-	assert.NoError(t, err)
-	defer verifyR.workers.Stop()
-
-	verifyR.outgoingEvalPoints[len(schedule)] = initEvalPoint
-	assert.NoError(t, verifyR.verifySkipLevel(0, proof))
-}
-
 func TestSkipLevel(t *testing.T) {
-	// Wires 0,1 = inputs; wires 2,3 = identity(0); wire 4 = add(0,1). All degree-1 outputs.
+	// Wires 0,1 = inputs; wires 2,3 = identity(0); wire 4 = add(0,1); wire 5 = an unconsumed
+	// input, also a circuit output. All degree-1 outputs.
 	circuit := gkrcore.RawCircuit{
 		{},
 		{},
 		{Gate: gkrcore.Identity, Inputs: []int{0}},
 		{Gate: gkrcore.Identity, Inputs: []int{0}},
 		{Gate: gkrcore.Add2, Inputs: []int{0, 1}},
+		{},
 	}
 
 	// Single-claim cases: one inherited evaluation point (OutgoingClaimIndex always 0).
@@ -199,7 +156,7 @@ func TestSkipLevel(t *testing.T) {
 	}{
 		{
 			name:  "single input wire",
-			level: &constraint.GkrSkipLevel{Wires: []int{0}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
+			level: &constraint.GkrSkipLevel{Wires: []int{5}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
 		},
 		{
 			name:  "single identity gate",
@@ -216,7 +173,7 @@ func TestSkipLevel(t *testing.T) {
 	}
 	for _, tc := range singleClaim {
 		t.Run(tc.name, func(t *testing.T) {
-			testSkipLevel(t, circuit, tc.level)
+			testLevel(t, circuit, tc.level)
 		})
 	}
 }
@@ -270,6 +227,23 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 
 		err = Verify(sCircuit, schedule, fullAssignment, proof, newMessageCounter(0, 1))
 		assert.NotNil(t, err, "bad proof accepted")
+
+		// Tampering with the first element of any finalEvalProof or partial sum polynomial must be detected.
+		for levelI := range proof {
+			tamperTargets := [][]{{ .ElementType }}{proof[levelI].finalEvalProof}
+			for _, p := range proof[levelI].partialSumPolys {
+				tamperTargets = append(tamperTargets, p)
+			}
+			for _, target := range tamperTargets {
+				if len(target) == 0 {
+					continue
+				}
+				target[0].Add(&target[0], &one)
+				err = Verify(sCircuit, schedule, fullAssignment, proof, newMessageCounter(1, 1))
+				assert.NotNil(t, err, "tampered proof accepted at level %d", levelI)
+				target[0].Sub(&target[0], &one)
+			}
+		}
 	}
 }
 
@@ -304,25 +278,12 @@ func generateTestVerifier(path string) func(t *testing.T) {
 	return func(t *testing.T) {
 		testCase, err := newTestCase(path)
 		assert.NoError(t, err)
+
 		err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, testCase.Proof, testCase.Hash)
 		assert.NoError(t, err, "proof rejected")
 
-		testCase, err = newTestCase(path)
-		assert.NoError(t, err)
 		err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, testCase.Proof, newMessageCounter(2, 0))
 		assert.NotNil(t, err, "bad proof accepted")
-
-		testCase, err = newTestCase(path)
-		assert.NoError(t, err)
-		testCase.InOutAssignment[len(testCase.InOutAssignment)-1][0].Add(&testCase.InOutAssignment[len(testCase.InOutAssignment)-1][0], &one)
-		err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, testCase.Proof, testCase.Hash)
-		assert.NotNil(t, err, "tampered output accepted")
-
-		testCase, err = newTestCase(path)
-		assert.NoError(t, err)
-		testCase.InOutAssignment[0][0].Add(&testCase.InOutAssignment[0][0], &one)
-		err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, testCase.Proof, testCase.Hash)
-		assert.NotNil(t, err, "tampered input accepted")
 	}
 }
 

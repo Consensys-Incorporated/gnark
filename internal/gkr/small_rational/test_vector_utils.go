@@ -21,6 +21,11 @@ func toElement(i int64) *small_rational.SmallRational {
 	return &res
 }
 
+// hashFromDescription returns the hash a test vector names. The only type is "const": a
+// messageCounter with step 0, so every challenge equals the given value regardless of what was
+// bound to the transcript. Test vectors therefore pin down the GKR and sumcheck arithmetic only.
+// Transcript handling is exercised by the tests using newMessageCounter with a nonzero step, and
+// end to end by the std/gkrapi tests, which use real hashes.
 func hashFromDescription(d gkrtesting.HashDescription) (hash.Hash, error) {
 	if _type, ok := d["type"]; ok {
 		switch _type {
@@ -34,6 +39,8 @@ func hashFromDescription(d gkrtesting.HashDescription) (hash.Hash, error) {
 	return nil, fmt.Errorf("hash description missing type")
 }
 
+// messageCounter is a stand-in hash whose state depends only on the number of field-element
+// blocks written to it, not on their values.
 type messageCounter struct {
 	startState int64
 	state      int64

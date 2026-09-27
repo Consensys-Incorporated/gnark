@@ -32,6 +32,13 @@
 				1
 			],
 			"partialSumPolys": []
+		},
+		{
+			"finalEvalProof": [
+				1,
+				1
+			],
+			"partialSumPolys": []
 		}
 	]
 }

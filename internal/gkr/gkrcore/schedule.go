@@ -71,7 +71,7 @@ func (c Circuit[G]) ZeroCheckDegree(level constraint.GkrProvingLevel) int {
 
 // ProofSize returns the total number of field elements in a GKR proof.
 func (c Circuit[G]) ProofSize(schedule constraint.GkrProvingSchedule, logNbInstances int) int {
-	size := 0
+	size := len(c.Outputs())
 	for _, level := range schedule {
 		// For every outgoing claim and unique input wire, there will be
 		// an outgoing evaluation claim included in finalEvalProof.
@@ -372,12 +372,17 @@ func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule,
 	return b.finalize()
 }
 
-// UniqueInputIndices returns uniqueInputIndices[wI][claimI], the position of wire wI
-// in the UniqueGateInputs list of the source level for its claimI-th claim source.
-// The sentinel initial-challenge claim maps to 0 (unused at call sites).
-func (c Circuit[G]) UniqueInputIndices(schedule constraint.GkrProvingSchedule) [][]int {
+// ClaimValueIndices returns claimValueIndices[wI][claimI], the index of the value of wire wI's
+// claimI-th claim in the finalEvalProof of that claim's source level.
+// For the sentinel initial-challenge claim, it is wI's position in c.Outputs().
+func (c Circuit[G]) ClaimValueIndices(schedule constraint.GkrProvingSchedule) [][]int {
 	cache := make([]map[int]int, len(schedule)) // cache[levelI][wireI] is the unique input index of wireI in levelI.
 	res := make([][]int, len(c))
+
+	outputPos := make(map[int]int) // outputPos[wireI] is wireI's position in c.Outputs()
+	for i, wI := range c.Outputs() {
+		outputPos[wI] = i
+	}
 
 	// This loop weaves the level's treatment both as a claim source and as the collection of input wires
 	for levelI := len(schedule) - 1; levelI >= 0; levelI-- {
@@ -395,9 +400,9 @@ func (c Circuit[G]) UniqueInputIndices(schedule constraint.GkrProvingSchedule) [
 
 				for _, claimSource := range group.ClaimSources {
 					if claimSource.Level == len(schedule) { // output
-						res[wI] = append(res[wI], 0) // zero by convention
+						res[wI] = append(res[wI], outputPos[wI])
 					} else {
-						res[wI] = append(res[wI], cache[claimSource.Level][wI])
+						res[wI] = append(res[wI], schedule[claimSource.Level].FinalEvalProofIndex(cache[claimSource.Level][wI], claimSource.OutgoingClaimIndex))
 					}
 				}
 			}

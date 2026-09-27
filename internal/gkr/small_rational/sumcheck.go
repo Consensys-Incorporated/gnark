@@ -488,16 +488,11 @@ func (r *resources) verifyLevelSetup(levelI int, proof Proof) (small_rational.Sm
 		foldingCoeff = r.transcript.getChallenge()
 	}
 
-	initialChallengeI := len(r.schedule)
 	claimedEvals := make(polynomial.Polynomial, 0, level.NbClaims())
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			for claimI, src := range group.ClaimSources {
-				if src.Level == initialChallengeI {
-					claimedEvals = append(claimedEvals, r.assignment[wI].Evaluate(r.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], &r.memPool))
-				} else {
-					claimedEvals = append(claimedEvals, proof[src.Level].finalEvalProof[r.schedule[src.Level].FinalEvalProofIndex(r.uniqueInputIndices[wI][claimI], src.OutgoingClaimIndex)])
-				}
+				claimedEvals = append(claimedEvals, proof[src.Level].finalEvalProof[r.claimValueIndices[wI][claimI]])
 			}
 		}
 	}

@@ -44,6 +44,12 @@
 					8
 				]
 			]
+		},
+		{
+			"finalEvalProof": [
+				7
+			],
+			"partialSumPolys": []
 		}
 	]
 }

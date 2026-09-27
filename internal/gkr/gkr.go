@@ -52,7 +52,7 @@ type resources struct {
 	assignment         WireAssignment
 	outgoingEvalPoints [][][]frontend.Variable // [levelI][outgoingClaimI] → eval point
 	nbVars             int
-	uniqueInputIndices [][]int // [wI][claimI]: w's unique-input index in the layer its claimI-th evaluation is coming from
+	claimValueIndices  [][]int // [wI][claimI]: index of w's claimI-th claimed value in its source level's FinalEvalProof
 	wireLevels         []constraint.GkrProvingLevel
 }
 
@@ -124,7 +124,6 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) {
 	finalEval := proof[levelI].FinalEvalProof
 	_, inputIndices := r.circuit.InputMapping(level)
 	group := constraint.GkrClaimGroup(*level)
-	initialChallengeI := len(r.schedule)
 
 	for levelWireI, wI := range group.Wires {
 		wire := r.circuit[wI]
@@ -142,12 +141,7 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) {
 				}
 				gateEval = wire.Gate.Evaluate(FrontendAPIWrapper{r.api}, gateIns...)
 			}
-			var claimedEval frontend.Variable
-			if src.Level == initialChallengeI {
-				claimedEval = r.assignment[wI].Evaluate(r.api, point)
-			} else {
-				claimedEval = proof[src.Level].FinalEvalProof[r.schedule[src.Level].FinalEvalProofIndex(r.uniqueInputIndices[wI][claimI], src.OutgoingClaimIndex)]
-			}
+			claimedEval := proof[src.Level].FinalEvalProof[r.claimValueIndices[wI][claimI]]
 			r.api.AssertIsEqual(claimedEval, gateEval)
 		}
 	}
@@ -158,7 +152,6 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) {
 // claimed sum, and builds the lazy-claims object shared by both verifiers.
 func (r *resources) verifyLevelSetup(levelI int, proof Proof) (frontend.Variable, *zeroCheckLazyClaims) {
 	level := r.schedule[levelI]
-	initialChallengeI := len(r.schedule)
 
 	foldingCoeff := frontend.Variable(0)
 	if level.NbClaims() >= 2 {
@@ -169,14 +162,7 @@ func (r *resources) verifyLevelSetup(levelI int, proof Proof) (frontend.Variable
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			for claimI, src := range group.ClaimSources {
-				var claimedEval frontend.Variable
-				if src.Level == initialChallengeI {
-					claimedEval = r.assignment[wI].Evaluate(r.api, r.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex])
-				} else {
-					i := r.schedule[src.Level].FinalEvalProofIndex(r.uniqueInputIndices[wI][claimI], src.OutgoingClaimIndex)
-					claimedEval = proof[src.Level].FinalEvalProof[i]
-				}
-				claimedEvals = append(claimedEvals, claimedEval)
+				claimedEvals = append(claimedEvals, proof[src.Level].FinalEvalProof[r.claimValueIndices[wI][claimI]])
 			}
 		}
 	}
@@ -250,16 +236,28 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 		assignment:         assignment,
 		outgoingEvalPoints: make([][][]frontend.Variable, len(schedule)+1),
 		nbVars:             nbVars,
-		uniqueInputIndices: c.UniqueInputIndices(schedule),
+		claimValueIndices:  c.ClaimValueIndices(schedule),
 		wireLevels:         schedule.WireLevels(len(c)),
 	}
 
 	initialChallengeI := len(schedule)
+	if len(proof) != initialChallengeI+1 {
+		return fmt.Errorf("proof has %d levels, expected %d", len(proof), initialChallengeI+1)
+	}
+	outputLevel := proof[initialChallengeI]
+	if len(outputLevel.PartialSumPolys) != 0 {
+		return errors.New("output level has partial sum polynomials")
+	}
+	if len(outputLevel.FinalEvalProof) != len(c.Outputs()) {
+		return fmt.Errorf("output level has %d evaluations, expected %d", len(outputLevel.FinalEvalProof), len(c.Outputs()))
+	}
+
 	firstChallenge := make([]frontend.Variable, nbVars)
 	for j := range nbVars {
 		firstChallenge[j] = r.t.getChallenge()
 	}
 	r.outgoingEvalPoints[initialChallengeI] = [][]frontend.Variable{firstChallenge}
+	r.t.Bind(outputLevel.FinalEvalProof...)
 
 	for levelI := len(schedule) - 1; levelI >= 0; levelI-- {
 		switch schedule[levelI].(type) {
@@ -295,6 +293,7 @@ func (p Proof) Serialize() []frontend.Variable {
 // ComputeLogNbInstances derives n such that the number of instances is 2ⁿ
 // from the size of the proof and the circuit/schedule structure.
 func ComputeLogNbInstances(circuit Circuit, schedule constraint.GkrProvingSchedule, serializedProofLen int) int {
+	serializedProofLen -= len(circuit.Outputs())
 	perVar := 0
 	for _, level := range schedule {
 		nbUniqueInputs := len(circuit.UniqueGateInputs(level))
@@ -333,7 +332,7 @@ func (r *variablesReader) hasNextN(n int) bool {
 }
 
 func DeserializeProof(circuit Circuit, schedule constraint.GkrProvingSchedule, serializedProof []frontend.Variable) (Proof, error) {
-	proof := make(Proof, len(schedule))
+	proof := make(Proof, len(schedule)+1)
 	logNbInstances := ComputeLogNbInstances(circuit, schedule, len(serializedProof))
 
 	reader := variablesReader(serializedProof)
@@ -350,6 +349,7 @@ func DeserializeProof(circuit Circuit, schedule constraint.GkrProvingSchedule, s
 			proof[levelI].FinalEvalProof = reader.nextN(nbUniqueInputs)
 		}
 	}
+	proof[len(schedule)].FinalEvalProof = reader.nextN(len(circuit.Outputs()))
 	if reader.hasNextN(1) {
 		return nil, fmt.Errorf("proof too long: expected %d encountered %d", len(serializedProof)-len(reader), len(serializedProof))
 	}

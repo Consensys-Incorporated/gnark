@@ -44,7 +44,7 @@ type resources struct {
 	circuit            Circuit
 	schedule           constraint.GkrProvingSchedule
 	transcript         transcript
-	uniqueInputIndices [][]int // uniqueInputIndices[wI][claimI]: w's unique-input index in the layer its claimI-th evaluation is coming from
+	claimValueIndices  [][]int // claimValueIndices[wI][claimI]: index of w's claimI-th claimed value in its source level's finalEvalProof
 	wireLevels         []constraint.GkrProvingLevel
 }
 
@@ -64,7 +64,7 @@ func newResources(c Circuit, schedule constraint.GkrProvingSchedule, assignment 
 		circuit:            c,
 		schedule:           schedule,
 		transcript:         transcript{h: hasher},
-		uniqueInputIndices: c.UniqueInputIndices(schedule),
+		claimValueIndices:  c.ClaimValueIndices(schedule),
 		wireLevels:         schedule.WireLevels(len(c)),
 	}, nil
 }
@@ -94,7 +94,6 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 	finalEval := proof[levelI].finalEvalProof
 	_, inputIndices := r.circuit.InputMapping(level)
 	group := constraint.GkrClaimGroup(*level)
-	initialChallengeI := len(r.schedule)
 
 	for levelWireI, wI := range group.Wires {
 		wire := r.circuit[wI]
@@ -113,12 +112,7 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 				}
 				gateEval.Set(evaluator.evaluate())
 			}
-			var claimedEval fr.Element
-			if src.Level == initialChallengeI {
-				claimedEval = r.assignment[wI].Evaluate(point, &r.memPool)
-			} else {
-				claimedEval = proof[src.Level].finalEvalProof[r.schedule[src.Level].FinalEvalProofIndex(r.uniqueInputIndices[wI][claimI], src.OutgoingClaimIndex)]
-			}
+			claimedEval := proof[src.Level].finalEvalProof[r.claimValueIndices[wI][claimI]]
 			if !claimedEval.Equal(&gateEval) {
 				return fmt.Errorf("level %d wire %d claim %d: claimed eval %v disagrees with gate eval %v", levelI, wI, claimI, &claimedEval, &gateEval)
 			}
@@ -135,7 +129,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	}
 	defer r.workers.Stop()
 
-	proof := make(Proof, len(schedule))
+	proof := make(Proof, len(schedule)+1)
 
 	// Derive the initial challenge point
 	firstChallenge := make([]fr.Element, r.nbVars)
@@ -143,6 +137,14 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 		firstChallenge[j] = r.transcript.getChallenge()
 	}
 	r.outgoingEvalPoints[len(schedule)] = [][]fr.Element{firstChallenge}
+
+	outputs := c.Outputs()
+	outputEvals := make([]fr.Element, len(outputs))
+	for i, w := range outputs {
+		outputEvals[i] = r.assignment[w].Evaluate(firstChallenge, &r.memPool)
+	}
+	proof[len(schedule)] = sumcheckProof{finalEvalProof: outputEvals}
+	r.transcript.Bind(outputEvals...)
 
 	for levelI := len(schedule) - 1; levelI >= 0; levelI-- {
 		switch r.schedule[levelI].(type) {
@@ -170,12 +172,24 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAs
 	}
 	defer r.workers.Stop()
 
+	if len(proof) != len(schedule)+1 {
+		return fmt.Errorf("proof has %d levels, expected %d", len(proof), len(schedule)+1)
+	}
+	outputLevel := proof[len(schedule)]
+	if len(outputLevel.partialSumPolys) != 0 {
+		return errors.New("output level has partial sum polynomials")
+	}
+	if len(outputLevel.finalEvalProof) != len(c.Outputs()) {
+		return fmt.Errorf("output level has %d evaluations, expected %d", len(outputLevel.finalEvalProof), len(c.Outputs()))
+	}
+
 	// Derive the initial challenge point
 	firstChallenge := make([]fr.Element, r.nbVars)
 	for j := range r.nbVars {
 		firstChallenge[j] = r.transcript.getChallenge()
 	}
 	r.outgoingEvalPoints[len(schedule)] = [][]fr.Element{firstChallenge}
+	r.transcript.Bind(outputLevel.finalEvalProof...)
 
 	for levelI := len(schedule) - 1; levelI >= 0; levelI-- {
 		switch r.schedule[levelI].(type) {

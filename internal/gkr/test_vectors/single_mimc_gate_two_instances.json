@@ -49,6 +49,12 @@
 					4782969
 				]
 			]
+		},
+		{
+			"finalEvalProof": [
+				-1931
+			],
+			"partialSumPolys": []
 		}
 	]
 }
