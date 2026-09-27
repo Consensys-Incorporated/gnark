@@ -692,6 +692,49 @@ func testMux[T FieldParams](t *testing.T) {
 	})
 }
 
+type MuxConstantSelectorCircuit[T FieldParams] struct {
+	Inputs [3]Element[T]
+}
+
+func (c *MuxConstantSelectorCircuit[T]) Define(api frontend.API) error {
+	f, err := NewField[T](api)
+	if err != nil {
+		return err
+	}
+	for i := range c.Inputs {
+		res := f.Mux(i, &c.Inputs[0], &c.Inputs[1], &c.Inputs[2])
+		f.AssertIsEqual(res, &c.Inputs[i])
+	}
+	return nil
+}
+
+// TestMuxConstantSelector checks Mux with a constant selector and a number of
+// inputs which is not a power of two.
+func TestMuxConstantSelector(t *testing.T) {
+	testMuxConstantSelector[Goldilocks](t)
+	testMuxConstantSelector[Secp256k1Fp](t)
+}
+
+func testMuxConstantSelector[T FieldParams](t *testing.T) {
+	var fp T
+	assert := test.NewAssert(t)
+	var witness MuxConstantSelectorCircuit[T]
+	for i := range witness.Inputs {
+		v, _ := rand.Int(rand.Reader, fp.Modulus())
+		witness.Inputs[i] = ValueOf[T](v)
+	}
+	w, err := frontend.NewWitness(&witness, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &MuxConstantSelectorCircuit[T]{})
+	assert.NoError(err)
+	_, err = ccs.Solve(w)
+	assert.NoError(err)
+	ccs2, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &MuxConstantSelectorCircuit[T]{})
+	assert.NoError(err)
+	_, err = ccs2.Solve(w)
+	assert.NoError(err)
+}
+
 type ComputationCircuit[T FieldParams] struct {
 	noReduce bool
 
