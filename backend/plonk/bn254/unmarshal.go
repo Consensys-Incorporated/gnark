@@ -11,7 +11,7 @@ func UnmarshalSolidity(s []byte, nbCommits int) Proof {
 	offset := 0
 	point_size := 64
 	fr_size := 32
-	proof.BatchedProof.ClaimedValues = make([]fr.Element, 7+nbCommits)
+	proof.BatchedProof.ClaimedValues = make([]fr.Element, 6+nbCommits)
 	proof.Bsb22Commitments = make([]bn254.G1Affine, nbCommits)
 
 	// uint256 l_com_x;
