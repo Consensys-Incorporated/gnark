@@ -103,8 +103,8 @@ math/emulated/secp256k1_64,bn254,plonk,5136,5009
 math/emulated/secp256k1_64,bls12_377,plonk,5136,5009
 math/emulated/secp256k1_64,bls12_381,plonk,5136,5009
 math/emulated/secp256k1_64,bw6_761,plonk,4682,4567
-pairing_bls12377,bw6_761,groth16,12046,12046
-pairing_bls12377,bw6_761,plonk,38271,37663
+pairing_bls12377,bw6_761,groth16,12050,12050
+pairing_bls12377,bw6_761,plonk,38278,37670
 pairing_bls12381,bn254,groth16,1322686,2141587
 pairing_bls12381,bn254,plonk,4878525,4684904
 pairing_bn254,bn254,groth16,836345,1354248
