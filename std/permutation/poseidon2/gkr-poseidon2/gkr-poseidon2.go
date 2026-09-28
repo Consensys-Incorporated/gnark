@@ -5,10 +5,10 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/internal/utils"
 	"github.com/consensys/gnark/std/gkrapi"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 	"github.com/consensys/gnark/std/hash"
 	"github.com/consensys/gnark/std/permutation/poseidon2"
 )

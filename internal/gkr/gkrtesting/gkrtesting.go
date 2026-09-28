@@ -13,8 +13,8 @@ import (
 
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 	"github.com/stretchr/testify/require"
 )
 

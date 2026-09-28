@@ -6,7 +6,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
+	"github.com/consensys/gnark/gkr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

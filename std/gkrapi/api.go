@@ -3,10 +3,10 @@ package gkrapi
 import (
 	"github.com/consensys/gnark/constraint/solver/gkrgates" // nolint SA1019
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/gkr"
 	gadget "github.com/consensys/gnark/internal/gkr"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/utils"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 )
 
 type (
