@@ -181,6 +181,23 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	r.workers = utils.NewWorkerPool()
 	defer r.workers.Stop()
 
+	for wireI := range c {
+		if len(assignment[wireI]) == 0 {
+			const minBlockSize = 64
+			assignment[wireI] = make([]small_rational.SmallRational, nbInstances)
+			r.workers.Submit(nbInstances, func(start, end int) {
+				gateEval := newGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
+				for instanceI := start; instanceI < end; instanceI++ {
+					for _, inputWireI := range c[wireI].Inputs {
+						gateEval.pushInput(assignment[inputWireI][instanceI])
+					}
+					assignment[wireI][instanceI] = *gateEval.evaluate()
+				}
+				r.memPool.Dump(gateEval.vars)
+			}, minBlockSize).Wait()
+		}
+	}
+
 	proof := make(Proof, len(schedule)+1)
 
 	// Derive the initial challenge point
