@@ -14,6 +14,9 @@ type (
 	// GkrClaimGroup represents a set of wires sharing identical claim sources.
 	// finalEvalProof index = pos(wire, srcLevel) * NbOutgoingEvalPoints(srcLevel) + ClaimSources[claimI].OutgoingClaimIndex,
 	// where pos(wire, srcLevel) is the wire's position in srcLevel's UniqueGateInputs list.
+	// ClaimSources are ordered by decreasing Level, and by increasing OutgoingClaimIndex within a
+	// level, so a source at the initial challenge comes first. Hand-written schedules must follow
+	// this order.
 	GkrClaimGroup struct {
 		Wires        []int            `json:"wires"`
 		ClaimSources []GkrClaimSource `json:"claimSources"`

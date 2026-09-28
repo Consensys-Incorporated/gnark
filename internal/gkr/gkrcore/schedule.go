@@ -1,6 +1,7 @@
 package gkrcore
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 
@@ -175,7 +176,7 @@ func (b *scheduleBuilder[G]) markProcessed(wI, levelIdx int) {
 
 // buildClaimGroups processes a set of batches, validates claim source consistency within each
 // batch, marks each wire processed, and returns the resulting GkrClaimGroups.
-// Every ClaimSources slice is sorted. The user may reorder it to optimize eq handling.
+// Every ClaimSources slice follows GkrClaimGroup's order once finalize has run.
 func (b *scheduleBuilder[G]) buildClaimGroups(batches [][]int) ([]constraint.GkrClaimGroup, error) {
 	levelIdx := len(b.levels)
 	claimGroups := make([]constraint.GkrClaimGroup, len(batches))
@@ -221,6 +222,7 @@ func (b *scheduleBuilder[G]) nextReady() (highestWireI int, sources [][]constrai
 // If not, it returns nil and false. Results are cached.
 // SkipLevels are proper claim targets: a wire feeding into a SkipLevel L with M inherited
 // evaluation points gets M claim sources {L, 0}, {L, 1}, ..., {L, M-1}.
+// Sorted in increasing (Level, OutgoingClaimIndex) order; finalize mirrors.
 func (b *scheduleBuilder[G]) claimSources(wI int) ([]constraint.GkrClaimSource, bool) {
 	if b.claimSourcesCache[wI] != nil {
 		return b.claimSourcesCache[wI], true
@@ -245,17 +247,12 @@ func (b *scheduleBuilder[G]) claimSources(wI int) ([]constraint.GkrClaimSource, 
 			wireClaims = append(wireClaims, constraint.GkrClaimSource{Level: consumerLevel, OutgoingClaimIndex: 0})
 		}
 	}
-	// Deduplicate while preserving order.
-	seen := make(map[constraint.GkrClaimSource]bool, len(wireClaims))
-	out := wireClaims[:0]
-	for _, cs := range wireClaims {
-		if !seen[cs] {
-			seen[cs] = true
-			out = append(out, cs)
-		}
-	}
-	b.claimSourcesCache[wI] = out
-	return out, true
+	slices.SortFunc(wireClaims, func(a, b constraint.GkrClaimSource) int {
+		return cmp.Or(cmp.Compare(a.Level, b.Level), cmp.Compare(a.OutgoingClaimIndex, b.OutgoingClaimIndex))
+	})
+	wireClaims = slices.Compact(wireClaims)
+	b.claimSourcesCache[wI] = wireClaims
+	return wireClaims, true
 }
 
 // finalize reverses the schedule into in-to-out order and fixes up Level indices in all
