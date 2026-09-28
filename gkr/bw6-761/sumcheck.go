@@ -13,6 +13,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bw6-761/fr"
 	"github.com/consensys/gnark-crypto/ecc/bw6-761/fr/polynomial"
 	"github.com/consensys/gnark/constraint"
+	evaluator "github.com/consensys/gnark/internal/gkr/bw6-761"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 )
 
@@ -156,7 +157,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []fr.Element, purportedValue fr.
 		for _, wI := range group.Wires {
 			wire := e.resources.circuit[wI]
 
-			evaluator := NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
+			evaluator := evaluator.NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
 			for _, v := range gateInputEvals[levelWireI] {
 				evaluator.PushInput(v)
 			}
@@ -212,7 +213,7 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 	computeAll := func(start, end int) {
 		var step fr.Element
 
-		evaluators := make([]*GateEvaluator, nbWires)
+		evaluators := make([]*evaluator.GateEvaluator, nbWires)
 		for w := range nbWires {
 			evaluators[w] = c.gateEvaluatorPools[w].Get()
 		}
@@ -349,7 +350,7 @@ type zeroCheckBase struct {
 	resources          *resources
 	input              []polynomial.MultiLin // UniqueGateInputs order
 	inputIndices       [][]int               // [wireInLevel][gateInputJ] → index in input
-	gateEvaluatorPools []*GateEvaluatorPool
+	gateEvaluatorPools []*evaluator.GateEvaluatorPool
 }
 
 func (c *zeroCheckBase) varsNum() int {
@@ -399,12 +400,12 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 	for _, group := range level.ClaimGroups() {
 		nbWires += len(group.Wires)
 	}
-	c.gateEvaluatorPools = make([]*GateEvaluatorPool, nbWires)
+	c.gateEvaluatorPools = make([]*evaluator.GateEvaluatorPool, nbWires)
 	levelWireI := 0
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			wire := r.circuit[wI]
-			c.gateEvaluatorPools[levelWireI] = NewGateEvaluatorPool(wire.Gate.Evaluate, len(inputIndices[levelWireI]), &r.memPool)
+			c.gateEvaluatorPools[levelWireI] = evaluator.NewGateEvaluatorPool(wire.Gate.Evaluate, len(inputIndices[levelWireI]), &r.memPool)
 			levelWireI++
 		}
 	}
@@ -532,7 +533,7 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 	computeAll := func(start, end int) {
 		var step fr.Element
 
-		evaluators := make([]*GateEvaluator, nbWires)
+		evaluators := make([]*evaluator.GateEvaluator, nbWires)
 		for w := range nbWires {
 			evaluators[w] = c.gateEvaluatorPools[w].Get()
 		}

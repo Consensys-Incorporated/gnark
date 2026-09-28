@@ -15,16 +15,16 @@ import (
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark-crypto/ecc/bw6-761/fr"
-	"github.com/consensys/gnark-crypto/ecc/bw6-761/fr/mimc"
-	"github.com/consensys/gnark-crypto/ecc/bw6-761/fr/polynomial"
+	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
+	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr/mimc"
+	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr/polynomial"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
 )
 
-var cache = gkrtesting.NewCache(ecc.BW6_761.ScalarField())
+var cache = gkrtesting.NewCache(ecc.BLS12_377.ScalarField())
 
 func TestNoGateTwoInstances(t *testing.T) {
 	// Testing a single instance is not possible because the sumcheck implementation doesn't cover the trivial 0-variate case
@@ -237,7 +237,7 @@ func generateTestVerifier(path string) func(t *testing.T) {
 }
 
 func TestGkrVectors(t *testing.T) {
-	const testDirPath = "../test_vectors/"
+	const testDirPath = "../../internal/gkr/test_vectors/"
 	dirEntries, err := os.ReadDir(testDirPath)
 	assert.NoError(t, err)
 	for _, dirEntry := range dirEntries {

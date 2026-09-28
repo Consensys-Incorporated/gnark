@@ -192,7 +192,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 					}
 					assignment[wireI][instanceI] = *gateEval.Evaluate()
 				}
-				r.memPool.Dump(gateEval.vars)
+				gateEval.Dump()
 			}, minBlockSize).Wait()
 		}
 	}
