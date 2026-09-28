@@ -98,10 +98,8 @@ func (e *zeroCheckLazyClaims) degree(int) int {
 // claims on each wire and c is foldingCoeff.
 // Both purportedValue and the vector r have been randomized during sumcheck.
 //
-// For input wires, the claimed evaluation in uniqueInputEvaluations is trusted here and asserted
-// later, against the assignment, by Claims.Check.
-// For non-input wires, the prover claims evaluations of their gate inputs at r via
-// uniqueInputEvaluations; those claims are verified by lower levels' sumchecks.
+// The prover claims evaluations of each wire's gate inputs at r via uniqueInputEvaluations; those
+// claims are verified by lower levels' sumchecks.
 func (e *zeroCheckLazyClaims) verifyFinalEval(api frontend.API, r []frontend.Variable, purportedValue frontend.Variable, uniqueInputEvaluations []frontend.Variable) error {
 	e.r.outgoingEvalPoints[e.levelI] = [][]frontend.Variable{r}
 	level := e.r.schedule[e.levelI]
@@ -113,12 +111,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(api frontend.API, r []frontend.Var
 		for _, wI := range group.Wires {
 			wire := e.r.circuit[wI]
 
-			var gateEval frontend.Variable
-			if wire.IsInput() {
-				gateEval = perWireInputEvals[levelWireI][0]
-			} else {
-				gateEval = wire.Gate.Evaluate(FrontendAPIWrapper{api}, perWireInputEvals[levelWireI]...)
-			}
+			gateEval := wire.Gate.Evaluate(FrontendAPIWrapper{api}, perWireInputEvals[levelWireI]...)
 
 			for _, src := range group.ClaimSources {
 				eq := polynomial.EvalEq(api, e.r.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], r)
@@ -136,8 +129,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(api frontend.API, r []frontend.Var
 }
 
 // verifySkipLevel checks that the proof's finalEvalProof is consistent with the gate evaluations,
-// and records outgoing eval points. An input wire's claimed value is trusted here and asserted
-// later, against the assignment, by Claims.Check.
+// and records outgoing eval points.
 func (r *resources) verifySkipLevel(levelI int, proof Proof) {
 	level := r.schedule[levelI].(*constraint.GkrSkipLevel)
 	gkrcore.CollectOutgoingEvalPoints(level, levelI, r.outgoingEvalPoints)
@@ -150,15 +142,10 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) {
 		wire := r.circuit[wI]
 		gateIns := make([]frontend.Variable, len(wire.Inputs))
 		for claimI, src := range group.ClaimSources {
-			var gateEval frontend.Variable
-			if wire.IsInput() {
-				gateEval = finalEval[level.FinalEvalProofIndex(inputIndices[levelWireI][0], claimI)]
-			} else {
-				for i, inI := range inputIndices[levelWireI] {
-					gateIns[i] = finalEval[level.FinalEvalProofIndex(inI, claimI)]
-				}
-				gateEval = wire.Gate.Evaluate(FrontendAPIWrapper{r.api}, gateIns...)
+			for i, inI := range inputIndices[levelWireI] {
+				gateIns[i] = finalEval[level.FinalEvalProofIndex(inI, claimI)]
 			}
+			gateEval := wire.Gate.Evaluate(FrontendAPIWrapper{r.api}, gateIns...)
 			claimedEval := proof[src.Level].FinalEvalProof[r.claimValueIndices[wI][claimI]]
 			r.api.AssertIsEqual(claimedEval, gateEval)
 		}

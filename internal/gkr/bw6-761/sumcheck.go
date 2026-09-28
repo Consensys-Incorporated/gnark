@@ -142,12 +142,9 @@ func (e *zeroCheckLazyClaims) degree(int) int {
 // claims on each wire and c is foldingCoeff.
 // Both purportedValue and the vector r have been randomized during sumcheck.
 //
-// For input wires, the claimed evaluation in uniqueInputEvaluations is trusted here and checked
-// later, against the assignment, by Claims.Check.
-// For non-input wires, the prover claims evaluations of their gate inputs at r via
-// uniqueInputEvaluations; those claims are verified by lower levels' sumchecks.
-// The verifier checks consistency by evaluating gateᵥ(inputEvals...) and confirming
-// that the full sum matches purportedValue.
+// The prover claims evaluations of each wire's gate inputs at r via uniqueInputEvaluations; those
+// claims are verified by lower levels' sumchecks. The verifier checks consistency by evaluating
+// gateᵥ(inputEvals...) and confirming that the full sum matches purportedValue.
 func (e *zeroCheckLazyClaims) verifyFinalEval(r []fr.Element, purportedValue fr.Element, uniqueInputEvaluations []fr.Element) error {
 	e.resources.outgoingEvalPoints[e.levelI] = [][]fr.Element{r}
 	level := e.resources.schedule[e.levelI]
@@ -159,21 +156,16 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []fr.Element, purportedValue fr.
 		for _, wI := range group.Wires {
 			wire := e.resources.circuit[wI]
 
-			var gateEval fr.Element
-			if wire.IsInput() {
-				gateEval = gateInputEvals[levelWireI][0]
-			} else {
-				evaluator := newGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
-				for _, v := range gateInputEvals[levelWireI] {
-					evaluator.pushInput(v)
-				}
-				gateEval.Set(evaluator.evaluate())
+			evaluator := newGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
+			for _, v := range gateInputEvals[levelWireI] {
+				evaluator.pushInput(v)
 			}
+			gateEval := evaluator.evaluate()
 
 			for _, src := range group.ClaimSources {
 				eq := polynomial.EvalEq(e.resources.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], r)
 				var term fr.Element
-				term.Mul(&eq, &gateEval)
+				term.Mul(&eq, gateEval)
 				claimedEvals = append(claimedEvals, term)
 			}
 			levelWireI++
@@ -412,11 +404,7 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			wire := r.circuit[wI]
-			gate := wire.Gate.Evaluate
-			if wire.IsInput() {
-				gate = gkrcore.IdentityBytecode()
-			}
-			c.gateEvaluatorPools[levelWireI] = newGateEvaluatorPool(gate, len(inputIndices[levelWireI]), &r.memPool)
+			c.gateEvaluatorPools[levelWireI] = newGateEvaluatorPool(wire.Gate.Evaluate, len(inputIndices[levelWireI]), &r.memPool)
 			levelWireI++
 		}
 	}

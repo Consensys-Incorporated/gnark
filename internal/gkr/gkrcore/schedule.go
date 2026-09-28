@@ -10,19 +10,13 @@ import (
 // InputMapping returns as uniqueInputs the deduplicated list of inputs to the level,
 // and as inputIndices for every wire in the level the list of positions for each of its
 // inputs in the uniqueInputs list.
-// Input wires of the circuit are considered self-input, as a convenience for the sumcheck protocol.
 func (c Circuit[G]) InputMapping(level constraint.GkrProvingLevel) (uniqueInputs []int, inputIndices [][]int) {
 	seen := make(map[int]int) // wire index → position in uniqueInputs
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			wire := c[wI]
-			inputs := wire.Inputs
-			if wire.IsInput() {
-				inputs = []int{wI}
-			}
-
-			indices := make([]int, len(inputs))
-			for inWI, inW := range inputs {
+			indices := make([]int, len(wire.Inputs))
+			for inWI, inW := range wire.Inputs {
 				pos, ok := seen[inW]
 				if !ok {
 					pos = len(uniqueInputs)
@@ -39,7 +33,6 @@ func (c Circuit[G]) InputMapping(level constraint.GkrProvingLevel) (uniqueInputs
 
 // UniqueGateInputs returns the unique gate input wire indices for all wires in the level,
 // deduplicated in batch-then-wire-then-input order (first occurrence wins).
-// For circuit input wires (no gate inputs), the wire itself is returned.
 func (c Circuit[G]) UniqueGateInputs(level constraint.GkrProvingLevel) []int {
 	uniqueInputs, _ := c.InputMapping(level)
 	return uniqueInputs
@@ -49,12 +42,7 @@ func (c Circuit[G]) ZeroCheckDegree(level constraint.GkrProvingLevel) int {
 	maxDeg := 0
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
-			w := &c[wI]
-			curr := 1
-			if !w.IsInput() {
-				curr = w.Gate.Degree
-			}
-			maxDeg = max(maxDeg, curr)
+			maxDeg = max(maxDeg, c[wI].Gate.Degree)
 		}
 	}
 

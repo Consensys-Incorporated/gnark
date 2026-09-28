@@ -93,8 +93,7 @@ func (r *resources) proveSkipLevel(levelI int) sumcheckProof {
 }
 
 // verifySkipLevel verifies a SkipSumcheck level: checks that the finalEvalProof is consistent with
-// the gate evaluations, and records outgoing eval points. An input wire's claimed value is
-// trusted here and checked later, against the assignment, by Claims.Check.
+// the gate evaluations, and records outgoing eval points.
 func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 	level := r.schedule[levelI].(*constraint.GkrSkipLevel)
 	gkrcore.CollectOutgoingEvalPoints(level, levelI, r.outgoingEvalPoints)
@@ -107,18 +106,13 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 		wire := r.circuit[wI]
 		evaluator := newGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
 		for claimI, src := range group.ClaimSources {
-			var gateEval {{ .ElementType }}
-			if wire.IsInput() {
-				gateEval = finalEval[level.FinalEvalProofIndex(inputIndices[levelWireI][0], claimI)]
-			} else {
-				for _, inI := range inputIndices[levelWireI] {
-					evaluator.pushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
-				}
-				gateEval.Set(evaluator.evaluate())
+			for _, inI := range inputIndices[levelWireI] {
+				evaluator.pushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
 			}
+			gateEval := evaluator.evaluate()
 			claimedEval := proof[src.Level].finalEvalProof[r.claimValueIndices[wI][claimI]]
-			if !claimedEval.Equal(&gateEval) {
-				return fmt.Errorf("level %d wire %d claim %d: claimed eval %v disagrees with gate eval %v", levelI, wI, claimI, &claimedEval, &gateEval)
+			if !claimedEval.Equal(gateEval) {
+				return fmt.Errorf("level %d wire %d claim %d: claimed eval %v disagrees with gate eval %v", levelI, wI, claimI, &claimedEval, gateEval)
 			}
 		}
 	}
