@@ -86,7 +86,7 @@ func (api *API) Compile(fiatshamirHashName string, options ...CompileOption) (*C
 		return nil, err
 	}
 
-	schedule, err := gkrcore.DefaultProvingSchedule(serializableCircuit)
+	schedule, err := gkrcore.DefaultProvingSchedule(serializableCircuit, gkrcore.SNARKConsolidationMode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute proving schedule: %w", err)
 	}

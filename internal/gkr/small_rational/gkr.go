@@ -134,11 +134,10 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 	return nil
 }
 
-// levelPredicates returns the bind and include predicates for level levelI's unique gate inputs,
-// per Level 0's binding and claims rules. Level 0 binds nothing and returns every one of its wires
-// (self-referencing on the consolidation view); every other level binds every unique gate input
-// that is not an unconsolidated circuit input, and returns claims for exactly those it withholds
-// from binding.
+// levelPredicates returns the bind and include predicates for level levelI's unique gate inputs.
+// Level 0 binds nothing and returns every one of its wires (self-referencing on the consolidation
+// view); every other level binds every unique gate input that is not an unconsolidated circuit
+// input, and returns claims for exactly those it withholds from binding.
 func (r *resources) levelPredicates(levelI int) (bind, include func(wI int) bool) {
 	if levelI == 0 {
 		return func(int) bool { return false }, func(int) bool { return true }
@@ -167,7 +166,8 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 }
 
 // Prove consistency of the claimed assignment. It returns the evaluation claims on the circuit's
-// inputs and outputs; the caller must check them.
+// inputs and outputs; the caller must check them. The claim values returned to the caller, the
+// output evaluations among them, are not bound into the transcript.
 func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.Hash) (Proof, Claims, error) {
 	nbInstances := assignment.NumInstances()
 	nbVars := assignment.NumVars()
@@ -196,7 +196,13 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 		outputEvals[i] = r.assignment[w].Evaluate(firstChallenge, &r.memPool)
 	}
 	proof[len(schedule)] = sumcheckProof{finalEvalProof: outputEvals}
-	r.transcript.Bind(outputEvals...)
+	var boundOutputEvals []small_rational.SmallRational
+	for i, w := range outputs {
+		if r.consolidated[w] {
+			boundOutputEvals = append(boundOutputEvals, outputEvals[i])
+		}
+	}
+	r.transcript.Bind(boundOutputEvals...)
 	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputEvals, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
@@ -233,7 +239,8 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // Verify the consistency of the claimed output with the claimed input, and return the evaluation
 // claims on the circuit's inputs and outputs. A nil error means nothing until the returned Claims
 // are checked: Verify reads no assignment, so the caller must call Claims.Check itself. The claim
-// values returned to the caller unconsolidated are not bound into the transcript.
+// values returned to the caller, the output evaluations among them, are not bound into the
+// transcript.
 func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.Hash) (Claims, error) {
 	r := newResources(c, schedule, logNbInstances, hasher)
 
@@ -274,7 +281,13 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 		firstChallenge[j] = r.transcript.getChallenge()
 	}
 	r.outgoingEvalPoints[len(schedule)] = [][]small_rational.SmallRational{firstChallenge}
-	r.transcript.Bind(outputLevel.finalEvalProof...)
+	var boundOutputEvals []small_rational.SmallRational
+	for i, w := range c.Outputs() {
+		if r.consolidated[w] {
+			boundOutputEvals = append(boundOutputEvals, outputLevel.finalEvalProof[i])
+		}
+	}
+	r.transcript.Bind(boundOutputEvals...)
 	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.finalEvalProof, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {

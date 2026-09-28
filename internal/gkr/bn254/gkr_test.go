@@ -163,11 +163,17 @@ func test(t *testing.T, circuit gkrcore.RawCircuit) {
 
 func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constraint.GkrProvingSchedule) {
 	gCircuit, sCircuit := cache.Compile(t, circuit)
+
+	schedules := []constraint.GkrProvingSchedule{schedule}
 	if schedule == nil {
-		var err error
-		schedule, err = gkrcore.DefaultProvingSchedule(sCircuit)
-		assert.NoError(t, err)
+		schedules = nil
+		for _, mode := range []gkrcore.ConsolidationMode{gkrcore.ConsolidateAll, gkrcore.ConsolidateMultiClaimInputsOnly, gkrcore.ConsolidateNone} {
+			s, err := gkrcore.DefaultProvingSchedule(sCircuit, mode)
+			assert.NoError(t, err)
+			schedules = append(schedules, s)
+		}
 	}
+
 	ins := gCircuit.Inputs()
 	insAssignment := make(WireAssignment, len(ins))
 	maxSize := 1 << gkrtesting.GetLogMaxInstances(t)
@@ -185,14 +191,16 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 
 		fullAssignment.Complete(sCircuit)
 
-		proveAndVerify(t, sCircuit, schedule, fullAssignment)
+		for _, s := range schedules {
+			proveAndVerify(t, sCircuit, s, fullAssignment)
+		}
 	}
 }
 
 func testNoGate(t *testing.T, inputAssignments ...[]fr.Element) {
 	_, c := cache.Compile(t, gkrtesting.NoGateCircuit())
 
-	schedule, err := gkrcore.DefaultProvingSchedule(c)
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	assert.NoError(t, err)
 
 	assignment := WireAssignment{0: inputAssignments[0]}
@@ -274,7 +282,7 @@ func benchmarkGkrMiMC(b *testing.B, nbInstances, mimcDepth int) {
 	fmt.Println("creating circuit structure")
 	_, c := cache.Compile(b, gkrtesting.MiMCCircuit(mimcDepth))
 
-	schedule, err := gkrcore.DefaultProvingSchedule(c)
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	assert.NoError(b, err)
 
 	in0 := make([]fr.Element, nbInstances)
@@ -503,7 +511,7 @@ func newTestCase(path string) (*TestCase, error) {
 		return nil, err
 	}
 	if schedule == nil {
-		if schedule, err = gkrcore.DefaultProvingSchedule(circuit); err != nil {
+		if schedule, err = gkrcore.DefaultProvingSchedule(circuit, gkrcore.SNARKConsolidationMode); err != nil {
 			return nil, err
 		}
 	}

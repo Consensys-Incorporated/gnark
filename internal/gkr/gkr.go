@@ -233,11 +233,10 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 	return lazyClaims.verifyFinalEval(r.api, challenges, claimedSum, proof[levelI].FinalEvalProof)
 }
 
-// levelPredicates returns the bind and include predicates for level levelI's unique gate inputs,
-// per Level 0's binding and claims rules. Level 0 binds nothing and returns every one of its wires
-// (self-referencing on the consolidation view); every other level binds every unique gate input
-// that is not an unconsolidated circuit input, and returns claims for exactly those it withholds
-// from binding.
+// levelPredicates returns the bind and include predicates for level levelI's unique gate inputs.
+// Level 0 binds nothing and returns every one of its wires (self-referencing on the consolidation
+// view); every other level binds every unique gate input that is not an unconsolidated circuit
+// input, and returns claims for exactly those it withholds from binding.
 func (r *resources) levelPredicates(levelI int) (bind, include func(wI int) bool) {
 	if levelI == 0 {
 		return func(int) bool { return false }, func(int) bool { return true }
@@ -269,7 +268,8 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // Verify the consistency of the claimed output with the claimed input, and return the evaluation
 // claims on the circuit's inputs and outputs. A nil error means nothing until the returned Claims
 // are checked: Verify reads no assignment, so the caller must call Claims.Check itself. The claim
-// values returned to the caller unconsolidated are not bound into the transcript.
+// values returned to the caller, the output evaluations among them, are not bound into the
+// transcript.
 func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, h hash.FieldHasher) (Claims, error) {
 	r := &resources{
 		api:                api,
@@ -320,7 +320,13 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 		firstChallenge[j] = r.t.getChallenge()
 	}
 	r.outgoingEvalPoints[initialChallengeI] = [][]frontend.Variable{firstChallenge}
-	r.t.Bind(outputLevel.FinalEvalProof...)
+	var boundOutputEvals []frontend.Variable
+	for i, w := range c.Outputs() {
+		if r.consolidated[w] {
+			boundOutputEvals = append(boundOutputEvals, outputLevel.FinalEvalProof[i])
+		}
+	}
+	r.t.Bind(boundOutputEvals...)
 	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.FinalEvalProof, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {

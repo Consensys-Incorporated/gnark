@@ -196,7 +196,7 @@ func getTestCase(path string) (*testCase, error) {
 			serializableCircuit, gadgetCircuit := cache.GetCircuit(filepath.Join(dir, info.Circuit))
 			cse.Circuit = gadgetCircuit
 
-			schedule, schedErr := gkrcore.DefaultProvingSchedule(serializableCircuit)
+			schedule, schedErr := gkrcore.DefaultProvingSchedule(serializableCircuit, gkrcore.SNARKConsolidationMode)
 			if schedErr != nil {
 				return nil, schedErr
 			}

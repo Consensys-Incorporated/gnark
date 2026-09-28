@@ -351,10 +351,76 @@ func batchForWire[G any](c Circuit[G], highWI int, readyWireClaimSources [][]con
 	return
 }
 
+// ConsolidationMode selects which wires DefaultProvingSchedule consolidates into level 0.
+type ConsolidationMode int
+
+const (
+	// ConsolidateAll consolidates every circuit input and every output.
+	ConsolidateAll ConsolidationMode = iota
+	// ConsolidateMultiClaimInputsOnly consolidates every circuit input with at least 2 claims.
+	// A non-input wire never has more than one, so no output is ever consolidated.
+	ConsolidateMultiClaimInputsOnly
+	// ConsolidateNone consolidates nothing; level 0 is always the empty skip level.
+	ConsolidateNone
+)
+
+// SNARKConsolidationMode is the mode std/gkrapi compiles circuits with.
+const SNARKConsolidationMode = ConsolidateMultiClaimInputsOnly
+
+// level0Groups selects the wires DefaultProvingSchedule consolidates into level 0 under mode, and
+// groups them: a circuit input keeps its full claim-source list computed by the builder, while a
+// non-input output is reduced to its output-level source alone, since its other claim sources are
+// already reduced by its own gate level. Wires with equal claim-source lists share a group. Wires
+// are visited in decreasing index order, so within a group wires come out in decreasing order, and
+// groups come out in decreasing order of their first (highest) wire.
+func (b *scheduleBuilder[G]) level0Groups(mode ConsolidationMode) []constraint.GkrClaimGroup {
+	if mode == ConsolidateNone {
+		return nil
+	}
+
+	var groups []constraint.GkrClaimGroup
+	for wI := len(b.circuit) - 1; wI >= 0; wI-- {
+		w := b.circuit[wI]
+		var sources []constraint.GkrClaimSource
+		switch {
+		case w.IsInput():
+			sources, _ = b.claimSources(wI)
+			if mode == ConsolidateMultiClaimInputsOnly && len(sources) < 2 {
+				continue
+			}
+		case mode == ConsolidateAll && (w.Exported || len(b.wireOutputs[wI]) == 0):
+			sources = []constraint.GkrClaimSource{{Level: -1, OutgoingClaimIndex: 0}}
+		default:
+			continue
+		}
+
+		i := slices.IndexFunc(groups, func(g constraint.GkrClaimGroup) bool {
+			return slices.Equal(g.ClaimSources, sources)
+		})
+		if i == -1 {
+			groups = append(groups, constraint.GkrClaimGroup{ClaimSources: sources})
+			i = len(groups) - 1
+		}
+		groups[i].Wires = append(groups[i].Wires, wI)
+	}
+	return groups
+}
+
+// newLevel0 builds level 0 from its claim groups: the empty GkrSkipLevel{} when there is nothing
+// to consolidate, or the consolidated claims already share one point (one group, with a single
+// source) and so have nothing to gain from a level of their own, a GkrSumcheckLevel otherwise.
+func newLevel0(groups []constraint.GkrClaimGroup) constraint.GkrProvingLevel {
+	if len(groups) == 0 || (len(groups) == 1 && len(groups[0].ClaimSources) == 1) {
+		return &constraint.GkrSkipLevel{}
+	}
+	lvl := constraint.GkrSumcheckLevel(groups)
+	return &lvl
+}
+
 // DefaultProvingSchedule generates a schedule that gives every input wire no level, and greedily
 // batches non-input wires of matching degree and claim sources into shared levels. Level 0, always
-// present, is the consolidation level; it is empty.
-func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule, error) {
+// present, is the consolidation level, built per mode.
+func DefaultProvingSchedule[G any](c Circuit[G], mode ConsolidationMode) (constraint.GkrProvingSchedule, error) {
 	b := newScheduleBuilder(c)
 
 	for b.firstUnprocessedWire >= 0 {
@@ -396,8 +462,7 @@ func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule,
 		}
 	}
 
-	// Level 0, the consolidation level, is empty.
-	b.levels = append(b.levels, &constraint.GkrSkipLevel{})
+	b.levels = append(b.levels, newLevel0(b.level0Groups(mode)))
 	return b.finalize()
 }
 

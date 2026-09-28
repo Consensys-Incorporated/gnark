@@ -9,10 +9,8 @@ import (
 )
 
 // TestGkrScheduleCBORRoundTrip checks that a GkrProvingSchedule whose level 0 is the empty
-// &GkrSkipLevel{} that DefaultProvingSchedule now always produces survives the CBOR round trip
-// the blueprint uses to store a schedule with the constraint system, using the encoding of
-// getTagSet(). SerializeSchedule cannot check this: it only writes, to hash the schedule into the
-// initial challenge, and has no reader.
+// &GkrSkipLevel{} survives the CBOR round trip the blueprint uses to store a schedule with the
+// constraint system, using the encoding of getTagSet().
 func TestGkrScheduleCBORRoundTrip(t *testing.T) {
 	schedule := GkrProvingSchedule{
 		&GkrSkipLevel{},

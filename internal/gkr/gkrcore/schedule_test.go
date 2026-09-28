@@ -14,17 +14,95 @@ var scheduleTestCache = gkrtesting.NewCache(ecc.BN254.ScalarField())
 
 func TestDefaultProvingSchedule(t *testing.T) {
 	_, c := scheduleTestCache.Compile(t, gkrtesting.SingleMulGateCircuit())
-	schedule, err := gkrcore.DefaultProvingSchedule(c)
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	require.NoError(t, err)
 
 	// SingleMulGateCircuit: wires 0, 1 (inputs, no level), 2 (mul gate with inputs 0, 1).
 	// 2 = len(schedule) = initial challenge sentinel.
 	require.Equal(t, constraint.GkrProvingSchedule{
-		// Level 0: consolidation, empty for now.
+		// Level 0: consolidation, empty (nothing selected under ConsolidateNone).
 		&constraint.GkrSkipLevel{},
 		// Level 1: mul gate output, claimed by initial challenge (sentinel)
 		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
 	}, schedule)
+}
+
+// TestDefaultProvingScheduleSingleMulConsolidateAll checks level 0 for SingleMulGateCircuit under
+// ConsolidateAll: wires 0 and 1 (inputs) share a single claim source (both feed the same, only,
+// gate), so they share one group; wire 2 (the output) gets its own group with the output-level
+// source alone.
+func TestDefaultProvingScheduleSingleMulConsolidateAll(t *testing.T) {
+	_, c := scheduleTestCache.Compile(t, gkrtesting.SingleMulGateCircuit())
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateAll)
+	require.NoError(t, err)
+
+	require.Equal(t, constraint.GkrProvingSchedule{
+		&constraint.GkrSumcheckLevel{
+			{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
+			{Wires: []int{1, 0}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}}},
+		},
+		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
+	}, schedule)
+}
+
+// TestDefaultProvingScheduleSingleMulConsolidateMultiClaimInputsOnly checks that
+// ConsolidateMultiClaimInputsOnly leaves level 0 empty for SingleMulGateCircuit: both inputs have
+// exactly one claim each, so neither qualifies, and the output is never a candidate under this mode.
+func TestDefaultProvingScheduleSingleMulConsolidateMultiClaimInputsOnly(t *testing.T) {
+	_, c := scheduleTestCache.Compile(t, gkrtesting.SingleMulGateCircuit())
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateMultiClaimInputsOnly)
+	require.NoError(t, err)
+
+	require.Equal(t, constraint.GkrProvingSchedule{
+		&constraint.GkrSkipLevel{},
+		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
+	}, schedule)
+}
+
+// TestDefaultProvingScheduleNoGateConsolidateAll checks that ConsolidateAll leaves level 0 the
+// empty skip level for NoGateCircuit: its one wire is both the circuit's only input and its only
+// output, so it is selected, but its only claim source is the sentinel alone — the selected claims
+// already share one point, with nothing to consolidate.
+func TestDefaultProvingScheduleNoGateConsolidateAll(t *testing.T) {
+	_, c := scheduleTestCache.Compile(t, gkrtesting.NoGateCircuit())
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateAll)
+	require.NoError(t, err)
+
+	require.Equal(t, constraint.GkrProvingSchedule{
+		&constraint.GkrSkipLevel{},
+	}, schedule)
+}
+
+// TestDefaultProvingSchedulePoseidon2ConsolidateAll checks level 0 for Poseidon2Circuit(4, 2) under
+// ConsolidateAll. Levels 1-15 are unaffected by the mode, so only level 0 is spelled out here; see
+// TestDefaultProvingSchedulePoseidon2 for their shape. Wire 24 (the feed-forward output) gets its
+// own group; wire 1 (the state input, claimed by round 0's lin gates and by the feed-forward gate)
+// keeps its two claim sources; wire 0 (the key input, claimed only by round 0's lin gates) gets its
+// own group with a single source.
+func TestDefaultProvingSchedulePoseidon2ConsolidateAll(t *testing.T) {
+	_, c := scheduleTestCache.Compile(t, gkrtesting.Poseidon2Circuit(4, 2))
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateAll)
+	require.NoError(t, err)
+
+	require.Equal(t, &constraint.GkrSumcheckLevel{
+		{Wires: []int{24}, ClaimSources: []constraint.GkrClaimSource{{Level: 16}}},
+		{Wires: []int{1}, ClaimSources: []constraint.GkrClaimSource{{Level: 15}, {Level: 1}}},
+		{Wires: []int{0}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}}},
+	}, schedule[0])
+}
+
+// TestDefaultProvingSchedulePoseidon2ConsolidateMultiClaimInputsOnly checks level 0 for
+// Poseidon2Circuit(4, 2) under ConsolidateMultiClaimInputsOnly: only wire 1 (the state input) has
+// more than one claim, so it alone is consolidated; wire 0 (a single claim) and the output are left
+// unconsolidated.
+func TestDefaultProvingSchedulePoseidon2ConsolidateMultiClaimInputsOnly(t *testing.T) {
+	_, c := scheduleTestCache.Compile(t, gkrtesting.Poseidon2Circuit(4, 2))
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateMultiClaimInputsOnly)
+	require.NoError(t, err)
+
+	require.Equal(t, &constraint.GkrSumcheckLevel{
+		{Wires: []int{1}, ClaimSources: []constraint.GkrClaimSource{{Level: 15}, {Level: 1}}},
+	}, schedule[0])
 }
 
 // TestDefaultProvingScheduleMultiSourceWire tests that a wire with multiple claim sources
@@ -48,13 +126,13 @@ func TestDefaultProvingScheduleMultiSourceWire(t *testing.T) {
 		{Gate: gkrcore.Mul2, Inputs: []int{3, 3}},                 // wire 4: mul(3,3)
 	}
 	_, c := scheduleTestCache.Compile(t, raw)
-	_, err := gkrcore.DefaultProvingSchedule(c)
+	_, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	require.NoError(t, err)
 }
 
 func TestDefaultProvingSchedulePoseidon2(t *testing.T) {
 	_, c := scheduleTestCache.Compile(t, gkrtesting.Poseidon2Circuit(4, 2))
-	schedule, err := gkrcore.DefaultProvingSchedule(c)
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	require.NoError(t, err)
 
 	// Wire layout for Poseidon2Circuit(4, 2) — 25 wires total:
@@ -75,7 +153,7 @@ func TestDefaultProvingSchedulePoseidon2(t *testing.T) {
 	//
 	// Wires 0 and 1 (inputs) get no level. 16 = len(schedule) = initial challenge sentinel.
 	require.Equal(t, constraint.GkrProvingSchedule{
-		// Level 0: consolidation, empty for now.
+		// Level 0: consolidation, empty (nothing selected under ConsolidateNone).
 		&constraint.GkrSkipLevel{},
 
 		// Level 1: full-round 0 lin1+lin0 (skip, inputs from wires 0 and 1).
@@ -139,12 +217,12 @@ func TestDefaultProvingScheduleMiMCDepth2(t *testing.T) {
 	// Both inputs are claimed by exactly the round gate and the final gate (schedule levels 2 and 3),
 	// so they have identical claim sources and share a single claim group in one sumcheck level.
 	_, c := scheduleTestCache.Compile(t, gkrtesting.MiMCCircuit(2))
-	schedule, err := gkrcore.DefaultProvingSchedule(c)
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	require.NoError(t, err)
 
 	// Wires 0 and 1 (inputs) get no level. 3 = len(schedule) = initial challenge sentinel.
 	require.Equal(t, constraint.GkrProvingSchedule{
-		// Level 0: consolidation, empty for now.
+		// Level 0: consolidation, empty (nothing selected under ConsolidateNone).
 		&constraint.GkrSkipLevel{},
 		// Levels 1–2: the gates, each single-source zero-check (degree 3 > 1).
 		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
@@ -163,12 +241,12 @@ func TestDefaultProvingScheduleMiMCDepth3(t *testing.T) {
 	//   3      round 2: mimcGate(0, 2)
 	//   4      final:   mimcLastGate(0, 3, 1)
 	_, c := scheduleTestCache.Compile(t, gkrtesting.MiMCCircuit(3))
-	schedule, err := gkrcore.DefaultProvingSchedule(c)
+	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	require.NoError(t, err)
 
 	// Wires 0 and 1 (inputs) get no level. 4 = len(schedule) = initial challenge sentinel.
 	require.Equal(t, constraint.GkrProvingSchedule{
-		// Level 0: consolidation, empty for now.
+		// Level 0: consolidation, empty (nothing selected under ConsolidateNone).
 		&constraint.GkrSkipLevel{},
 		// Levels 1–3: the gates, each single-source zero-check (degree 3 > 1).
 		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
