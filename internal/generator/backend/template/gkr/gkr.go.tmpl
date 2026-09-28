@@ -119,6 +119,24 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 	return nil
 }
 
+// proveLevel proves level levelI: computes its proof entry, binds its values, and appends its claims.
+func (r *resources) proveLevel(levelI int) sumcheckProof {
+	var entry sumcheckProof
+	switch r.schedule[levelI].(type) {
+	case *constraint.GkrSkipLevel:
+		entry = r.proveSkipLevel(levelI)
+	case *constraint.GkrSingleSourceZeroCheckLevel:
+		entry = r.proveSingleSourceZeroCheckLevel(levelI)
+	case *constraint.GkrSumcheckLevel:
+		entry = r.proveSumcheckLevel(levelI)
+	default:
+		panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
+	}
+	constraint.BindGkrFinalEvalProof(&r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), r.circuit.IsInput, r.schedule[levelI])
+	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], entry.finalEvalProof, r.outgoingEvalPoints[levelI])
+	return entry
+}
+
 // Prove consistency of the claimed assignment. It returns the evaluation claims on the circuit's
 // inputs and outputs; the caller must check them.
 func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.Hash) (Proof, Claims, error) {
@@ -152,22 +170,33 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	r.transcript.Bind(outputEvals...)
 	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputEvals)
 
-	for levelI := len(schedule) - 1; levelI >= 0; levelI-- {
-		switch r.schedule[levelI].(type) {
-		case *constraint.GkrSkipLevel:
-			proof[levelI] = r.proveSkipLevel(levelI)
-		case *constraint.GkrSingleSourceZeroCheckLevel:
-			proof[levelI] = r.proveSingleSourceZeroCheckLevel(levelI)
-		case *constraint.GkrSumcheckLevel:
-			proof[levelI] = r.proveSumcheckLevel(levelI)
-		default:
-			panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
-		}
-		constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, c.UniqueGateInputs(r.schedule[levelI]), c.IsInput, r.schedule[levelI])
-		gkrcore.AppendLevelClaims(r.claims, c, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI])
+	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
+		proof[levelI] = r.proveLevel(levelI)
 	}
+	proof[0] = r.proveLevel(0)
 
 	return proof, r.claims, nil
+}
+
+// verifyLevel verifies level levelI: checks its proof entry, binds its values, and appends its claims.
+func (r *resources) verifyLevel(levelI int, proof Proof) error {
+	var err error
+	switch r.schedule[levelI].(type) {
+	case *constraint.GkrSkipLevel:
+		err = r.verifySkipLevel(levelI, proof)
+	case *constraint.GkrSingleSourceZeroCheckLevel:
+		err = r.verifySingleSourceZeroCheckLevel(levelI, proof)
+	case *constraint.GkrSumcheckLevel:
+		err = r.verifySumcheckLevel(levelI, proof)
+	default:
+		panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
+	}
+	if err != nil {
+		return fmt.Errorf("level %d: %v", levelI, err)
+	}
+	constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), r.circuit.IsInput, r.schedule[levelI])
+	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI])
+	return nil
 }
 
 // Verify the consistency of the claimed output with the claimed input, and return the evaluation
@@ -211,23 +240,13 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 	r.transcript.Bind(outputLevel.finalEvalProof...)
 	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.finalEvalProof)
 
-	for levelI := len(schedule) - 1; levelI >= 0; levelI-- {
-		var err error
-		switch r.schedule[levelI].(type) {
-		case *constraint.GkrSkipLevel:
-			err = r.verifySkipLevel(levelI, proof)
-		case *constraint.GkrSingleSourceZeroCheckLevel:
-			err = r.verifySingleSourceZeroCheckLevel(levelI, proof)
-		case *constraint.GkrSumcheckLevel:
-			err = r.verifySumcheckLevel(levelI, proof)
-		default:
-			panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
+	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
+		if err := r.verifyLevel(levelI, proof); err != nil {
+			return nil, err
 		}
-		if err != nil {
-			return nil, fmt.Errorf("level %d: %v", levelI, err)
-		}
-		constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, c.UniqueGateInputs(r.schedule[levelI]), c.IsInput, r.schedule[levelI])
-		gkrcore.AppendLevelClaims(r.claims, c, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI])
+	}
+	if err := r.verifyLevel(0, proof); err != nil {
+		return nil, err
 	}
 	return r.claims, nil
 }

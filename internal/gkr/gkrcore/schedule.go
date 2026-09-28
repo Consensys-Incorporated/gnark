@@ -315,7 +315,8 @@ func batchForWire[G any](c Circuit[G], highWI int, readyWireClaimSources [][]con
 }
 
 // DefaultProvingSchedule generates a schedule that gives every input wire no level, and greedily
-// batches non-input wires of matching degree and claim sources into shared levels.
+// batches non-input wires of matching degree and claim sources into shared levels. Level 0, always
+// present, is the consolidation level; it is empty.
 func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule, error) {
 	b := newScheduleBuilder(c)
 
@@ -357,12 +358,18 @@ func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule,
 			return nil, err
 		}
 	}
+
+	// Level 0, the consolidation level, is empty.
+	b.levels = append(b.levels, &constraint.GkrSkipLevel{})
 	return b.finalize()
 }
 
 // ClaimValueIndices returns claimValueIndices[wI][claimI], the index of the value of wire wI's
 // claimI-th claim in the finalEvalProof of that claim's source level.
 // For the sentinel initial-challenge claim, it is wI's position in c.Outputs().
+// A wire's row is built at the highest level containing it. A non-input output can also be in
+// level 0, whose only claim source for it is the initial challenge; that source comes first in the
+// row by GkrClaimGroup's order, so level 0 reads the row unchanged.
 func (c Circuit[G]) ClaimValueIndices(schedule constraint.GkrProvingSchedule) [][]int {
 	cache := make([]map[int]int, len(schedule)) // cache[levelI][wireI] is the unique input index of wireI in levelI.
 	res := make([][]int, len(c))
@@ -386,6 +393,9 @@ func (c Circuit[G]) ClaimValueIndices(schedule constraint.GkrProvingSchedule) []
 					}
 				}
 
+				if res[wI] != nil { // row already built at a higher level
+					continue
+				}
 				for _, claimSource := range group.ClaimSources {
 					if claimSource.Level == len(schedule) { // output
 						res[wI] = append(res[wI], outputPos[wI])

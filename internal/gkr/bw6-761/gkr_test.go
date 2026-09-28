@@ -281,11 +281,12 @@ func TestSingleMulGateExplicitSchedule(t *testing.T) {
 	_, sCircuit := cache.Compile(t, circuit)
 
 	// Wire 2 is the mul gate output (inputs: 0, 1).
-	// Explicit schedule: one GkrProvingLevel for wire 2.
-	// GkrClaimSource{Level:1} is the initial-challenge sentinel (len(schedule)=1).
+	// Explicit schedule: an empty level 0 (consolidation), then one GkrProvingLevel for wire 2.
+	// GkrClaimSource{Level:2} is the initial-challenge sentinel (len(schedule)=2).
 	schedule := constraint.GkrProvingSchedule{
+		&constraint.GkrSkipLevel{},
 		&constraint.GkrSumcheckLevel{
-			{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}}},
+			{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
 		},
 	}
 	testWithSchedule(t, circuit, schedule)
@@ -303,12 +304,13 @@ func TestTwoGroupsExplicitSchedule(t *testing.T) {
 		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
 		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
 	}
-	// One level, two claim groups, covering the whole circuit.
-	// GkrClaimSource{Level:1} is the initial-challenge sentinel (len(schedule)=1).
+	// An empty level 0 (consolidation), then one level, two claim groups, covering the whole
+	// circuit. GkrClaimSource{Level:2} is the initial-challenge sentinel (len(schedule)=2).
 	schedule := constraint.GkrProvingSchedule{
+		&constraint.GkrSkipLevel{},
 		&constraint.GkrSumcheckLevel{
-			{Wires: []int{3}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}}},
-			{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}}},
+			{Wires: []int{3}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
+			{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
 		},
 	}
 	testWithSchedule(t, circuit, schedule)
@@ -325,11 +327,13 @@ func TestMixedGroupsExplicitSchedule(t *testing.T) {
 		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
 		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
 	}
-	// One level, two claim groups (one single-wire, one two-wire), covering the whole circuit.
+	// An empty level 0 (consolidation), then one level, two claim groups (one single-wire, one
+	// two-wire), covering the whole circuit.
 	schedule := constraint.GkrProvingSchedule{
+		&constraint.GkrSkipLevel{},
 		&constraint.GkrSumcheckLevel{
-			{Wires: []int{4}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}}},
-			{Wires: []int{3, 2}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}}},
+			{Wires: []int{4}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
+			{Wires: []int{3, 2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
 		},
 	}
 	testWithSchedule(t, circuit, schedule)

@@ -226,6 +226,25 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 	return lazyClaims.verifyFinalEval(r.api, challenges, claimedSum, proof[levelI].FinalEvalProof)
 }
 
+// verifyLevel verifies level levelI: checks its proof entry, binds its values, and appends its claims.
+func (r *resources) verifyLevel(levelI int, proof Proof) error {
+	switch r.schedule[levelI].(type) {
+	case *constraint.GkrSkipLevel:
+		r.verifySkipLevel(levelI, proof)
+	case *constraint.GkrSingleSourceZeroCheckLevel:
+		if err := r.verifySingleSourceZeroCheckLevel(levelI, proof); err != nil {
+			return err
+		}
+	default:
+		if err := r.verifySumcheckLevel(levelI, proof); err != nil {
+			return err
+		}
+	}
+	constraint.BindGkrFinalEvalProof(r.t, proof[levelI].FinalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), r.circuit.IsInput, r.schedule[levelI])
+	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].FinalEvalProof, r.outgoingEvalPoints[levelI])
+	return nil
+}
+
 // Verify the consistency of the claimed output with the claimed input, and return the evaluation
 // claims on the circuit's inputs and outputs. A nil error means nothing until the returned Claims
 // are checked: Verify reads no assignment, so the caller must call Claims.Check itself. The claim
@@ -276,21 +295,13 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 	r.t.Bind(outputLevel.FinalEvalProof...)
 	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.FinalEvalProof)
 
-	for levelI := len(schedule) - 1; levelI >= 0; levelI-- {
-		switch schedule[levelI].(type) {
-		case *constraint.GkrSkipLevel:
-			r.verifySkipLevel(levelI, proof)
-		case *constraint.GkrSingleSourceZeroCheckLevel:
-			if err := r.verifySingleSourceZeroCheckLevel(levelI, proof); err != nil {
-				return nil, err
-			}
-		default:
-			if err := r.verifySumcheckLevel(levelI, proof); err != nil {
-				return nil, err
-			}
+	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
+		if err := r.verifyLevel(levelI, proof); err != nil {
+			return nil, err
 		}
-		constraint.BindGkrFinalEvalProof(r.t, proof[levelI].FinalEvalProof, c.UniqueGateInputs(schedule[levelI]), c.IsInput, schedule[levelI])
-		gkrcore.AppendLevelClaims(r.claims, c, schedule[levelI], proof[levelI].FinalEvalProof, r.outgoingEvalPoints[levelI])
+	}
+	if err := r.verifyLevel(0, proof); err != nil {
+		return nil, err
 	}
 	return r.claims, nil
 }
