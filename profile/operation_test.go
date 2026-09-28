@@ -3,6 +3,7 @@
 package profile_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -301,4 +302,24 @@ func TestWithoutBoth(t *testing.T) {
 	}()
 
 	_ = profile.Start(profile.WithNoOutput(), profile.WithoutConstraints(), profile.WithoutOperations())
+}
+
+func TestTopSampleIndex(t *testing.T) {
+	p := profile.Start(profile.WithNoOutput())
+
+	profile.RecordConstraint()
+	profile.RecordConstraint()
+	profile.RecordOperation("test.op", 1)
+	profile.RecordOperation("test.op", 1)
+	profile.RecordOperation("test.op", 1)
+
+	p.Stop()
+
+	// Top reports constraints, TopOperations reports operations
+	if top := p.Top(); !strings.Contains(top, "of 2 total") {
+		t.Errorf("expected Top() to report 2 constraints, got:\n%s", top)
+	}
+	if top := p.TopOperations(); !strings.Contains(top, "of 3 total") {
+		t.Errorf("expected TopOperations() to report 3 operations, got:\n%s", top)
+	}
 }
