@@ -18,4 +18,4 @@ type GateAPI = gkr.GateAPI
 type GateFunction = gkr.GateFunction
 
 // GateName is a string representing a (human-readable) name for a GKR gate.
-type GateName = gkr.GateName
+type GateName = gkr.GateName // nolint SA1019

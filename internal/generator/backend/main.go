@@ -307,6 +307,7 @@ func generateGkrBackend(cfg gkrConfig) error {
 	// gkr backend
 	entries := []bavard.Entry{
 		{File: filepath.Join(packageDir, "gkr.go"), Templates: []string{"gkr.go.tmpl"}},
+		{File: filepath.Join(packageDir, "evaluator.go"), Templates: []string{"evaluator.go.tmpl"}},
 		{File: filepath.Join(packageDir, "sumcheck.go"), Templates: []string{"sumcheck.go.tmpl"}},
 		{File: filepath.Join(packageDir, "sumcheck_test.go"), Templates: []string{"sumcheck.test.go.tmpl", "sumcheck.test.defs.go.tmpl"}},
 		{File: filepath.Join(packageDir, testVectorUtilsFileName), Templates: []string{"test_vector_utils.go.tmpl"}},

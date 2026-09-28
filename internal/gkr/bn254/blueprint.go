@@ -27,7 +27,7 @@ func init() {
 
 // circuitEvaluator evaluates all gates in a circuit for one instance
 type circuitEvaluator struct {
-	evaluators []gateEvaluator // one evaluator per wire
+	evaluators []GateEvaluator // one evaluator per wire
 }
 
 // BlueprintSolve is a BN254-specific blueprint for solving GKR circuit instances.
@@ -66,12 +66,12 @@ func (b *BlueprintSolve) Equal(other constraint.BlueprintComparable) bool {
 func (b *BlueprintSolve) Reset() {
 	b.evaluatorPool.New = func() interface{} {
 		ce := &circuitEvaluator{
-			evaluators: make([]gateEvaluator, len(b.Circuit)),
+			evaluators: make([]GateEvaluator, len(b.Circuit)),
 		}
 		for wI := range b.Circuit {
 			w := &b.Circuit[wI]
 			if !w.IsInput() {
-				ce.evaluators[wI] = newGateEvaluator(w.Gate.Evaluate, len(w.Inputs))
+				ce.evaluators[wI] = NewGateEvaluator(w.Gate.Evaluate, len(w.Inputs))
 			}
 		}
 		return ce
@@ -124,11 +124,11 @@ func (b *BlueprintSolve) Solve(s constraint.Solver[constraint.U64], inst constra
 
 			// Push gate inputs
 			for _, inWI := range w.Inputs {
-				evaluator.pushInput(b.assignments[inWI][instanceI])
+				evaluator.PushInput(b.assignments[inWI][instanceI])
 			}
 
 			// Evaluate the gate
-			b.assignments[wI][instanceI].Set(evaluator.evaluate())
+			b.assignments[wI][instanceI].Set(evaluator.Evaluate())
 		}
 	}
 
@@ -279,7 +279,7 @@ func (b *BlueprintProve) Solve(s constraint.Solver[constraint.U64], inst constra
 		return fmt.Errorf("BN254 prove failed: %w", err)
 	}
 
-	for i, elem := range proof.flatten() {
+	for i, elem := range proof.Flatten() {
 		var val constraint.U64
 		copy(val[:], (*elem)[:])
 		s.SetValue(uint32(i+int(inst.WireOffset)), val)

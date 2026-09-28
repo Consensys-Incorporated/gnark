@@ -73,7 +73,7 @@ func TestPoseidon2(t *testing.T) {
 
 // proveAndVerify proves and verifies assignment against schedule, then asserts that: every wire of
 // schedule[0] has exactly one claim, and all of them share one point; the number of
-// elements in the proof, counted with proof.flatten(), equals c.ProofSize(schedule, logNbInstances);
+// elements in the proof, counted with proof.Flatten(), equals c.ProofSize(schedule, logNbInstances);
 // tampering instance 0 of any wire with claims makes Check fail; a bad hash makes Verify or Check
 // fail; and tampering the first element of any finalEvalProof or partial sum polynomial in the
 // proof, the output entry included, makes Verify reject it — except for the claimed evaluation of
@@ -107,7 +107,7 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 	}
 
 	var nbProofElems int
-	for range proof.flatten() {
+	for range proof.Flatten() {
 		nbProofElems++
 	}
 	assert.Equal(t, c.ProofSize(schedule, logNbInstances), nbProofElems)
