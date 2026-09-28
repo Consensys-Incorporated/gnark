@@ -67,6 +67,13 @@ type resources struct {
 	transcript         transcript
 	claimValueIndices  [][]int // claimValueIndices[wI][claimI]: index of w's claimI-th claimed value in its source level's finalEvalProof
 	claims             Claims
+	consolidated       []bool // the wires of schedule[0], indexed by wire
+}
+
+// identityGate is the identity gate LevelCircuit and ConsolidationView use to build level 0's
+// view of the circuit.
+func identityGate() gkrcore.SerializableGate {
+	return gkrcore.SerializableGate{Evaluate: gkrcore.IdentityBytecode(), NbIn: 1, Degree: 1}
 }
 
 // newResources builds the resources shared by Prove and Verify. It takes no assignment and
@@ -80,6 +87,7 @@ func newResources(c Circuit, schedule constraint.GkrProvingSchedule, nbVars int,
 		transcript:         transcript{h: hasher},
 		claimValueIndices:  c.ClaimValueIndices(schedule),
 		claims:             make(Claims),
+		consolidated:       c.LevelWires(schedule[0]),
 	}
 }
 
@@ -126,6 +134,19 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 	return nil
 }
 
+// levelPredicates returns the bind and include predicates for level levelI's unique gate inputs,
+// per Level 0's binding and claims rules. Level 0 binds nothing and returns every one of its wires
+// (self-referencing on the consolidation view); every other level binds every unique gate input
+// that is not an unconsolidated circuit input, and returns claims for exactly those it withholds
+// from binding.
+func (r *resources) levelPredicates(levelI int) (bind, include func(wI int) bool) {
+	if levelI == 0 {
+		return func(int) bool { return false }, func(int) bool { return true }
+	}
+	return func(wI int) bool { return !r.circuit.IsInput(wI) || r.consolidated[wI] },
+		func(wI int) bool { return r.circuit.IsInput(wI) && !r.consolidated[wI] }
+}
+
 // proveLevel proves level levelI: computes its proof entry, binds its values, and appends its claims.
 func (r *resources) proveLevel(levelI int) sumcheckProof {
 	var entry sumcheckProof
@@ -139,8 +160,9 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 	default:
 		panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
 	}
-	constraint.BindGkrFinalEvalProof(&r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), r.circuit.IsInput, r.schedule[levelI])
-	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], entry.finalEvalProof, r.outgoingEvalPoints[levelI])
+	bind, include := r.levelPredicates(levelI)
+	constraint.BindGkrFinalEvalProof(&r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], entry.finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return entry
 }
 
@@ -175,11 +197,12 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	}
 	proof[len(schedule)] = sumcheckProof{finalEvalProof: outputEvals}
 	r.transcript.Bind(outputEvals...)
-	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputEvals)
+	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputEvals, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
 		proof[levelI] = r.proveLevel(levelI)
 	}
+	r.circuit = r.circuit.LevelCircuit(r.schedule, 0, identityGate())
 	proof[0] = r.proveLevel(0)
 
 	return proof, r.claims, nil
@@ -201,15 +224,16 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 	if err != nil {
 		return fmt.Errorf("level %d: %v", levelI, err)
 	}
-	constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), r.circuit.IsInput, r.schedule[levelI])
-	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI])
+	bind, include := r.levelPredicates(levelI)
+	constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return nil
 }
 
 // Verify the consistency of the claimed output with the claimed input, and return the evaluation
 // claims on the circuit's inputs and outputs. A nil error means nothing until the returned Claims
 // are checked: Verify reads no assignment, so the caller must call Claims.Check itself. The claim
-// values on input wires are not bound into the transcript.
+// values returned to the caller unconsolidated are not bound into the transcript.
 func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.Hash) (Claims, error) {
 	r := newResources(c, schedule, logNbInstances, hasher)
 
@@ -223,8 +247,14 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 	if len(outputLevel.finalEvalProof) != len(c.Outputs()) {
 		return nil, fmt.Errorf("output level has %d evaluations, expected %d", len(outputLevel.finalEvalProof), len(c.Outputs()))
 	}
+
+	view := c.LevelCircuit(schedule, 0, identityGate())
 	for levelI, level := range schedule {
-		nbUniqueInputs := len(c.UniqueGateInputs(level))
+		levelCircuit := c
+		if levelI == 0 {
+			levelCircuit = view
+		}
+		nbUniqueInputs := len(levelCircuit.UniqueGateInputs(level))
 		wantFinalEvalLen := nbUniqueInputs * level.NbOutgoingEvalPoints()
 		if len(proof[levelI].finalEvalProof) != wantFinalEvalLen {
 			return nil, fmt.Errorf("level %d: got %d final evaluations, expected %d", levelI, len(proof[levelI].finalEvalProof), wantFinalEvalLen)
@@ -245,13 +275,14 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 	}
 	r.outgoingEvalPoints[len(schedule)] = [][]fr.Element{firstChallenge}
 	r.transcript.Bind(outputLevel.finalEvalProof...)
-	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.finalEvalProof)
+	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.finalEvalProof, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
 		if err := r.verifyLevel(levelI, proof); err != nil {
 			return nil, err
 		}
 	}
+	r.circuit = view
 	if err := r.verifyLevel(0, proof); err != nil {
 		return nil, err
 	}

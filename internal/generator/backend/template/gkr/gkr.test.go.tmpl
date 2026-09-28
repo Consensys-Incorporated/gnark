@@ -65,12 +65,14 @@ func TestPoseidon2(t *testing.T) {
 	test(t, gkrtesting.Poseidon2Circuit(4, 2))
 }
 
-// proveAndVerify proves and verifies assignment against schedule, then asserts that: tampering
-// instance 0 of any wire with claims makes Check fail; a bad hash makes Verify or Check fail; and
-// tampering the first element of any finalEvalProof or partial sum polynomial in the proof, the
-// output entry included, makes Verify reject it — except for the claimed evaluation of an output
-// wire that is also a circuit input, which nothing in the proof cross-checks: there Verify must
-// accept, and only Claims.Check catches the tampering.
+// proveAndVerify proves and verifies assignment against schedule, then asserts that: every wire of
+// schedule[0] has exactly one claim, and all of them share one point; the number of
+// elements in the proof, counted with proof.flatten(), equals c.ProofSize(schedule, logNbInstances);
+// tampering instance 0 of any wire with claims makes Check fail; a bad hash makes Verify or Check
+// fail; and tampering the first element of any finalEvalProof or partial sum polynomial in the
+// proof, the output entry included, makes Verify reject it — except for the claimed evaluation of
+// an output wire that is a circuit input outside schedule[0], which nothing in the proof cross-checks:
+// there Verify must accept, and only Claims.Check catches the tampering.
 func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment) {
 	t.Helper()
 	proof, proverClaims, err := Prove(c, schedule, assignment, newMessageCounter(1, 1))
@@ -82,6 +84,27 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 	assert.NoError(t, err, "proof rejected")
 	assert.Equal(t, proverClaims, verifierClaims)
 	assert.NoError(t, verifierClaims.Check(assignment))
+
+	consolidated := c.LevelWires(schedule[0])
+	var consolidationPoint []{{ .ElementType }}
+	for wI, isConsolidated := range consolidated {
+		if !isConsolidated {
+			continue
+		}
+		if assert.Len(t, verifierClaims[wI], 1, "wire %d: expected exactly one claim", wI) {
+			if consolidationPoint == nil {
+				consolidationPoint = verifierClaims[wI][0].EvaluationPoint
+			} else {
+				assert.Equal(t, consolidationPoint, verifierClaims[wI][0].EvaluationPoint, "wire %d: expected the shared consolidation point", wI)
+			}
+		}
+	}
+
+	var nbProofElems int
+	for range proof.flatten() {
+		nbProofElems++
+	}
+	assert.Equal(t, c.ProofSize(schedule, logNbInstances), nbProofElems)
 
 	for wI := range verifierClaims {
 		assignment[wI][0].Add(&assignment[wI][0], &one)
@@ -106,7 +129,7 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 			}
 			target[0].Add(&target[0], &one)
 			claims, err := Verify(c, schedule, logNbInstances, proof, newMessageCounter(1, 1))
-			if levelI < len(schedule) || !c.IsInput(c.Outputs()[0]) {
+			if levelI < len(schedule) || !c.IsInput(c.Outputs()[0]) || consolidated[c.Outputs()[0]] {
 				assert.Error(t, err, "tampered proof accepted at level %d", levelI)
 			} else {
 				assert.NoError(t, err, "level %d: Verify should accept a tampered claim it cannot cross-check", levelI)
@@ -329,6 +352,68 @@ func TestMixedGroupsExplicitSchedule(t *testing.T) {
 			{Wires: []int{4}, ClaimSources: []constraint.GkrClaimSource{ {Level: 2} }},
 			{Wires: []int{3, 2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 2} }},
 		},
+	}
+	testWithSchedule(t, circuit, schedule)
+}
+
+// TestConsolidationLevel tests a non-empty level 0: one group consolidating inputs 0 and 1, which
+// share a single claim source (the mul gate's level), and a second group consolidating output 2,
+// whose only claim source is the output level.
+func TestConsolidationLevel(t *testing.T) {
+	circuit := gkrtesting.SingleMulGateCircuit()
+	// Wire 2 is the mul gate output (inputs: 0, 1), and the circuit's only output.
+	// GkrClaimSource{Level:2} is the initial-challenge sentinel (len(schedule)=2).
+	schedule := constraint.GkrProvingSchedule{
+		&constraint.GkrSumcheckLevel{
+			{Wires: []int{1, 0}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
+			{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 2} }},
+		},
+		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 2} }},
+	}
+	testWithSchedule(t, circuit, schedule)
+}
+
+// TestConsolidationLevelMultiSourceInput tests level 0 consolidating an input with two claim
+// sources: wire 0 feeds two separate identity gates, each its own level and its own output.
+func TestConsolidationLevelMultiSourceInput(t *testing.T) {
+	circuit := gkrcore.RawCircuit{
+		{},                                                        // wire 0: input
+		{Gate: gkrcore.Identity, Inputs: []int{0}, Exported: true}, // wire 1
+		{Gate: gkrcore.Identity, Inputs: []int{0}, Exported: true}, // wire 2
+	}
+	// GkrClaimSource{Level:3} is the initial-challenge sentinel (len(schedule)=3).
+	schedule := constraint.GkrProvingSchedule{
+		&constraint.GkrSumcheckLevel{
+			{Wires: []int{0}, ClaimSources: []constraint.GkrClaimSource{ {Level: 2}, {Level: 1} }},
+		},
+		&constraint.GkrSkipLevel{Wires: []int{1}, ClaimSources: []constraint.GkrClaimSource{ {Level: 3} }},
+		&constraint.GkrSkipLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 3} }},
+	}
+	testWithSchedule(t, circuit, schedule)
+}
+
+// TestConsolidationLevelInternalOutput tests level 0 consolidating a non-input output that also
+// feeds a downstream gate: wire 2's row is built once, at its own gate level (level 1), whose
+// claim sources put the output level first (GkrClaimGroup's order); level 0 must reuse that same row
+// rather than rebuild one of its own.
+func TestConsolidationLevelInternalOutput(t *testing.T) {
+	circuit := gkrcore.RawCircuit{
+		{},                                                         // wire 0: input
+		{},                                                         // wire 1: input
+		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}, Exported: true},   // wire 2: mul(0,1), exported, feeds wire 3
+		{Gate: gkrcore.Identity, Inputs: []int{2}},                  // wire 3: identity(2), output
+	}
+	// GkrClaimSource{Level:3} is the initial-challenge sentinel (len(schedule)=3).
+	schedule := constraint.GkrProvingSchedule{
+		// Level 0: consolidates output 2, whose only claim source for level 0 is the output level.
+		&constraint.GkrSkipLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 3} }},
+		// Level 1: mul gate output, exported and feeding wire 3 (level 2): the output level comes
+		// first (GkrClaimGroup's order), then wire 3's level.
+		&constraint.GkrSumcheckLevel{
+			{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 3}, {Level: 2} }},
+		},
+		// Level 2: identity(2), an output.
+		&constraint.GkrSkipLevel{Wires: []int{3}, ClaimSources: []constraint.GkrClaimSource{ {Level: 3} }},
 	}
 	testWithSchedule(t, circuit, schedule)
 }

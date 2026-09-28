@@ -58,14 +58,51 @@ func (c Circuit[G]) ZeroCheckDegree(level constraint.GkrProvingLevel) int {
 	panic(fmt.Sprintf("ZeroCheckDegree: unknown proving level type %T", level))
 }
 
-// ProofSize returns the total number of field elements in a GKR proof.
+// ConsolidationView returns a copy of c in which every wire of level is its own sole input,
+// through the identity gate, whatever its own gate was. Only level 0 uses this view; everything
+// else, c.Outputs() and ClaimValueIndices included, uses c itself.
+func (c Circuit[G]) ConsolidationView(level constraint.GkrProvingLevel, identity Gate[G]) Circuit[G] {
+	view := slices.Clone(c)
+	for _, group := range level.ClaimGroups() {
+		for _, wI := range group.Wires {
+			view[wI] = Wire[G]{Gate: identity, Inputs: []int{wI}}
+		}
+	}
+	return view
+}
+
+// LevelWires returns a boolean slice, indexed by wire, marking every wire of level.
+func (c Circuit[G]) LevelWires(level constraint.GkrProvingLevel) []bool {
+	wires := make([]bool, len(c))
+	for _, group := range level.ClaimGroups() {
+		for _, wI := range group.Wires {
+			wires[wI] = true
+		}
+	}
+	return wires
+}
+
+// LevelCircuit returns c, except at level 0, whose ConsolidationView it returns instead: on c, a
+// level-0 wire keeps its own gate's inputs, or has none, while on the view every level-0 wire is
+// its own sole input. InputMapping and ZeroCheckDegree need the view to size or execute level 0.
+func (c Circuit[G]) LevelCircuit(schedule constraint.GkrProvingSchedule, levelI int, identity Gate[G]) Circuit[G] {
+	if levelI != 0 {
+		return c
+	}
+	return c.ConsolidationView(schedule[0], identity)
+}
+
+// ProofSize returns the total number of field elements in a GKR proof. The identity's Evaluate is
+// never called, so its zero value does for G.
 func (c Circuit[G]) ProofSize(schedule constraint.GkrProvingSchedule, logNbInstances int) int {
 	size := len(c.Outputs())
-	for _, level := range schedule {
+	identity := Gate[G]{Degree: 1, NbIn: 1}
+	for levelI, level := range schedule {
+		lc := c.LevelCircuit(schedule, levelI, identity)
 		// For every outgoing claim and unique input wire, there will be
 		// an outgoing evaluation claim included in finalEvalProof.
-		size += len(c.UniqueGateInputs(level)) * level.NbOutgoingEvalPoints()
-		size += c.ZeroCheckDegree(level) * logNbInstances
+		size += len(lc.UniqueGateInputs(level)) * level.NbOutgoingEvalPoints()
+		size += lc.ZeroCheckDegree(level) * logNbInstances
 	}
 	return size
 }
@@ -367,9 +404,7 @@ func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule,
 // ClaimValueIndices returns claimValueIndices[wI][claimI], the index of the value of wire wI's
 // claimI-th claim in the finalEvalProof of that claim's source level.
 // For the sentinel initial-challenge claim, it is wI's position in c.Outputs().
-// A wire's row is built at the highest level containing it. A non-input output can also be in
-// level 0, whose only claim source for it is the initial challenge; that source comes first in the
-// row by GkrClaimGroup's order, so level 0 reads the row unchanged.
+// A wire in two levels gets the row of the higher one; the lower one's sources must be its prefix.
 func (c Circuit[G]) ClaimValueIndices(schedule constraint.GkrProvingSchedule) [][]int {
 	cache := make([]map[int]int, len(schedule)) // cache[levelI][wireI] is the unique input index of wireI in levelI.
 	res := make([][]int, len(c))
@@ -393,7 +428,7 @@ func (c Circuit[G]) ClaimValueIndices(schedule constraint.GkrProvingSchedule) []
 					}
 				}
 
-				if res[wI] != nil { // row already built at a higher level
+				if res[wI] != nil {
 					continue
 				}
 				for _, claimSource := range group.ClaimSources {
