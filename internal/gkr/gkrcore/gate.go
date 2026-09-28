@@ -7,8 +7,8 @@ import (
 
 	"github.com/consensys/gnark/frontend"
 
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/utils"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 )
 
 // GateOp represents an arithmetic operation in a compiled gate.

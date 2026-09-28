@@ -3,8 +3,8 @@ package circuits
 import (
 	"github.com/consensys/gnark"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/std/gkrapi"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 	_ "github.com/consensys/gnark/std/hash/all" // register hash functions for GKR
 )
 
