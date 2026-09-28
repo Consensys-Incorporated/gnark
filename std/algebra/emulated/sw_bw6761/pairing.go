@@ -455,7 +455,11 @@ func (pr *Pairing) millerLoopLines(P []*G1Affine, lines []lineEvaluations, init 
 		// P are supposed to be on G1 respectively of prime order r.
 		// The point (x,0) is of order 2. But this function does not check
 		// subgroup membership.
-		yInv[k] = pr.curveF.Inverse(&P[k].Y)
+		// If we have point at infinity, we set yInv[k] to 0 manually to avoid
+		// undefined inversion of 0.
+		isYZero := pr.curveF.IsZero(&P[k].Y)
+		y := pr.curveF.Select(isYZero, pr.curveF.One(), &P[k].Y)
+		yInv[k] = pr.curveF.Select(isYZero, pr.curveF.Zero(), pr.curveF.Inverse(y))
 		xNegOverY[k] = pr.curveF.Mul(&P[k].X, yInv[k])
 		xNegOverY[k] = pr.curveF.Neg(xNegOverY[k])
 	}
