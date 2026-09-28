@@ -56,10 +56,7 @@ func New(api frontend.API) (*API, error) {
 
 // NewInput creates a new input variable.
 func (api *API) NewInput() gkr.Variable {
-	i := len(api.circuit)
-	api.circuit = append(api.circuit, gkrcore.RawWire{})
-	api.assignments = append(api.assignments, nil)
-	return gkr.Variable(i)
+	return api.circuit.NewInput()
 }
 
 type CompileOption func(*Circuit)
@@ -102,7 +99,7 @@ func (api *API) Compile(fiatshamirHashName string, options ...CompileOption) (*C
 	res := Circuit{
 		circuit:       gadgetCircuit,
 		schedule:      schedule,
-		assignments:   make(gadget.WireAssignment, len(api.circuit)),
+		assignments:   make(gadget.WireAssignment, len(serializableCircuit)),
 		api:           api.parentApi,
 		hashName:      fiatshamirHashName,
 		statementHash: hsh.Sum(nil),
