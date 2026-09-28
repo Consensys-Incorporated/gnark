@@ -20,7 +20,8 @@ import (
 type GateEvaluator struct {
 	gate gkrcore.GateBytecode
 	vars []small_rational.SmallRational
-	nbIn int // number of inputs expected
+	nbIn int              // number of inputs expected
+	pool *polynomial.Pool // pool vars was allocated from, if any
 }
 
 // NewGateEvaluator creates an evaluator for the given compiled gate.
@@ -31,7 +32,8 @@ func NewGateEvaluator(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polyn
 		nbIn: nbIn,
 	}
 	if len(elementPool) > 0 {
-		e.vars = elementPool[0].Make(gate.EvaluatorSize(nbIn))
+		e.pool = elementPool[0]
+		e.vars = e.pool.Make(gate.EvaluatorSize(nbIn))
 	} else {
 		e.vars = make([]small_rational.SmallRational, gate.EvaluatorSize(nbIn))
 	}
@@ -40,6 +42,14 @@ func NewGateEvaluator(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polyn
 		e.vars[i].SetBigInt(constVal)
 	}
 	return e
+}
+
+// Dump returns the evaluator's memory to the pool it was allocated from, if any, and does
+// nothing otherwise. The evaluator must not be used after this.
+func (e *GateEvaluator) Dump() {
+	if e.pool != nil {
+		e.pool.Dump(e.vars)
+	}
 }
 
 // PushInput adds an input to the evaluator's input buffer.
@@ -151,13 +161,13 @@ func (gep *GateEvaluatorPool) Put(e *GateEvaluator) {
 	gep.lock.Unlock()
 }
 
-// DumpAll dumps all available evaluator vars slices back to the polynomial pool. It is not to be used after that.
+// DumpAll dumps all available evaluators' memory back to the pool. It is not to be used after that.
 // NB! User must ensure all evaluators have been put back in the pool to prevent memory leaks.
 func (gep *GateEvaluatorPool) DumpAll() {
 	gep.lock.Lock()
 	defer gep.lock.Unlock()
 	for _, e := range gep.available {
-		gep.elementPool.Dump(e.vars)
+		e.Dump()
 	}
 	gep.available = nil
 }

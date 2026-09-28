@@ -11,10 +11,11 @@ import (
 	"hash"
 	"iter"
 
-	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
-	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr/polynomial"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr/polynomial"
 	"github.com/consensys/gnark-crypto/utils"
 	"github.com/consensys/gnark/constraint"
+	evaluator "github.com/consensys/gnark/internal/gkr/bls12-381"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 )
 
@@ -118,7 +119,7 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 
 	for levelWireI, wI := range group.Wires {
 		wire := r.circuit[wI]
-		evaluator := NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
+		evaluator := evaluator.NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
 		for claimI, src := range group.ClaimSources {
 			for _, inI := range inputIndices[levelWireI] {
 				evaluator.PushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
@@ -185,14 +186,14 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 			const minBlockSize = 64
 			assignment[wireI] = make([]fr.Element, nbInstances)
 			r.workers.Submit(nbInstances, func(start, end int) {
-				gateEval := NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
+				gateEval := evaluator.NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
 				for instanceI := start; instanceI < end; instanceI++ {
 					for _, inputWireI := range c[wireI].Inputs {
 						gateEval.PushInput(assignment[inputWireI][instanceI])
 					}
 					assignment[wireI][instanceI] = *gateEval.Evaluate()
 				}
-				r.memPool.Dump(gateEval.vars)
+				gateEval.Dump()
 			}, minBlockSize).Wait()
 		}
 	}
@@ -322,14 +323,14 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 
 	nbInstances := a.NumInstances()
-	evaluators := make([]GateEvaluator, len(circuit))
+	evaluators := make([]evaluator.GateEvaluator, len(circuit))
 
 	for i := range circuit {
 		if len(a[i]) != nbInstances {
 			a[i] = make([]fr.Element, nbInstances)
 		}
 		if !circuit[i].IsInput() {
-			evaluators[i] = NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
+			evaluators[i] = evaluator.NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
 		}
 	}
 
