@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"hash"
 	"iter"
-	"sync"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/polynomial"
@@ -119,12 +118,12 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 
 	for levelWireI, wI := range group.Wires {
 		wire := r.circuit[wI]
-		evaluator := newGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
+		evaluator := NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
 		for claimI, src := range group.ClaimSources {
 			for _, inI := range inputIndices[levelWireI] {
-				evaluator.pushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
+				evaluator.PushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
 			}
-			gateEval := evaluator.evaluate()
+			gateEval := evaluator.Evaluate()
 			claimedEval := proof[src.Level].finalEvalProof[r.claimValueIndices[wI][claimI]]
 			if !claimedEval.Equal(gateEval) {
 				return fmt.Errorf("level %d wire %d claim %d: claimed eval %v disagrees with gate eval %v", levelI, wI, claimI, &claimedEval, gateEval)
@@ -186,12 +185,12 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 			const minBlockSize = 64
 			assignment[wireI] = make([]fr.Element, nbInstances)
 			r.workers.Submit(nbInstances, func(start, end int) {
-				gateEval := newGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
+				gateEval := NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
 				for instanceI := start; instanceI < end; instanceI++ {
 					for _, inputWireI := range c[wireI].Inputs {
-						gateEval.pushInput(assignment[inputWireI][instanceI])
+						gateEval.PushInput(assignment[inputWireI][instanceI])
 					}
-					assignment[wireI][instanceI] = *gateEval.evaluate()
+					assignment[wireI][instanceI] = *gateEval.Evaluate()
 				}
 				r.memPool.Dump(gateEval.vars)
 			}, minBlockSize).Wait()
@@ -323,14 +322,14 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 
 	nbInstances := a.NumInstances()
-	evaluators := make([]gateEvaluator, len(circuit))
+	evaluators := make([]GateEvaluator, len(circuit))
 
 	for i := range circuit {
 		if len(a[i]) != nbInstances {
 			a[i] = make([]fr.Element, nbInstances)
 		}
 		if !circuit[i].IsInput() {
-			evaluators[i] = newGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
+			evaluators[i] = NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
 		}
 	}
 
@@ -338,9 +337,9 @@ func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 		for wI := range circuit {
 			if !circuit[wI].IsInput() {
 				for _, in := range circuit[wI].Inputs {
-					evaluators[wI].pushInput(a[in][i])
+					evaluators[wI].PushInput(a[in][i])
 				}
-				a[wI][i].Set(evaluators[wI].evaluate())
+				a[wI][i].Set(evaluators[wI].Evaluate())
 			}
 		}
 	}
@@ -376,7 +375,7 @@ func iterateElems(elems []fr.Element, counter *int, yield func(int, *fr.Element)
 	return true
 }
 
-func (p Proof) flatten() iter.Seq2[int, *fr.Element] {
+func (p Proof) Flatten() iter.Seq2[int, *fr.Element] {
 	return func(yield func(int, *fr.Element) bool) {
 		var counter int
 		for i := range p {
@@ -390,152 +389,4 @@ func (p Proof) flatten() iter.Seq2[int, *fr.Element] {
 			}
 		}
 	}
-}
-
-// gateEvaluator provides a high-level API for evaluating compiled gates efficiently.
-// It manages the stack internally and handles input buffering, making it easy to
-// evaluate the same gate multiple times with different inputs.
-type gateEvaluator struct {
-	gate gkrcore.GateBytecode
-	vars []fr.Element
-	nbIn int // number of inputs expected
-}
-
-// newGateEvaluator creates an evaluator for the given compiled gate.
-// The stack is preloaded with constants and ready for evaluation.
-func newGateEvaluator(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polynomial.Pool) gateEvaluator {
-	e := gateEvaluator{
-		gate: gate,
-		nbIn: nbIn,
-	}
-	if len(elementPool) > 0 {
-		e.vars = elementPool[0].Make(gate.EvaluatorSize(nbIn))
-	} else {
-		e.vars = make([]fr.Element, gate.EvaluatorSize(nbIn))
-	}
-	e.vars = e.vars[:gate.NbConstants()]
-	for i, constVal := range gate.Constants {
-		e.vars[i].SetBigInt(constVal)
-	}
-	return e
-}
-
-// pushInput adds an input to the evaluator's input buffer.
-// Inputs must be added in order, and the number of inputs must match the gate's NbInputs.
-func (e *gateEvaluator) pushInput(input fr.Element) {
-	e.vars = append(e.vars, input)
-}
-
-// evaluate adds top to the top of the stack, executes the gate on it and returns the result.
-// The stack is automatically reset after evaluation,
-// making the evaluator ready for the next evaluation.
-// NB! The result is short-lived. It will be overwritten the next time evaluate is called.
-func (e *gateEvaluator) evaluate(top ...fr.Element) *fr.Element {
-	e.vars = append(e.vars, top...)
-
-	if len(e.vars) != e.nbIn+e.gate.NbConstants() {
-		panic(fmt.Sprintf("expected a stack size of %d representing %d constants and %d inputs, got %d", e.nbIn+e.gate.NbConstants(), e.gate.NbConstants(), e.nbIn, len(e.vars)))
-	}
-
-	// Execute instructions, appending results to stack
-	// The stack grows to: [constants | inputs | results]
-	for i := range e.gate.Instructions {
-		inst := &e.gate.Instructions[i]
-		// Grow len by 1 within the pre-allocated capacity
-		e.vars = e.vars[:len(e.vars)+1]
-		dst := &e.vars[len(e.vars)-1]
-
-		// Use switch instead of function pointer for better inlining
-		switch inst.Op {
-		case gkrcore.OpAdd:
-			dst.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
-			for j := 2; j < len(inst.Inputs); j++ {
-				dst.Add(dst, &e.vars[inst.Inputs[j]])
-			}
-		case gkrcore.OpMul:
-			dst.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
-			for j := 2; j < len(inst.Inputs); j++ {
-				dst.Mul(dst, &e.vars[inst.Inputs[j]])
-			}
-		case gkrcore.OpSub:
-			dst.Sub(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
-			for j := 2; j < len(inst.Inputs); j++ {
-				dst.Sub(dst, &e.vars[inst.Inputs[j]])
-			}
-		case gkrcore.OpNeg:
-			dst.Neg(&e.vars[inst.Inputs[0]])
-		case gkrcore.OpMulAcc:
-			var prod fr.Element
-			prod.Mul(&e.vars[inst.Inputs[1]], &e.vars[inst.Inputs[2]])
-			dst.Add(&e.vars[inst.Inputs[0]], &prod)
-		case gkrcore.OpSumExp17:
-			// result = (x[0] + x[1] + x[2])^17
-			var sum fr.Element
-			sum.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
-			sum.Add(&sum, &e.vars[inst.Inputs[2]])
-			dst.Mul(&sum, &sum) // x²
-			dst.Mul(dst, dst)   // x⁴
-			dst.Mul(dst, dst)   // x⁸
-			dst.Mul(dst, dst)   // x¹⁶
-			dst.Mul(dst, &sum)  // x¹⁷
-		default:
-			panic(fmt.Sprintf("unknown operation: %d", inst.Op))
-		}
-	}
-
-	res := &e.vars[len(e.vars)-1]
-
-	// Reset for next evaluation
-	e.vars = e.vars[:e.gate.NbConstants()]
-
-	return res
-}
-
-// gateEvaluatorPool manages a pool of gate evaluators for a specific gate type.
-// All evaluators share the same underlying polynomial.Pool for element slices.
-type gateEvaluatorPool struct {
-	gate        gkrcore.GateBytecode
-	nbIn        int
-	lock        sync.Mutex
-	available   []*gateEvaluator
-	elementPool *polynomial.Pool
-}
-
-func newGateEvaluatorPool(gate gkrcore.GateBytecode, nbIn int, elementPool *polynomial.Pool) *gateEvaluatorPool {
-	return &gateEvaluatorPool{
-		gate:        gate,
-		nbIn:        nbIn,
-		elementPool: elementPool,
-	}
-}
-
-func (gep *gateEvaluatorPool) get() *gateEvaluator {
-	gep.lock.Lock()
-	if n := len(gep.available); n > 0 {
-		e := gep.available[n-1]
-		gep.available = gep.available[:n-1]
-		gep.lock.Unlock()
-		return e
-	}
-	gep.lock.Unlock()
-
-	e := newGateEvaluator(gep.gate, gep.nbIn, gep.elementPool)
-	return &e
-}
-
-func (gep *gateEvaluatorPool) put(e *gateEvaluator) {
-	gep.lock.Lock()
-	gep.available = append(gep.available, e)
-	gep.lock.Unlock()
-}
-
-// dumpAll dumps all available evaluator vars slices back to the polynomial pool. It is not to be used after that.
-// NB! User must ensure all evaluators have been put back in the pool to prevent memory leaks.
-func (gep *gateEvaluatorPool) dumpAll() {
-	gep.lock.Lock()
-	defer gep.lock.Unlock()
-	for _, e := range gep.available {
-		gep.elementPool.Dump(e.vars)
-	}
-	gep.available = nil
 }
