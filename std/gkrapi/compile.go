@@ -309,7 +309,13 @@ func (c *Circuit) verify(api frontend.API, circuit gkrcore.GadgetCircuit, initia
 	}
 
 	hsh.Write(initialChallenges...)
-	return gadget.Verify(api, circuit, c.schedule, c.assignments, proof, hsh)
+	logNbInstances := c.assignments[c.ins[0]].NumVars()
+	claims, err := gadget.Verify(api, circuit, c.schedule, logNbInstances, proof, hsh)
+	if err != nil {
+		return err
+	}
+	claims.Check(api, c.assignments)
+	return nil
 }
 
 // GetValue is a debugging utility returning the value of variable v at instance i.

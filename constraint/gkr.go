@@ -80,28 +80,13 @@ func (l *GkrSingleSourceZeroCheckLevel) ClaimGroups() []GkrClaimGroup {
 }
 func (l *GkrSingleSourceZeroCheckLevel) FinalEvalProofIndex(wireI, _ int) int { return wireI }
 
-// BindGkrFinalEvalProof binds the non-input-wire entries of finalEvalProof into the transcript.
-// Input wires in skip levels verify their claims simply by opening the assignment.
-// Since that check is done by the verifier directly with no prover interaction, those claims can be omitted from
-// the transcript without a soundness penalty.
-func BindGkrFinalEvalProof[F any](transcript interface{ Bind(...F) }, finalEvalProof []F, uniqueGateInputs []int, isInput func(wireI int) bool, level GkrProvingLevel, wireLevels []GkrProvingLevel) {
+// BindGkrFinalEvalProof binds the entries of finalEvalProof belonging to unique gate inputs that
+// are not circuit inputs. A circuit input's claimed value is checked directly against the
+// assignment (see Claims.Check), never reduced by a further level, so it is not bound here.
+func BindGkrFinalEvalProof[F any](transcript interface{ Bind(...F) }, finalEvalProof []F, uniqueGateInputs []int, isInput func(wireI int) bool, level GkrProvingLevel) {
 	for i, inputWireI := range uniqueGateInputs {
-		_, isSkip := wireLevels[inputWireI].(*GkrSkipLevel)
-		if !isInput(inputWireI) || !isSkip {
+		if !isInput(inputWireI) {
 			transcript.Bind(finalEvalProof[level.FinalEvalProofIndex(i, 0):level.FinalEvalProofIndex(i+1, 0)]...)
 		}
 	}
-}
-
-// WireLevels returns, for each wire, the level it belongs to.
-func (s GkrProvingSchedule) WireLevels(nbWires int) []GkrProvingLevel {
-	res := make([]GkrProvingLevel, nbWires)
-	for _, level := range s {
-		for _, group := range level.ClaimGroups() {
-			for _, w := range group.Wires {
-				res[w] = level
-			}
-		}
-	}
-	return res
 }

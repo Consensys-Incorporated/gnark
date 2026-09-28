@@ -129,7 +129,12 @@ func (c *GkrVerifierCircuit) Define(api frontend.API) error {
 		}
 	}
 
-	return Verify(api, testCase.Circuit, testCase.Schedule, assignment, proof, hsh)
+	claims, err := Verify(api, testCase.Circuit, testCase.Schedule, assignment.NbVars(), proof, hsh)
+	if err != nil {
+		return err
+	}
+	claims.Check(api, assignment)
+	return nil
 }
 
 func makeInOutAssignment(c Circuit, inputValues [][]frontend.Variable, outputValues [][]frontend.Variable) WireAssignment {

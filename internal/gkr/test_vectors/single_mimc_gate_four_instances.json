@@ -29,18 +29,6 @@
 	"proof": [
 		{
 			"finalEvalProof": [
-				-1
-			],
-			"partialSumPolys": []
-		},
-		{
-			"finalEvalProof": [
-				-3
-			],
-			"partialSumPolys": []
-		},
-		{
-			"finalEvalProof": [
 				-1,
 				-3
 			],

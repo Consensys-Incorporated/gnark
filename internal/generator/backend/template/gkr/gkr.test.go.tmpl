@@ -65,116 +65,55 @@ func TestPoseidon2(t *testing.T) {
 	test(t, gkrtesting.Poseidon2Circuit(4, 2))
 }
 
-// testLevel proves and verifies a single hand-built level on its own one-level schedule.
-// level's wires must be outputs of circuit.
-func testLevel(t *testing.T, circuit gkrcore.RawCircuit, level constraint.GkrProvingLevel) {
+// proveAndVerify proves and verifies assignment against schedule, then asserts that: tampering
+// instance 0 of any wire with claims makes Check fail; a bad hash makes Verify or Check fail; and
+// tampering the first element of any finalEvalProof or partial sum polynomial in the proof, the
+// output entry included, makes Verify reject it — except for the claimed evaluation of an output
+// wire that is also a circuit input, which nothing in the proof cross-checks: there Verify must
+// accept, and only Claims.Check catches the tampering.
+func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment) {
 	t.Helper()
-	_, sCircuit := cache.Compile(t, circuit)
-
-	ins := sCircuit.Inputs()
-	assignment := make(WireAssignment, len(sCircuit))
-	for _, i := range ins {
-		assignment[i] = make([]{{ .ElementType }}, 2)
-		{{ .FieldPackageName }}.Vector(assignment[i]).MustSetRandom()
-	}
-
-	assignment.Complete(sCircuit)
-
-	schedule := constraint.GkrProvingSchedule{level}
-
-	proof, err := Prove(sCircuit, schedule, assignment, newMessageCounter(1, 1))
+	proof, proverClaims, err := Prove(c, schedule, assignment, newMessageCounter(1, 1))
 	assert.NoError(t, err)
+	assert.NoError(t, proverClaims.Check(assignment))
 
-	assert.NoError(t, Verify(sCircuit, schedule, assignment, proof, newMessageCounter(1, 1)))
-}
+	logNbInstances := assignment.NumVars()
+	verifierClaims, err := Verify(c, schedule, logNbInstances, proof, newMessageCounter(1, 1))
+	assert.NoError(t, err, "proof rejected")
+	assert.Equal(t, proverClaims, verifierClaims)
+	assert.NoError(t, verifierClaims.Check(assignment))
 
-func TestSumcheckLevel(t *testing.T) {
-	// Wires 0,1 = inputs; wires 2,3,4 = mul(0,1). All gates are independent outputs.
-	circuit := gkrcore.RawCircuit{
-		{},
-		{},
-		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
-		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
-		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
-	}
-	// Each level has an initial challenge at index 1 (len(schedule) = 1).
-	// GkrClaimSource{Level:1} is the initial-challenge sentinel.
-	tests := []struct {
-		name  string
-		level constraint.GkrProvingLevel
-	}{
-		{
-			name: "single wire",
-			level: &constraint.GkrSumcheckLevel{
-				{Wires: []int{4}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-			},
-		},
-		{
-			name: "two groups",
-			level: &constraint.GkrSumcheckLevel{
-				{Wires: []int{4}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-				{Wires: []int{3}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-			},
-		},
-		{
-			name: "one group with two wires",
-			level: &constraint.GkrSumcheckLevel{
-				{Wires: []int{4, 3}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-			},
-		},
-		{
-			name: "mixed: single + multi-wire group",
-			level: &constraint.GkrSumcheckLevel{
-				{Wires: []int{4}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-				{Wires: []int{3, 2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-			},
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			testLevel(t, circuit, tc.level)
-		})
-	}
-}
-
-func TestSkipLevel(t *testing.T) {
-	// Wires 0,1 = inputs; wires 2,3 = identity(0); wire 4 = add(0,1); wire 5 = an unconsumed
-	// input, also a circuit output. All degree-1 outputs.
-	circuit := gkrcore.RawCircuit{
-		{},
-		{},
-		{Gate: gkrcore.Identity, Inputs: []int{0}},
-		{Gate: gkrcore.Identity, Inputs: []int{0}},
-		{Gate: gkrcore.Add2, Inputs: []int{0, 1}},
-		{},
+	for wI := range verifierClaims {
+		assignment[wI][0].Add(&assignment[wI][0], &one)
+		assert.NotNil(t, verifierClaims.Check(assignment), "wire %d: tampered assignment accepted", wI)
+		assignment[wI][0].Sub(&assignment[wI][0], &one)
 	}
 
-	// Single-claim cases: one inherited evaluation point (OutgoingClaimIndex always 0).
-	singleClaim := []struct {
-		name  string
-		level constraint.GkrProvingLevel
-	}{
-		{
-			name:  "single input wire",
-			level: &constraint.GkrSkipLevel{Wires: []int{5}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-		},
-		{
-			name:  "single identity gate",
-			level: &constraint.GkrSkipLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-		},
-		{
-			name:  "add gate",
-			level: &constraint.GkrSkipLevel{Wires: []int{4}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-		},
-		{
-			name:  "two identity gates one group",
-			level: &constraint.GkrSkipLevel{Wires: []int{2, 3}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
-		},
+	badHashClaims, err := Verify(c, schedule, logNbInstances, proof, newMessageCounter(0, 1))
+	if err == nil {
+		err = badHashClaims.Check(assignment)
 	}
-	for _, tc := range singleClaim {
-		t.Run(tc.name, func(t *testing.T) {
-			testLevel(t, circuit, tc.level)
-		})
+	assert.NotNil(t, err, "bad proof accepted")
+
+	for levelI := range proof {
+		tamperTargets := [][]{{ .ElementType }}{proof[levelI].finalEvalProof}
+		for _, p := range proof[levelI].partialSumPolys {
+			tamperTargets = append(tamperTargets, p)
+		}
+		for _, target := range tamperTargets {
+			if len(target) == 0 {
+				continue
+			}
+			target[0].Add(&target[0], &one)
+			claims, err := Verify(c, schedule, logNbInstances, proof, newMessageCounter(1, 1))
+			if levelI < len(schedule) || !c.IsInput(c.Outputs()[0]) {
+				assert.Error(t, err, "tampered proof accepted at level %d", levelI)
+			} else {
+				assert.NoError(t, err, "level %d: Verify should accept a tampered claim it cannot cross-check", levelI)
+				assert.Error(t, claims.Check(assignment), "level %d: tampered output claim accepted", levelI)
+			}
+			target[0].Sub(&target[0], &one)
+		}
 	}
 }
 
@@ -217,33 +156,7 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 
 		fullAssignment.Complete(sCircuit)
 
-		proof, err := Prove(sCircuit, schedule, fullAssignment, newMessageCounter(1, 1))
-		assert.NoError(t, err)
-
-		// Even though a hash is called here, the proof is empty
-
-		err = Verify(sCircuit, schedule, fullAssignment, proof, newMessageCounter(1, 1))
-		assert.NoError(t, err, "proof rejected")
-
-		err = Verify(sCircuit, schedule, fullAssignment, proof, newMessageCounter(0, 1))
-		assert.NotNil(t, err, "bad proof accepted")
-
-		// Tampering with the first element of any finalEvalProof or partial sum polynomial must be detected.
-		for levelI := range proof {
-			tamperTargets := [][]{{ .ElementType }}{proof[levelI].finalEvalProof}
-			for _, p := range proof[levelI].partialSumPolys {
-				tamperTargets = append(tamperTargets, p)
-			}
-			for _, target := range tamperTargets {
-				if len(target) == 0 {
-					continue
-				}
-				target[0].Add(&target[0], &one)
-				err = Verify(sCircuit, schedule, fullAssignment, proof, newMessageCounter(1, 1))
-				assert.NotNil(t, err, "tampered proof accepted at level %d", levelI)
-				target[0].Sub(&target[0], &one)
-			}
-		}
+		proveAndVerify(t, sCircuit, schedule, fullAssignment)
 	}
 }
 
@@ -255,20 +168,14 @@ func testNoGate(t *testing.T, inputAssignments ...[]{{ .ElementType }}) {
 
 	assignment := WireAssignment{0: inputAssignments[0]}
 
-	proof, err := Prove(c, schedule, assignment, newMessageCounter(1, 1))
-	assert.NoError(t, err)
-
-	// Even though a hash is called here, the proof is empty
-
-	err = Verify(c, schedule, assignment, proof, newMessageCounter(1, 1))
-	assert.NoError(t, err, "proof rejected")
+	proveAndVerify(t, c, schedule, assignment)
 }
 
 func generateTestProver(path string) func(t *testing.T) {
 	return func(t *testing.T) {
 		testCase, err := newTestCase(path)
 		assert.NoError(t, err)
-		proof, err := Prove(testCase.Circuit, testCase.Schedule, testCase.FullAssignment, testCase.Hash)
+		proof, _, err := Prove(testCase.Circuit, testCase.Schedule, testCase.FullAssignment, testCase.Hash)
 		assert.NoError(t, err)
 		assert.NoError(t, proofEquals(testCase.Proof, proof))
 	}
@@ -279,10 +186,15 @@ func generateTestVerifier(path string) func(t *testing.T) {
 		testCase, err := newTestCase(path)
 		assert.NoError(t, err)
 
-		err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, testCase.Proof, testCase.Hash)
+		logNbInstances := testCase.InOutAssignment.NumVars()
+		claims, err := Verify(testCase.Circuit, testCase.Schedule, logNbInstances, testCase.Proof, testCase.Hash)
 		assert.NoError(t, err, "proof rejected")
+		assert.NoError(t, claims.Check(testCase.InOutAssignment))
 
-		err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, testCase.Proof, newMessageCounter(2, 0))
+		claims, err = Verify(testCase.Circuit, testCase.Schedule, logNbInstances, testCase.Proof, newMessageCounter(2, 0))
+		if err == nil {
+			err = claims.Check(testCase.InOutAssignment)
+		}
 		assert.NotNil(t, err, "bad proof accepted")
 	}
 }
@@ -350,7 +262,7 @@ func benchmarkGkrMiMC(b *testing.B, nbInstances, mimcDepth int) {
 	//b.ResetTimer()
 	fmt.Println("constructing proof")
 	start = time.Now().UnixMicro()
-	_, err = Prove(c, schedule, assignment, mimc.NewMiMC())
+	_, _, err = Prove(c, schedule, assignment, mimc.NewMiMC())
 	proved := time.Now().UnixMicro() - start
 	fmt.Println("proved in", proved, "μs")
 	assert.NoError(b, err)
@@ -372,6 +284,49 @@ func TestSingleMulGateExplicitSchedule(t *testing.T) {
 	}
 	testWithSchedule(t, circuit, schedule)
 	_ = sCircuit
+}
+
+// TestTwoGroupsExplicitSchedule tests a level with two single-wire claim groups sharing the same
+// claim source. A default schedule never produces two groups here: same-degree wires with
+// identical claim sources are always merged into one group.
+func TestTwoGroupsExplicitSchedule(t *testing.T) {
+	// Wires 0,1 = inputs; wires 2,3 = mul(0,1), both independent outputs.
+	circuit := gkrcore.RawCircuit{
+		{},
+		{},
+		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
+		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
+	}
+	// One level, two claim groups, covering the whole circuit.
+	// GkrClaimSource{Level:1} is the initial-challenge sentinel (len(schedule)=1).
+	schedule := constraint.GkrProvingSchedule{
+		&constraint.GkrSumcheckLevel{
+			{Wires: []int{3}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
+			{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
+		},
+	}
+	testWithSchedule(t, circuit, schedule)
+}
+
+// TestMixedGroupsExplicitSchedule tests a level combining a single-wire claim group with a
+// multi-wire one, both sharing the same claim source.
+func TestMixedGroupsExplicitSchedule(t *testing.T) {
+	// Wires 0,1 = inputs; wires 2,3,4 = mul(0,1), all independent outputs.
+	circuit := gkrcore.RawCircuit{
+		{},
+		{},
+		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
+		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
+		{Gate: gkrcore.Mul2, Inputs: []int{0, 1}},
+	}
+	// One level, two claim groups (one single-wire, one two-wire), covering the whole circuit.
+	schedule := constraint.GkrProvingSchedule{
+		&constraint.GkrSumcheckLevel{
+			{Wires: []int{4}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
+			{Wires: []int{3, 2}, ClaimSources: []constraint.GkrClaimSource{ {Level: 1} }},
+		},
+	}
+	testWithSchedule(t, circuit, schedule)
 }
 
 func BenchmarkGkrMimc19(b *testing.B) {

@@ -135,8 +135,8 @@ func (e *zeroCheckLazyClaims) degree(int) int {
 // claims on each wire and c is foldingCoeff.
 // Both purportedValue and the vector r have been randomized during sumcheck.
 //
-// For input wires, w(r) is computed directly from the assignment and the claimed
-// evaluation in uniqueInputEvaluations is checked equal to it.
+// For input wires, the claimed evaluation in uniqueInputEvaluations is trusted here and checked
+// later, against the assignment, by Claims.Check.
 // For non-input wires, the prover claims evaluations of their gate inputs at r via
 // uniqueInputEvaluations; those claims are verified by lower levels' sumchecks.
 // The verifier checks consistency by evaluating gateᵥ(inputEvals...) and confirming
@@ -154,10 +154,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []{{ .ElementType }}, purportedV
 
 			var gateEval {{ .ElementType }}
 			if wire.IsInput() {
-				gateEval = e.resources.assignment[wI].Evaluate(r, &e.resources.memPool)
-				if !gateInputEvals[levelWireI][0].Equal(&gateEval) {
-					return errors.New("incompatible evaluations")
-				}
+				gateEval = gateInputEvals[levelWireI][0]
 			} else {
 				evaluator := newGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
 				for _, v := range gateInputEvals[levelWireI] {

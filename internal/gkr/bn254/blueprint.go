@@ -274,7 +274,7 @@ func (b *BlueprintProve) Solve(s constraint.Solver[constraint.U64], inst constra
 	}
 
 	// Call the BN254-specific Prove function (assignments already WireAssignment type)
-	proof, err := Prove(solveBlueprint.Circuit, b.Schedule, assignments, hsh)
+	proof, _, err := Prove(solveBlueprint.Circuit, b.Schedule, assignments, hsh)
 	if err != nil {
 		return fmt.Errorf("BN254 prove failed: %w", err)
 	}

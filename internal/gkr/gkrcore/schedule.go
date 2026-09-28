@@ -174,8 +174,19 @@ func (b *scheduleBuilder[G]) addSkipLevel(wireIndices []int) error {
 	return nil
 }
 
+// markProcessed records that wire wI has been assigned to level levelIdx (or -1, for a wire
+// that gets no level), and advances firstUnprocessedWire past it.
+func (b *scheduleBuilder[G]) markProcessed(wI, levelIdx int) {
+	b.wireLevels[wI] = levelIdx
+	b.wireProcessed[wI] = true
+	if wI == b.firstUnprocessedWire {
+		for b.firstUnprocessedWire--; b.firstUnprocessedWire >= 0 && b.wireProcessed[b.firstUnprocessedWire]; b.firstUnprocessedWire-- {
+		}
+	}
+}
+
 // buildClaimGroups processes a set of batches, validates claim source consistency within each
-// batch, updates wireLevels and wireProcessed, and returns the resulting GkrClaimGroups.
+// batch, marks each wire processed, and returns the resulting GkrClaimGroups.
 // Every ClaimSources slice is sorted. The user may reorder it to optimize eq handling.
 func (b *scheduleBuilder[G]) buildClaimGroups(batches [][]int) ([]constraint.GkrClaimGroup, error) {
 	levelIdx := len(b.levels)
@@ -192,12 +203,7 @@ func (b *scheduleBuilder[G]) buildClaimGroups(batches [][]int) ([]constraint.Gkr
 			} else if !slices.Equal(claimSources, wireClaims) {
 				return nil, fmt.Errorf("wires %d and %d in the same batch have different claim sources", wireIndices[0], wI)
 			}
-			b.wireLevels[wI] = levelIdx
-			b.wireProcessed[wI] = true
-			if wI == b.firstUnprocessedWire {
-				for b.firstUnprocessedWire--; b.firstUnprocessedWire >= 0 && b.wireProcessed[b.firstUnprocessedWire]; b.firstUnprocessedWire-- {
-				}
-			}
+			b.markProcessed(wI, levelIdx)
 		}
 		claimGroups[i] = constraint.GkrClaimGroup{Wires: slices.Clone(wireIndices), ClaimSources: claimSources}
 	}
@@ -306,10 +312,11 @@ const (
 func batchForWire[G any](c Circuit[G], highWI int, readyWireClaimSources [][]constraint.GkrClaimSource) (batchWires []int, levelType levelType) {
 	batchWires = []int{highWI}
 	for len(batchWires) < len(readyWireClaimSources) {
-		if c[highWI].Gate.Degree != c[highWI-len(batchWires)].Gate.Degree || !slices.Equal(readyWireClaimSources[0], readyWireClaimSources[len(batchWires)]) {
+		nextWI := highWI - len(batchWires)
+		if c[nextWI].IsInput() || c[highWI].Gate.Degree != c[nextWI].Gate.Degree || !slices.Equal(readyWireClaimSources[0], readyWireClaimSources[len(batchWires)]) {
 			break
 		}
-		batchWires = append(batchWires, highWI-len(batchWires))
+		batchWires = append(batchWires, nextWI)
 	}
 
 	batchClaimSources := readyWireClaimSources[0]
@@ -322,25 +329,21 @@ func batchForWire[G any](c Circuit[G], highWI int, readyWireClaimSources [][]con
 	return
 }
 
-// DefaultProvingSchedule generates a schedule that greedily batches input wires with the same
-// single claim source into the same GkrSkipLevel. Non-input wires, and input wires with multiple
-// claim sources, each get their own GkrSumcheckLevel.
+// DefaultProvingSchedule generates a schedule that gives every input wire no level, and greedily
+// batches non-input wires of matching degree and claim sources into shared levels.
 func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule, error) {
 	b := newScheduleBuilder(c)
 
 	for b.firstUnprocessedWire >= 0 {
 		highWI, readyWireClaimSources := b.nextReady()
-		// try and make a homogenous (same degree, same claims) batchWires
 		w := c[highWI]
-		batchClaimSources := readyWireClaimSources[0]
-		if w.IsInput() && len(batchClaimSources) == 1 {
-			if err := b.addSkipLevel([]int{highWI}); err != nil {
-				return nil, err
-			}
+		if w.IsInput() {
+			b.markProcessed(highWI, -1)
 			continue
 		}
 
 		// there is an actual "gate" in question
+		// try and make a homogenous (same degree, same claims) batchWires
 		batchWires, levelType := batchForWire(c, highWI, readyWireClaimSources)
 		var err error
 		switch levelType {
@@ -353,7 +356,7 @@ func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule,
 			nbLevelWires := len(batchWires)
 			for nbLevelWires < len(readyWireClaimSources) {
 				newBatchHighWI := highWI - nbLevelWires
-				if c[newBatchHighWI].Gate.Degree != c[highWI].Gate.Degree {
+				if c[newBatchHighWI].IsInput() || c[newBatchHighWI].Gate.Degree != c[highWI].Gate.Degree {
 					break
 				}
 				batchWires, levelType = batchForWire(c, newBatchHighWI, readyWireClaimSources[nbLevelWires:])
