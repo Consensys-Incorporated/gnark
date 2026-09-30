@@ -700,8 +700,7 @@ func TestNoInstance(t *testing.T) {
 	var circuit testNoInstanceCircuit
 	assignment := testNoInstanceCircuit{0}
 
-	// Dummy exists only so that the witness is not empty; nothing reads it.
-	test.NewAssert(t).CheckCircuit(&circuit, test.WithValidAssignment(&assignment), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	test.NewAssert(t).CheckCircuit(&circuit, test.WithValidAssignment(&assignment))
 }
 
 type testNoInstanceCircuit struct {
@@ -709,6 +708,7 @@ type testNoInstanceCircuit struct {
 }
 
 func (c *testNoInstanceCircuit) Define(api frontend.API) error {
+	api.AssertIsEqual(c.Dummy, 0)
 	gkrApi, err := New(api)
 	if err != nil {
 		return err

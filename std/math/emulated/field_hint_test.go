@@ -12,8 +12,36 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/internal/utils"
+	"github.com/consensys/gnark/std/math/bits"
 	"github.com/consensys/gnark/test"
 )
+
+// nativeToEmulated returns the native variable as an emulated element. The
+// variable has to fit in the smaller of the two fields.
+func nativeToEmulated[T FieldParams](api frontend.API, f *Field[T], v frontend.Variable) *Element[T] {
+	var fp T
+	nbBits := min(api.Compiler().FieldBitLen(), fp.Modulus().BitLen())
+	return f.FromBits(bits.ToBinary(api, v, bits.WithNbDigits(nbBits))...)
+}
+
+// emulatedToNative returns the emulated element reduced modulo the native
+// modulus.
+func emulatedToNative[T FieldParams](api frontend.API, f *Field[T], e *Element[T]) frontend.Variable {
+	return bits.FromBinary(api, f.ToBits(e))
+}
+
+// randBelowBoth samples a random integer below both moduli.
+func randBelowBoth(a, b *big.Int) *big.Int {
+	bound := a
+	if b.Cmp(a) < 0 {
+		bound = b
+	}
+	r, err := rand.Int(rand.Reader, bound)
+	if err != nil {
+		panic(err)
+	}
+	return r
+}
 
 func nnaHint(nativeMod *big.Int, nativeInputs, nativeOutputs []*big.Int) error {
 	return UnwrapHint(nativeInputs, nativeOutputs, func(mod *big.Int, inputs, outputs []*big.Int) error {
@@ -46,6 +74,8 @@ func (c *hintCircuit[T]) Define(api frontend.API) error {
 		return err
 	}
 	field.AssertIsEqual(res[0], &c.Expected)
+	// res = nominator / denominator
+	field.AssertIsEqual(field.Mul(res[0], &c.Denominator), &c.Nominator)
 	return nil
 }
 
@@ -64,9 +94,7 @@ func testHint[T FieldParams](t *testing.T) {
 		Denominator: ValueOf[T](b),
 		Expected:    ValueOf[T](c),
 	}
-	// the inputs are only passed to the hint, which does not constrain them;
-	// the circuit checks the hint plumbing and asserts nothing that reads them.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithSolverOpts(solver.WithHints(nnaHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithSolverOpts(solver.WithHints(nnaHint)))
 }
 
 func TestHint(t *testing.T) {
@@ -106,14 +134,20 @@ func (c *hintNativeInputCircuit[T]) Define(api frontend.API) error {
 		return err
 	}
 	field.AssertIsEqual(res[0], &c.Expected)
+	// res = nominator / denominator, with the native inputs seen as emulated
+	// elements
+	nominator, denominator := nativeToEmulated(api, field, c.Nominator), nativeToEmulated(api, field, c.Denominator)
+	field.AssertIsEqual(field.Mul(res[0], denominator), nominator)
 	return nil
 }
 
 func testHintNativeInput[T FieldParams](t *testing.T) {
 	var fr T
 	assert := test.NewAssert(t)
-	a, _ := rand.Int(rand.Reader, testCurve.ScalarField())
-	b, _ := rand.Int(rand.Reader, testCurve.ScalarField())
+	// the circuit converts the native inputs into emulated elements, so they
+	// have to fit into both fields
+	a := randBelowBoth(testCurve.ScalarField(), fr.Modulus())
+	b := randBelowBoth(testCurve.ScalarField(), fr.Modulus())
 	c := new(big.Int).ModInverse(b, fr.Modulus())
 	c.Mul(c, a)
 	c.Mod(c, fr.Modulus())
@@ -124,9 +158,7 @@ func testHintNativeInput[T FieldParams](t *testing.T) {
 		Denominator: b,
 		Expected:    ValueOf[T](c),
 	}
-	// the inputs are only passed to the hint, which does not constrain them;
-	// the circuit checks the hint plumbing and asserts nothing that reads them.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(testCurve), test.WithSolverOpts(solver.WithHints(nativeInputHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(testCurve), test.WithSolverOpts(solver.WithHints(nativeInputHint)))
 }
 
 func TestHintNativeInput(t *testing.T) {
@@ -167,6 +199,10 @@ func (c *hintNativeOutputCircuit[T]) Define(api frontend.API) error {
 	}
 	api.AssertIsEqual(res[0], c.Expected)
 	api.AssertIsDifferent(c.Expected, 0)
+	// res = nominator / denominator in the native field, with the emulated
+	// inputs reduced modulo the native modulus
+	nominator, denominator := emulatedToNative(api, field, &c.Nominator), emulatedToNative(api, field, &c.Denominator)
+	api.AssertIsEqual(api.Mul(res[0], denominator), nominator)
 	return nil
 }
 
@@ -185,9 +221,7 @@ func testHintNativeOutput[T FieldParams](t *testing.T) {
 		Denominator: ValueOf[T](b),
 		Expected:    c,
 	}
-	// the inputs are only passed to the hint, which does not constrain them;
-	// the circuit checks the hint plumbing and asserts nothing that reads them.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(testCurve), test.WithSolverOpts(solver.WithHints(nativeOutputHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(testCurve), test.WithSolverOpts(solver.WithHints(nativeOutputHint)))
 }
 
 func TestHintNativeOutput(t *testing.T) {
@@ -237,8 +271,8 @@ func (c *genericHintCircuitNativeInNativeOut[T]) Define(api frontend.API) error 
 		return fmt.Errorf("expected 0 emulated outputs, got %d", len(outEm))
 	}
 	api.AssertIsEqual(outNative[0], c.Expected)
-	// duplicate constraint to ensure PLONK circuit has at least two constraints
-	api.AssertIsEqual(c.Expected, c.Expected)
+	// res = nominator / denominator
+	api.AssertIsEqual(api.Mul(outNative[0], c.Denominator), c.Nominator)
 	return nil
 }
 
@@ -256,9 +290,7 @@ func testGenericHintNativeInNativeOut[T FieldParams](t *testing.T) {
 		Denominator: b,
 		Expected:    c,
 	}
-	// the inputs are only passed to the hint, which does not constrain them;
-	// the circuit checks the hint plumbing and asserts nothing that reads them.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintNativeInNativeOut)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintNativeInNativeOut)))
 }
 
 func TestGenericHintNativeInNativeOut(t *testing.T) {
@@ -314,14 +346,20 @@ func (c *genericHintCircuitNativeInEmulatedOut[T]) Define(api frontend.API) erro
 		return fmt.Errorf("expected 1 emulated output, got %d", len(outEm))
 	}
 	f.AssertIsEqual(outEm[0], &c.Expected)
+	// res = nominator / denominator, with the native inputs seen as emulated
+	// elements
+	nominator, denominator := nativeToEmulated(api, f, c.Nominator), nativeToEmulated(api, f, c.Denominator)
+	f.AssertIsEqual(f.Mul(outEm[0], denominator), nominator)
 	return nil
 }
 
 func testGenericHintNativeInEmulatedOut[T FieldParams](t *testing.T) {
 	var fr T
 	assert := test.NewAssert(t)
-	a, _ := rand.Int(rand.Reader, ecc.BN254.ScalarField())
-	b, _ := rand.Int(rand.Reader, ecc.BN254.ScalarField())
+	// the circuit converts the native inputs into emulated elements, so they
+	// have to fit into both fields
+	a := randBelowBoth(ecc.BN254.ScalarField(), fr.Modulus())
+	b := randBelowBoth(ecc.BN254.ScalarField(), fr.Modulus())
 	c := new(big.Int).ModInverse(b, fr.Modulus())
 	c.Mul(c, a)
 	c.Mod(c, fr.Modulus())
@@ -332,9 +370,7 @@ func testGenericHintNativeInEmulatedOut[T FieldParams](t *testing.T) {
 		Denominator: b,
 		Expected:    ValueOf[T](c),
 	}
-	// the inputs are only passed to the hint, which does not constrain them;
-	// the circuit checks the hint plumbing and asserts nothing that reads them.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintNativeInEmulatedOut)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintNativeInEmulatedOut)))
 }
 
 func TestGenericHintNativeInEmulatedOut(t *testing.T) {
@@ -389,6 +425,8 @@ func (c *genericHintCircuitEmulatedInEmulatedOut[T]) Define(api frontend.API) er
 		return fmt.Errorf("expected 1 emulated output, got %d", len(outEm))
 	}
 	f.AssertIsEqual(outEm[0], &c.Expected)
+	// res = nominator / denominator
+	f.AssertIsEqual(f.Mul(outEm[0], &c.Denominator), &c.Nominator)
 	return nil
 }
 
@@ -407,9 +445,7 @@ func testGenericHintEmulatedInEmulatedOut[T FieldParams](t *testing.T) {
 		Denominator: ValueOf[T](b),
 		Expected:    ValueOf[T](c),
 	}
-	// the inputs are only passed to the hint, which does not constrain them;
-	// the circuit checks the hint plumbing and asserts nothing that reads them.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithSolverOpts(solver.WithHints(hintEmulatedInEmulatedOut)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithSolverOpts(solver.WithHints(hintEmulatedInEmulatedOut)))
 }
 
 func TestGenericHintEmulatedInEmulatedOut(t *testing.T) {
@@ -465,8 +501,10 @@ func (c *genericHintCircuitEmulatedInNativeOut[T]) Define(api frontend.API) erro
 		return fmt.Errorf("expected 0 emulated outputs, got %d", len(outEm))
 	}
 	api.AssertIsEqual(outNat[0], c.Expected)
-	// duplicate constraint to ensure PLONK circuit has at least two constraints
-	api.AssertIsEqual(c.Expected, c.Expected)
+	// res = nominator / denominator in the native field, with the emulated
+	// inputs reduced modulo the native modulus
+	nominator, denominator := emulatedToNative(api, f, &c.Nominator), emulatedToNative(api, f, &c.Denominator)
+	api.AssertIsEqual(api.Mul(outNat[0], denominator), nominator)
 	return nil
 }
 
@@ -484,9 +522,7 @@ func testGenericHintEmulatedInNativeOut[T FieldParams](t *testing.T) {
 		Denominator: ValueOf[T](b),
 		Expected:    c,
 	}
-	// the inputs are only passed to the hint, which does not constrain them;
-	// the circuit checks the hint plumbing and asserts nothing that reads them.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintEmulatedInNativeOut)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(hintEmulatedInNativeOut)))
 }
 
 func TestGenericHintEmulatedInNativeOut(t *testing.T) {
@@ -510,16 +546,13 @@ func crossfieldHint(nativeMod *big.Int, nativeInputs, nativeOutputs []*big.Int) 
 			len(emulatedInputs2) != 2 || len(emulatedOutputs2) != 1 {
 			return errors.New("unexpected number of inputs or outputs")
 		}
-		res := new(big.Int)
-		res.Mul(res, nativeInputs[0])
-		res.Mul(res, nativeInputs[1])
-		res.Mod(res, emulatedInputs1[0])
-		res.Mul(res, emulatedInputs1[1])
-		res.Mul(res, emulatedInputs2[0])
-		res.Mul(res, emulatedInputs2[1])
-		nativeOutputs[0].Mod(res, nativeMod)
-		emulatedOutputs1[0].Mod(res, emulatedMod1)
-		emulatedOutputs2[0].Mod(res, emulatedMod2)
+		// every field multiplies its own inputs
+		nativeOutputs[0].Mul(nativeInputs[0], nativeInputs[1])
+		nativeOutputs[0].Mod(nativeOutputs[0], nativeMod)
+		emulatedOutputs1[0].Mul(emulatedInputs1[0], emulatedInputs1[1])
+		emulatedOutputs1[0].Mod(emulatedOutputs1[0], emulatedMod1)
+		emulatedOutputs2[0].Mul(emulatedInputs2[0], emulatedInputs2[1])
+		emulatedOutputs2[0].Mod(emulatedOutputs2[0], emulatedMod2)
 		return nil
 	})
 }
@@ -554,6 +587,10 @@ func (c *crossfieldHintCircuit[T1, T2]) Define(api frontend.API) error {
 	api.AssertIsEqual(outNative[0], c.ExpectedNative)
 	f1.AssertIsEqual(outEm1[0], &c.ExpectedEmulated1)
 	f2.AssertIsEqual(outEm2[0], &c.ExpectedEmulated2)
+	// every output is the product of the inputs of its field
+	api.AssertIsEqual(api.Mul(c.A, c.B), outNative[0])
+	f1.AssertIsEqual(f1.Mul(&c.C, &c.D), outEm1[0])
+	f2.AssertIsEqual(f2.Mul(&c.E, &c.F), outEm2[0])
 	return nil
 }
 
@@ -567,16 +604,12 @@ func testCrossFieldHint[T1, T2 FieldParams](t *testing.T) {
 	d, _ := rand.Int(rand.Reader, fr1.Modulus())
 	e, _ := rand.Int(rand.Reader, fr2.Modulus())
 	f, _ := rand.Int(rand.Reader, fr2.Modulus())
-	res := new(big.Int)
-	res.Mul(res, a)
-	res.Mul(res, b)
-	res.Mod(res, c)
-	res.Mul(res, d)
-	res.Mul(res, e)
-	res.Mul(res, f)
-	res1 := new(big.Int).Mod(res, ecc.BN254.ScalarField())
-	res2 := new(big.Int).Mod(res, fr1.Modulus())
-	res3 := new(big.Int).Mod(res, fr2.Modulus())
+	res1 := new(big.Int).Mul(a, b)
+	res1.Mod(res1, ecc.BN254.ScalarField())
+	res2 := new(big.Int).Mul(c, d)
+	res2.Mod(res2, fr1.Modulus())
+	res3 := new(big.Int).Mul(e, f)
+	res3.Mod(res3, fr2.Modulus())
 	circuit := crossfieldHintCircuit[T1, T2]{}
 	witness := crossfieldHintCircuit[T1, T2]{
 		A:                 a,
@@ -589,9 +622,7 @@ func testCrossFieldHint[T1, T2 FieldParams](t *testing.T) {
 		ExpectedEmulated1: ValueOf[T1](res2),
 		ExpectedEmulated2: ValueOf[T2](res3),
 	}
-	// the inputs are only passed to the hint, which does not constrain them;
-	// the circuit checks the hint plumbing and asserts nothing that reads them.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(crossfieldHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithSolverOpts(solver.WithHints(crossfieldHint)))
 }
 
 func TestCrossFieldHint(t *testing.T) {
@@ -650,6 +681,9 @@ func (c *matchingFieldHintCircuit[T]) Define(api frontend.API) error {
 	}
 	api.AssertIsEqual(outNative[0], c.ExpectedNative)
 	f.AssertIsEqual(outEm[0], &c.ExpectedEmulated)
+	// every output is the product of the inputs of its field
+	api.AssertIsEqual(api.Mul(c.A, c.B), outNative[0])
+	f.AssertIsEqual(f.Mul(&c.C, &c.D), outEm[0])
 	return nil
 }
 
@@ -672,9 +706,7 @@ func testMatchingFieldHint[T FieldParams](t *testing.T) {
 		ExpectedNative:   res1,
 		ExpectedEmulated: ValueOf[T](res2),
 	}
-	// the inputs are only passed to the hint, which does not constrain them;
-	// the circuit checks the hint plumbing and asserts nothing that reads them.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(utils.FieldToCurve(fr.Modulus())), test.WithSolverOpts(solver.WithHints(matchingFieldHint)), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(utils.FieldToCurve(fr.Modulus())), test.WithSolverOpts(solver.WithHints(matchingFieldHint)))
 }
 
 func TestMatchingFieldHint(t *testing.T) {

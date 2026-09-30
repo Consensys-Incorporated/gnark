@@ -161,7 +161,14 @@ type WitnessCircut struct {
 	A emulated.Element[emparams.Secp256k1Fr] `gnark:",public"`
 }
 
-func (c *WitnessCircut) Define(frontend.API) error { return nil }
+func (c *WitnessCircut) Define(api frontend.API) error {
+	f, err := emulated.NewField[emparams.Secp256k1Fr](api)
+	if err != nil {
+		return err
+	}
+	f.AssertIsInRange(&c.A)
+	return nil
+}
 
 func TestValueOfWitness(t *testing.T) {
 	assignment := WitnessCircut{
@@ -231,8 +238,7 @@ func TestValueOfProof(t *testing.T) {
 func TestValueOfVerifyingKey(t *testing.T) {
 	assert := test.NewAssert(t)
 	assert.Run(func(assert *test.Assert) {
-		// WitnessCircut declares an input and has an empty Define.
-		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &WitnessCircut{}, frontend.IgnoreUnconstrainedInputs())
+		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &WitnessCircut{})
 		assert.NoError(err)
 		_, vk, err := groth16.Setup(ccs)
 		assert.NoError(err)
@@ -241,8 +247,7 @@ func TestValueOfVerifyingKey(t *testing.T) {
 		_ = vvk
 	}, "bn254")
 	assert.Run(func(assert *test.Assert) {
-		// WitnessCircut declares an input and has an empty Define.
-		ccs, err := frontend.Compile(ecc.BLS12_377.ScalarField(), r1cs.NewBuilder, &WitnessCircut{}, frontend.IgnoreUnconstrainedInputs())
+		ccs, err := frontend.Compile(ecc.BLS12_377.ScalarField(), r1cs.NewBuilder, &WitnessCircut{})
 		assert.NoError(err)
 		_, vk, err := groth16.Setup(ccs)
 		assert.NoError(err)
@@ -251,8 +256,7 @@ func TestValueOfVerifyingKey(t *testing.T) {
 		_ = vvk
 	}, "bls12377")
 	assert.Run(func(assert *test.Assert) {
-		// WitnessCircut declares an input and has an empty Define.
-		ccs, err := frontend.Compile(ecc.BLS12_381.ScalarField(), r1cs.NewBuilder, &WitnessCircut{}, frontend.IgnoreUnconstrainedInputs())
+		ccs, err := frontend.Compile(ecc.BLS12_381.ScalarField(), r1cs.NewBuilder, &WitnessCircut{})
 		assert.NoError(err)
 		_, vk, err := groth16.Setup(ccs)
 		assert.NoError(err)

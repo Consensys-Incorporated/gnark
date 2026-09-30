@@ -50,6 +50,9 @@ func (c *Circuit[T]) Define(api frontend.API) error {
 	if tStored3.Value != t {
 		return fmt.Errorf("expected %v, got %v", t, tStored3.Value)
 	}
+	// the circuit is about the key-value store; bind the input so that the
+	// circuit has no unconstrained wire
+	api.AssertIsDifferent(c.A, 0)
 	return nil
 }
 
@@ -65,10 +68,9 @@ func TestKeyValue(t *testing.T) {
 	err = test.IsSolved(&Circuit[string]{}, &Circuit[string]{A: "1234"}, ecc.BN254.ScalarField())
 	assert.NoError(err)
 
-	// test during compilation; the circuit exercises the key-value store and
-	// never constrains its input.
-	_, err = frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &Circuit[int]{}, frontend.IgnoreUnconstrainedInputs())
+	// test during compilation
+	_, err = frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &Circuit[int]{})
 	assert.NoError(err)
-	_, err = frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &Circuit[int]{}, frontend.IgnoreUnconstrainedInputs())
+	_, err = frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &Circuit[int]{})
 	assert.NoError(err)
 }

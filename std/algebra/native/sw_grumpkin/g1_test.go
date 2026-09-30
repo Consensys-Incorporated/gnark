@@ -581,7 +581,6 @@ func TestMultiScalarMul(t *testing.T) {
 
 type g1JointScalarMulEdgeCases struct {
 	A, B, Inf  G1Affine
-	C          G1Affine `gnark:",public"`
 	R, S, Zero frontend.Variable
 }
 
@@ -607,7 +606,7 @@ func TestJointScalarMulG1EdgeCases(t *testing.T) {
 	// sample random point
 	_a := randomPointG1()
 	_b := randomPointG1()
-	var a, b, c grumpkin.G1Affine
+	var a, b grumpkin.G1Affine
 	a.FromJacobian(&_a)
 	b.FromJacobian(&_b)
 
@@ -621,21 +620,13 @@ func TestJointScalarMulG1EdgeCases(t *testing.T) {
 	// assign the inputs
 	witness.A.Assign(&a)
 	witness.B.Assign(&b)
-	// compute the result
-	var br, bs big.Int
-	_a.ScalarMultiplication(&_a, r.BigInt(&br))
-	_b.ScalarMultiplication(&_b, s.BigInt(&bs))
-	_a.AddAssign(&_b)
-	c.FromJacobian(&_a)
-	witness.C.Assign(&c)
 
 	witness.Inf.X = 0
 	witness.Inf.Y = 0
 	witness.Zero = 0
 
 	assert := test.NewAssert(t)
-	// the circuit declares inputs it does not reference.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BN254))
 }
 
 type g1JointScalarMul struct {
