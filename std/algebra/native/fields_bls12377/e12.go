@@ -439,11 +439,20 @@ func (e *E12) DecompressKarabina2345(api frontend.API, x E12) *E12 {
 	// g4 = (E * g5^2 + 3 * g1^2 - 2 * g2)/4g3 or (2 * g1 * g5)/g2
 	t[0].Select(api, selector1, _t[0], t[0])
 	t[1].Select(api, selector1, _t[1], t[1])
-	// if g2 == g3 == 0 we do nothing as DivUnchecked sets g4 to 0
-	// and all gi to 0 returning, correctly in this case, at the end:
-	// e = E * (2 * g4² + g3 * g5 - 3 * g2 * g1) + 1 = 1
-
-	e.C1.B1.DivUnchecked(api, t[0], t[1])
+	// When g2 == g3 == 0 the denominator t1 is 0. A plain DivUnchecked(t0, 0)
+	// only enforces g4·0 == t0, i.e. 0 == 0 (t0 is also 0 in this case), leaving
+	// g4 a free, prover-chosen hint value — a soundness gap. The only reachable
+	// element with g2 == g3 == 0 is the identity (g1 == g5 == 0 too), whose
+	// honest decompression has g4 = 0 and gives e = 1. So pin g4 = 0 here instead
+	// of relying on the hint; non-degenerate steps (t1 != 0) are unchanged.
+	t1IsZero := t[1].IsZero(api)
+	var one2, zero2, t1Safe E2
+	one2.SetOne()
+	zero2.SetZero()
+	t1Safe.Select(api, t1IsZero, one2, t[1])
+	e.C1.B1.DivUnchecked(api, t[0], t1Safe)
+	g4 := e.C1.B1
+	e.C1.B1.Select(api, t1IsZero, zero2, g4)
 
 	// Rest of the computation for all cases
 	// t1 = g2 * g1

@@ -181,6 +181,61 @@ func TestSubSameNoConstraint(t *testing.T) {
 	}
 }
 
+type lookup2ConstantSelectorCircuit struct {
+	B                    frontend.Variable
+	I0, I1, I2, I3, Want frontend.Variable
+	Mode                 int `gnark:"-"`
+}
+
+func (c *lookup2ConstantSelectorCircuit) Define(api frontend.API) error {
+	api.AssertIsBoolean(c.B)
+	var y frontend.Variable
+	switch c.Mode {
+	case 0:
+		y = api.Lookup2(0, c.B, c.I0, c.I1, c.I2, c.I3)
+	case 1:
+		y = api.Lookup2(1, c.B, c.I0, c.I1, c.I2, c.I3)
+	case 2:
+		y = api.Lookup2(c.B, 0, c.I0, c.I1, c.I2, c.I3)
+	case 3:
+		y = api.Lookup2(c.B, 1, c.I0, c.I1, c.I2, c.I3)
+	default:
+		panic("invalid mode")
+	}
+	api.AssertIsEqual(y, c.Want)
+	return nil
+}
+
+func TestLookup2ConstantSelector(t *testing.T) {
+	for _, tc := range []struct {
+		mode, bit, want int
+	}{
+		{0, 0, 10}, {0, 1, 30},
+		{1, 0, 20}, {1, 1, 40},
+		{2, 0, 10}, {2, 1, 20},
+		{3, 0, 30}, {3, 1, 40},
+	} {
+		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), NewBuilder, &lookup2ConstantSelectorCircuit{Mode: tc.mode})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, err := frontend.NewWitness(&lookup2ConstantSelectorCircuit{
+			B:    tc.bit,
+			I0:   10,
+			I1:   20,
+			I2:   30,
+			I3:   40,
+			Want: tc.want,
+		}, ecc.BN254.ScalarField())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = ccs.Solve(w); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 type overwriteZeroConstCircuit struct {
 	X frontend.Variable
 	Y frontend.Variable
@@ -293,5 +348,38 @@ func TestDivUncheckedNonZeroNumeratorZeroDenominatorFails(t *testing.T) {
 	}
 	if _, err = ccs.Solve(wit); err == nil {
 		t.Fatal("expected r1cs solver to fail")
+	}
+}
+
+type commitToAlreadyCommittedVarCircuit struct {
+	A, B frontend.Variable
+}
+
+func (c *commitToAlreadyCommittedVarCircuit) Define(api frontend.API) error {
+	cm := api.(frontend.Committer)
+	if _, err := cm.Commit(c.A); err != nil { // 1st commitment
+		return err
+	}
+	v1 := api.Mul(c.B, c.B)
+	if _, err := cm.Commit(v1); err != nil { // 2nd commitment, privately commits v1
+		return err
+	}
+	_, err := cm.Commit(v1) // re-commit v1, already covered by the 2nd commitment
+	return err
+}
+
+// commits to a variable that a prior commitment already privately committed to.
+func TestCommitToAlreadyCommittedVariable(t *testing.T) {
+	circuit := &commitToAlreadyCommittedVarCircuit{}
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), NewBuilder, circuit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wit, err := frontend.NewWitness(&commitToAlreadyCommittedVarCircuit{A: 3, B: 5}, ecc.BN254.ScalarField())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ccs.Solve(wit); err != nil {
+		t.Fatal(err)
 	}
 }

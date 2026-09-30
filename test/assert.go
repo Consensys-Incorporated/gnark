@@ -77,7 +77,7 @@ func deepEqualMismatchValue(a, b reflect.Value, path string) (string, string, st
 	}
 
 	switch a.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if a.IsNil() && b.IsNil() {
 			return "", "", ""
 		}

@@ -82,6 +82,11 @@ type ProvingKey struct {
 
 	// Verifying Key is embedded into the proving key (needed by Prove)
 	Vk *VerifyingKey
+
+	// accelerator, when set, offloads the multi-scalar multiplications, the
+	// quotient numerator and the large inverse FFT of Prove (see Accelerator).
+	// Runtime-only, not serialized.
+	accelerator Accelerator
 }
 
 func Setup(spr *cs.SparseR1CS, srs, srsLagrange kzg.SRS) (*ProvingKey, *VerifyingKey, error) {

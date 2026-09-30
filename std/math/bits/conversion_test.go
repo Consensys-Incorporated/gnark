@@ -208,3 +208,48 @@ func TestFromBinaryInvalidInput(t *testing.T) {
 		Variable:       big.NewInt(3),
 	}))
 }
+
+type toBinaryUpperBoundCircuit struct {
+	A     frontend.Variable
+	bound *big.Int
+}
+
+func (c *toBinaryUpperBoundCircuit) Define(api frontend.API) error {
+	bits.ToBinary(api, c.A, bits.WithUpperBound(c.bound))
+	return nil
+}
+
+// The bound has to bind on its own, including when the digit count already
+// keeps the value below the modulus. 100 is representable in the default number
+// of digits, so only the bound can reject it.
+func TestToBinaryUpperBound(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	assert.CheckCircuit(&toBinaryUpperBoundCircuit{bound: big.NewInt(100)},
+		test.WithValidAssignment(&toBinaryUpperBoundCircuit{A: 0}),
+		test.WithValidAssignment(&toBinaryUpperBoundCircuit{A: 99}),
+		test.WithValidAssignment(&toBinaryUpperBoundCircuit{A: 100}),
+		test.WithInvalidAssignment(&toBinaryUpperBoundCircuit{A: 101}),
+		test.WithInvalidAssignment(&toBinaryUpperBoundCircuit{A: 255}),
+	)
+}
+
+type toBinaryUpperBoundFewDigitsCircuit struct {
+	A frontend.Variable
+}
+
+func (c *toBinaryUpperBoundFewDigitsCircuit) Define(api frontend.API) error {
+	// WithNbDigits alone would skip the comparison entirely; the explicit bound
+	// must still be enforced on top of it.
+	bits.ToBinary(api, c.A, bits.WithNbDigits(8), bits.WithUpperBound(big.NewInt(100)))
+	return nil
+}
+
+func TestToBinaryUpperBoundWithNbDigits(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	assert.CheckCircuit(&toBinaryUpperBoundFewDigitsCircuit{},
+		test.WithValidAssignment(&toBinaryUpperBoundFewDigitsCircuit{A: 100}),
+		test.WithInvalidAssignment(&toBinaryUpperBoundFewDigitsCircuit{A: 101}),
+	)
+}

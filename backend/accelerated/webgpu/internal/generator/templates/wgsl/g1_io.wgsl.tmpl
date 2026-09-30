@@ -1,0 +1,35 @@
+{{- /* G1 point load/store for the g1 ops and MSM pipelines. Dot is the Fp wgslField.
+       Jacobian points are 3 coordinates (or affine with z as the infinity flag);
+       MSM bases are stored affine as 2 coordinates (x, y; infinity all zero). */ -}}
+{{- $n := .Limbs -}}
+{{template "field_io_ab" .}}
+
+fn g1_load_from(buffer_kind: u32, index: u32) -> G1Point {
+  let base = index * {{mul 3 $n}}u;
+  var p: G1Point;
+  p.x = {{.Prefix}}_load_from(buffer_kind, base + 0u);
+  p.y = {{.Prefix}}_load_from(buffer_kind, base + {{$n}}u);
+  p.z = {{.Prefix}}_load_from(buffer_kind, base + {{mul 2 $n}}u);
+  return p;
+}
+
+// Load affine base `index` (x, y) from input_a; z becomes the infinity flag
+// (one for a finite point, zero for the all-zero encoding of infinity).
+fn g1_load_affine(index: u32) -> G1Point {
+  let base = index * {{mul 2 $n}}u;
+  var p: G1Point;
+  p.x = {{.Prefix}}_load_from(0u, base + 0u);
+  p.y = {{.Prefix}}_load_from(0u, base + {{$n}}u);
+  p.z = {{.Prefix}}_zero();
+  if (!({{.Prefix}}_is_zero(p.x) && {{.Prefix}}_is_zero(p.y))) {
+    p.z = {{.Prefix}}_one();
+  }
+  return p;
+}
+
+fn g1_store(index: u32, value: G1Point) {
+  let base = index * {{mul 3 $n}}u;
+  {{.Prefix}}_store(base + 0u, value.x);
+  {{.Prefix}}_store(base + {{$n}}u, value.y);
+  {{.Prefix}}_store(base + {{mul 2 $n}}u, value.z);
+}

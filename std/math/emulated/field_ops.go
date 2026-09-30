@@ -284,11 +284,17 @@ func (f *Field[T]) Select(selector frontend.Variable, a, b *Element[T]) *Element
 	e := f.newInternalElement(make([]frontend.Variable, nbLimbs), overflow)
 	normalize := func(limbs []frontend.Variable) []frontend.Variable {
 		if len(limbs) < nbLimbs {
-			tail := make([]frontend.Variable, nbLimbs-len(limbs))
-			for i := range tail {
-				tail[i] = 0
+			// Copy into a fresh slice instead of append: limbs may share backing
+			// storage with the carry-limb slice of a pending deferred check
+			// (allocated from the same hint-output block). append would then write
+			// zeros over those committed carry limbs before the challenge is drawn,
+			// corrupting the deferred check (a liveness fault).
+			out := make([]frontend.Variable, nbLimbs)
+			copy(out, limbs)
+			for i := len(limbs); i < nbLimbs; i++ {
+				out[i] = 0
 			}
-			return append(limbs, tail...)
+			return out
 		}
 		return limbs
 	}
@@ -322,11 +328,17 @@ func (f *Field[T]) Lookup2(b0, b1 frontend.Variable, a, b, c, d *Element[T]) *El
 	e := f.newInternalElement(make([]frontend.Variable, nbLimbs), overflow)
 	normalize := func(limbs []frontend.Variable) []frontend.Variable {
 		if len(limbs) < nbLimbs {
-			tail := make([]frontend.Variable, nbLimbs-len(limbs))
-			for i := range tail {
-				tail[i] = 0
+			// Copy into a fresh slice instead of append: limbs may share backing
+			// storage with the carry-limb slice of a pending deferred check
+			// (allocated from the same hint-output block). append would then write
+			// zeros over those committed carry limbs before the challenge is drawn,
+			// corrupting the deferred check (a liveness fault).
+			out := make([]frontend.Variable, nbLimbs)
+			copy(out, limbs)
+			for i := len(limbs); i < nbLimbs; i++ {
+				out[i] = 0
 			}
-			return append(limbs, tail...)
+			return out
 		}
 		return limbs
 	}
@@ -370,11 +382,17 @@ func (f *Field[T]) Mux(sel frontend.Variable, inputs ...*Element[T]) *Element[T]
 	}
 	normalize := func(limbs []frontend.Variable) []frontend.Variable {
 		if len(limbs) < nbLimbs {
-			tail := make([]frontend.Variable, nbLimbs-len(limbs))
-			for i := range tail {
-				tail[i] = 0
+			// Copy into a fresh slice instead of append: limbs may share backing
+			// storage with the carry-limb slice of a pending deferred check
+			// (allocated from the same hint-output block). append would then write
+			// zeros over those committed carry limbs before the challenge is drawn,
+			// corrupting the deferred check (a liveness fault).
+			out := make([]frontend.Variable, nbLimbs)
+			copy(out, limbs)
+			for i := len(limbs); i < nbLimbs; i++ {
+				out[i] = 0
 			}
-			return append(limbs, tail...)
+			return out
 		}
 		return limbs
 	}

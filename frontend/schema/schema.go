@@ -182,7 +182,7 @@ func parse(r []Field, input interface{}, target reflect.Type, parentFullName, pa
 	tValue := reflect.ValueOf(input)
 
 	// get pointed value if needed
-	if tValue.Kind() == reflect.Ptr {
+	if tValue.Kind() == reflect.Pointer {
 		tValue = tValue.Elem()
 	}
 

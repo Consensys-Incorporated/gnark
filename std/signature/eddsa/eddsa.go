@@ -12,6 +12,7 @@ import (
 	tedwards "github.com/consensys/gnark-crypto/ecc/twistededwards"
 
 	edwardsbls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/twistededwards"
+	edwardsbandersnatch "github.com/consensys/gnark-crypto/ecc/bls12-381/bandersnatch"
 	edwardsbls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/twistededwards"
 	edwardsbn254 "github.com/consensys/gnark-crypto/ecc/bn254/twistededwards"
 	edwardsbw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/twistededwards"
@@ -118,6 +119,7 @@ func parseSignature(curveID tedwards.ID, buf []byte) ([]byte, []byte, []byte, er
 
 	var pointbn254 edwardsbn254.PointAffine
 	var pointbls12381 edwardsbls12381.PointAffine
+	var pointbandersnatch edwardsbandersnatch.PointAffine
 	var pointbls12377 edwardsbls12377.PointAffine
 	var pointbw6761 edwardsbw6761.PointAffine
 
@@ -134,6 +136,16 @@ func parseSignature(curveID tedwards.ID, buf []byte) ([]byte, []byte, []byte, er
 		return a, b, s, nil
 	case tedwards.BLS12_381:
 		if _, err := pointbls12381.SetBytes(buf[:32]); err != nil {
+			return nil, nil, nil, err
+		}
+		a, b, err := parsePoint(curveID, buf)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		s := buf[32:]
+		return a, b, s, nil
+	case tedwards.BLS12_381_BANDERSNATCH:
+		if _, err := pointbandersnatch.SetBytes(buf[:32]); err != nil {
 			return nil, nil, nil, err
 		}
 		a, b, err := parsePoint(curveID, buf)
@@ -171,6 +183,7 @@ func parseSignature(curveID tedwards.ID, buf []byte) ([]byte, []byte, []byte, er
 func parsePoint(curveID tedwards.ID, buf []byte) ([]byte, []byte, error) {
 	var pointbn254 edwardsbn254.PointAffine
 	var pointbls12381 edwardsbls12381.PointAffine
+	var pointbandersnatch edwardsbandersnatch.PointAffine
 	var pointbls12377 edwardsbls12377.PointAffine
 	var pointbw6761 edwardsbw6761.PointAffine
 	switch curveID {
@@ -187,6 +200,13 @@ func parsePoint(curveID tedwards.ID, buf []byte) ([]byte, []byte, error) {
 		}
 		a := pointbls12381.X.Bytes()
 		b := pointbls12381.Y.Bytes()
+		return a[:], b[:], nil
+	case tedwards.BLS12_381_BANDERSNATCH:
+		if _, err := pointbandersnatch.SetBytes(buf[:32]); err != nil {
+			return nil, nil, err
+		}
+		a := pointbandersnatch.X.Bytes()
+		b := pointbandersnatch.Y.Bytes()
 		return a[:], b[:], nil
 	case tedwards.BLS12_377:
 		if _, err := pointbls12377.SetBytes(buf[:32]); err != nil {

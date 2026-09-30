@@ -37,6 +37,10 @@ type ProvingKey struct {
 	NbInfinityA, NbInfinityB uint64
 
 	CommitmentKeys []pedersen.ProvingKey
+
+	// accelerator, when set, offloads the multi-scalar multiplications and the
+	// quotient computation of Prove (see Accelerator). Runtime-only, not serialized.
+	accelerator Accelerator
 }
 
 // VerifyingKey is used by a Groth16 verifier to verify the validity of a proof and a statement

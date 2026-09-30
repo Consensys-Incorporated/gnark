@@ -6,11 +6,11 @@ This document explains the gnark team's process for handling issues reported and
 
 ## Reporting a Security Bug
 
-All security bugs in gnark distribution should be reported by email to gnark@consensys.net.
+All security bugs in gnark distribution should be reported by email to gnark-security-report@consensys.com.
 
 Your email will be acknowledged within 7 days, and you'll be kept up to date with the progress until resolution. Your issue will be fixed or made public within 90 days.
 
-If you have not received a reply to your email within 7 days, please follow up with the gnark team again at gnark@consensys.net. 
+If you have not received a reply to your email within 7 days, please follow up with the gnark team again at gnark-security-report@consensys.com. 
 
 Note that we do not currently run any bug bounty program.
 
@@ -40,7 +40,7 @@ Three to seven days before the release, a pre-announcement is sent to [`gnark-an
 
 ## Flagging Existing Issues as Security-related
 
-If you believe that an existing issue is security-related, we ask that you send an email to gnark@consensys.net. The email should include the issue ID and a short description of why it should be handled according to this security policy.
+If you believe that an existing issue is security-related, we ask that you send an email to gnark-security-report@consensys.com. The email should include the issue ID and a short description of why it should be handled according to this security policy.
 
 ## Disclosure Process
 

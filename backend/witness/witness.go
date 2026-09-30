@@ -362,9 +362,10 @@ func (w *witness) FromJSON(s *schema.Schema, data []byte) error {
 	// value failed. All this is not really performant for large witnesses, but again, JSON
 	// shouldn't be used in perf-critical scenario.
 	var chValues chan any
+	nbSecret := s.NbSecret
 	if publicOnly {
 		chValues = make(chan any, len(publicValues))
-		s.NbSecret = 0
+		nbSecret = 0
 	} else {
 		chValues = make(chan any, len(publicValues)+len(secretValues))
 	}
@@ -384,5 +385,5 @@ func (w *witness) FromJSON(s *schema.Schema, data []byte) error {
 		}
 	}()
 
-	return w.Fill(s.NbPublic, s.NbSecret, chValues)
+	return w.Fill(s.NbPublic, nbSecret, chValues)
 }

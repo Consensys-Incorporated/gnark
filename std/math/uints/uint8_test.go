@@ -86,6 +86,26 @@ func TestValueOf(t *testing.T) {
 	assert.CheckCircuit(&valueOfCircuit[U32]{}, test.WithInvalidAssignment(&valueOfCircuit[U32]{In: 0x1234567812345678, Expected: [4]U8{NewU8(0x78), NewU8(0x56), NewU8(0x34), NewU8(0x12)}}))
 }
 
+type bitsRoundTripCircuit struct {
+	In, Expected U64
+}
+
+func (c *bitsRoundTripCircuit) Define(api frontend.API) error {
+	uapi, err := New[U64](api)
+	if err != nil {
+		return err
+	}
+	bits := uapi.ToBits(c.In)
+	res := uapi.FromBits(bits...)
+	uapi.AssertEq(res, c.Expected)
+	return nil
+}
+
+func TestBitsRoundTrip(t *testing.T) {
+	assert := test.NewAssert(t)
+	assert.CheckCircuit(&bitsRoundTripCircuit{}, test.WithValidAssignment(&bitsRoundTripCircuit{In: NewU64(0x0123456789abcdef), Expected: NewU64(0x0123456789abcdef)}))
+}
+
 type addCircuit struct {
 	In       []U32
 	Expected U32

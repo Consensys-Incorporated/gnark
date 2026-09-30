@@ -142,15 +142,49 @@ func roundTripMarshalJSON(assert *require.Assertions, assignment circuit, public
 	// serialize the vector to JSON
 	data, err := w.ToJSON(s)
 	assert.NoError(err)
+	nbSecret := s.NbSecret
 
 	// re-read
 	rw, err := witness.New(ecc.BN254.ScalarField())
 	assert.NoError(err)
 	err = rw.FromJSON(s, data)
 	assert.NoError(err)
+	assert.Equal(nbSecret, s.NbSecret)
 
 	assert.True(reflect.DeepEqual(rw, w), "witness json round trip serialization")
 
+}
+
+func TestFromJSONReusesSchema(t *testing.T) {
+	assert := require.New(t)
+
+	assignment := &circuit{
+		X: new(fr.Element).SetInt64(42),
+		Y: new(fr.Element).SetInt64(8000),
+		E: new(fr.Element).SetInt64(1),
+	}
+	s, err := frontend.NewSchema(ecc.BN254.ScalarField(), assignment)
+	assert.NoError(err)
+	nbSecret := s.NbSecret
+
+	publicW, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField(), frontend.PublicOnly())
+	assert.NoError(err)
+	publicJSON, err := publicW.ToJSON(s)
+	assert.NoError(err)
+	publicRoundTrip, err := witness.New(ecc.BN254.ScalarField())
+	assert.NoError(err)
+	assert.NoError(publicRoundTrip.FromJSON(s, publicJSON))
+	assert.Equal(nbSecret, s.NbSecret)
+
+	fullW, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	fullJSON, err := fullW.ToJSON(s)
+	assert.NoError(err)
+	fullRoundTrip, err := witness.New(ecc.BN254.ScalarField())
+	assert.NoError(err)
+	assert.NoError(fullRoundTrip.FromJSON(s, fullJSON))
+	assert.True(reflect.DeepEqual(fullRoundTrip, fullW), "witness json round trip serialization")
+	assert.Equal(nbSecret, s.NbSecret)
 }
 
 type initableVariable struct {

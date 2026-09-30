@@ -8,6 +8,8 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
+	"github.com/consensys/gnark/frontend/cs/scs"
 	"github.com/consensys/gnark/std/permutation/keccakf"
 	"github.com/consensys/gnark/test"
 )
@@ -33,6 +35,33 @@ func (c *keccakfCircuit) Define(api frontend.API) error {
 		uapi.AssertEq(res[i], c.Expected[i])
 	}
 	return nil
+}
+
+type keccakfCountCircuit struct {
+	In       [25]uints.U64
+	Expected [25]uints.U64 `gnark:",public"`
+}
+
+func (c *keccakfCountCircuit) Define(api frontend.API) error {
+	uapi, err := uints.New[uints.U64](api)
+	if err != nil {
+		return err
+	}
+	res := keccakf.Permute(uapi, c.In)
+	for i := range res {
+		uapi.AssertEq(res[i], c.Expected[i])
+	}
+	return nil
+}
+
+func TestKeccakfCount(t *testing.T) {
+	assert := test.NewAssert(t)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &keccakfCountCircuit{})
+	assert.NoError(err)
+	t.Log("KeccakF-1600 r1cs constraints =", ccs.GetNbConstraints(), "instructions =", ccs.GetNbInstructions())
+	ccs, err = frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &keccakfCountCircuit{})
+	assert.NoError(err)
+	t.Log("KeccakF-1600 scs constraints =", ccs.GetNbConstraints(), "instructions =", ccs.GetNbInstructions())
 }
 
 func TestKeccakf(t *testing.T) {

@@ -180,3 +180,36 @@ func TestRegressionMulOneReductionPath(t *testing.T) {
 	witness := testIssueNNMulOneCircuit{Dummy: 1}
 	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.NoTestEngine())
 }
+
+type testReduceLazyConstantCircuit struct {
+	Dummy frontend.Variable
+}
+
+func (c *testReduceLazyConstantCircuit) Define(api frontend.API) error {
+	// Keep enough constraints for the PLONK test backend.
+	api.AssertIsEqual(c.Dummy, c.Dummy)
+	api.AssertIsEqual(c.Dummy, c.Dummy)
+	f, err := NewField[BN254Fr](api)
+	if err != nil {
+		return err
+	}
+	// Lazy arithmetic can produce this state when the compiler cancels all
+	// variables in the limbs but conservative overflow metadata remains.
+	lazyOne := f.newInternalElement([]frontend.Variable{1}, 1)
+	if _, ok := f.constantValue(lazyOne); !ok {
+		return fmt.Errorf("expected lazy element to be constant")
+	}
+	reduced := f.Reduce(lazyOne)
+	if reduced.overflow != 0 {
+		return fmt.Errorf("reduced constant overflow %d != 0", reduced.overflow)
+	}
+	f.AssertIsEqual(reduced, f.One())
+	return nil
+}
+
+func TestRegressionReduceLazyConstant(t *testing.T) {
+	assert := test.NewAssert(t)
+	circuit := &testReduceLazyConstantCircuit{}
+	witness := &testReduceLazyConstantCircuit{Dummy: 1}
+	assert.CheckCircuit(circuit, test.WithValidAssignment(witness), test.NoTestEngine())
+}

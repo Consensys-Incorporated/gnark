@@ -295,6 +295,33 @@ func mirrorClaimSources(s []constraint.GkrClaimSource, n int) {
 	}
 }
 
+type levelType uint8
+
+const (
+	SkipLevel levelType = iota
+	SumcheckLevel
+	SingleSourceZeroCheckLevel
+)
+
+func batchForWire[G any](c Circuit[G], highWI int, readyWireClaimSources [][]constraint.GkrClaimSource) (batchWires []int, levelType levelType) {
+	batchWires = []int{highWI}
+	for len(batchWires) < len(readyWireClaimSources) {
+		if c[highWI].Gate.Degree != c[highWI-len(batchWires)].Gate.Degree || !slices.Equal(readyWireClaimSources[0], readyWireClaimSources[len(batchWires)]) {
+			break
+		}
+		batchWires = append(batchWires, highWI-len(batchWires))
+	}
+
+	batchClaimSources := readyWireClaimSources[0]
+	levelType = SumcheckLevel
+	if c[highWI].Gate.Degree == 1 && len(batchClaimSources) == 1 { // certain that skipping won't cause a claim blowup
+		levelType = SkipLevel
+	} else if len(batchClaimSources) == 1 {
+		levelType = SingleSourceZeroCheckLevel
+	}
+	return
+}
+
 // DefaultProvingSchedule generates a schedule that greedily batches input wires with the same
 // single claim source into the same GkrSkipLevel. Non-input wires, and input wires with multiple
 // claim sources, each get their own GkrSumcheckLevel.
@@ -302,10 +329,10 @@ func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule,
 	b := newScheduleBuilder(c)
 
 	for b.firstUnprocessedWire >= 0 {
-		highWI, claimSources := b.nextReady()
-		// try and make a homogenous (same degree, same claims) batch
+		highWI, readyWireClaimSources := b.nextReady()
+		// try and make a homogenous (same degree, same claims) batchWires
 		w := c[highWI]
-		batchClaimSources := claimSources[0]
+		batchClaimSources := readyWireClaimSources[0]
 		if w.IsInput() && len(batchClaimSources) == 1 {
 			if err := b.addSkipLevel([]int{highWI}); err != nil {
 				return nil, err
@@ -314,20 +341,29 @@ func DefaultProvingSchedule[G any](c Circuit[G]) (constraint.GkrProvingSchedule,
 		}
 
 		// there is an actual "gate" in question
-		batch := []int{highWI}
-		for len(batch) < len(claimSources) {
-			if w.Gate.Degree != c[highWI-len(batch)].Gate.Degree || !slices.Equal(claimSources[0], claimSources[len(batch)]) {
-				break
-			}
-			batch = append(batch, highWI-len(batch))
-		}
+		batchWires, levelType := batchForWire(c, highWI, readyWireClaimSources)
 		var err error
-		if w.Gate.Degree == 1 && len(batchClaimSources) == 1 { // certain that skipping won't cause a claim blowup
-			err = b.addSkipLevel(batch)
-		} else if len(batchClaimSources) == 1 {
-			err = b.addSingleSourceZeroCheckLevel(batch)
-		} else {
-			err = b.addSumcheckLevel(batch)
+		switch levelType {
+		case SkipLevel:
+			err = b.addSkipLevel(batchWires)
+		case SingleSourceZeroCheckLevel:
+			err = b.addSingleSourceZeroCheckLevel(batchWires)
+		default:
+			batches := [][]int{batchWires}
+			nbLevelWires := len(batchWires)
+			for nbLevelWires < len(readyWireClaimSources) {
+				newBatchHighWI := highWI - nbLevelWires
+				if c[newBatchHighWI].Gate.Degree != c[highWI].Gate.Degree {
+					break
+				}
+				batchWires, levelType = batchForWire(c, newBatchHighWI, readyWireClaimSources[nbLevelWires:])
+				if levelType != SumcheckLevel {
+					break
+				}
+				batches = append(batches, batchWires)
+				nbLevelWires += len(batchWires)
+			}
+			err = b.addSumcheckLevel(batches...)
 		}
 		if err != nil {
 			return nil, err

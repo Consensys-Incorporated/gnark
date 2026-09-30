@@ -12,6 +12,17 @@ func (e Ext6) nSquareKarabina12345(z *E6, n int) *E6 {
 	return z
 }
 
+// nSquare squares z n times using the generic (non-cyclotomic) squaring. Unlike
+// nSquareKarabina12345 it does not assume z lies in the cyclotomic subgroup, so
+// it is valid for arbitrary E6 elements (e.g. the residue witness in
+// AssertFinalExponentiationIsOne).
+func (e Ext6) nSquare(z *E6, n int) *E6 {
+	for i := 0; i < n; i++ {
+		z = e.Square(z)
+	}
+	return z
+}
+
 // ExpX0Minus1 set z to z^{x₀-1} in E6 and return z
 // x₀-1 = 9586122913090633728
 func (e Ext6) ExpX0Minus1(z *E6) *E6 {
@@ -421,33 +432,41 @@ func (e *Ext6) mulBy02345(z *E6, x [5]*baseEl) *E6 {
 	}
 }
 
-// ExpByU2 set z to z^(x₀+1) in E12 and return z
+// ExpByU2 set z to z^(x₀+1) in E6 and return z
 // x₀+1 = 9586122913090633730
+//
+// This uses generic squaring so it is valid for arbitrary E6 elements, not only
+// cyclotomic-subgroup ones. Its only caller, AssertFinalExponentiationIsOne,
+// applies it to a residue witness that is not in the cyclotomic subgroup.
 func (e Ext6) ExpByU2(z *E6) *E6 {
 	z = e.Reduce(z)
 	result := e.Copy(z)
-	t := e.CyclotomicSquareGS(result)
-	result = e.nSquareKarabina12345(t, 4)
+	t := e.Square(result)
+	result = e.nSquare(t, 4)
 	result = e.Mul(result, z)
 	z33 := e.Copy(result)
-	result = e.nSquareKarabina12345(result, 7)
+	result = e.nSquare(result, 7)
 	result = e.Mul(result, z33)
-	result = e.nSquareKarabina12345(result, 4)
+	result = e.nSquare(result, 4)
 	result = e.Mul(result, z)
-	result = e.CyclotomicSquareGS(result)
+	result = e.Square(result)
 	result = e.Mul(result, z)
-	result = e.nSquareKarabina12345(result, 46)
+	result = e.nSquare(result, 46)
 	result = e.Mul(result, t)
 
 	return result
 }
 
-// ExpByU1 set z to z^(x₀^3-x₀^2+1) in E12 and return z
+// ExpByU1 set z to z^(x₀^3-x₀^2+1) in E6 and return z
 // x₀^3-x₀^2+1 = 880904806456922042166256752416502360965158762994674434049
+//
+// This uses generic squaring so it is valid for arbitrary E6 elements, not only
+// cyclotomic-subgroup ones. Its only caller, AssertFinalExponentiationIsOne,
+// applies it to a residue witness that is not in the cyclotomic subgroup.
 func (e Ext6) ExpByU1(x *E6) *E6 {
-	t5 := e.CyclotomicSquareGS(x)
+	t5 := e.Square(x)
 	z := e.Mul(x, t5)
-	t0 := e.CyclotomicSquareGS(z)
+	t0 := e.Square(z)
 	t6 := e.Mul(x, t0)
 	t8 := e.Mul(x, t6)
 	t7 := e.Mul(t5, t8)
@@ -456,43 +475,43 @@ func (e Ext6) ExpByU1(x *E6) *E6 {
 	t2 := e.Mul(x, t3)
 	t1 := e.Mul(t6, t2)
 	t0 = e.Mul(t8, t1)
-	t4 := e.CyclotomicSquareGS(t0)
+	t4 := e.Square(t0)
 	t4 = e.Mul(z, t4)
 	t8 = e.Mul(t8, t4)
 	t2 = e.Mul(t2, t8)
 	t9 = e.Mul(t9, t2)
 	t5 = e.Mul(t5, t9)
 	t10 := e.Mul(t0, t9)
-	t10 = e.nSquareKarabina12345(t10, 6)
+	t10 = e.nSquare(t10, 6)
 	t9 = e.Mul(t9, t10)
-	t9 = e.nSquareKarabina12345(t9, 10)
+	t9 = e.nSquare(t9, 10)
 	t8 = e.Mul(t8, t9)
-	t8 = e.nSquareKarabina12345(t8, 10)
+	t8 = e.nSquare(t8, 10)
 	t8 = e.Mul(t5, t8)
 	t7 = e.Mul(t7, t8)
-	t7 = e.nSquareKarabina12345(t7, 4)
+	t7 = e.nSquare(t7, 4)
 	t6 = e.Mul(t6, t7)
-	t6 = e.nSquareKarabina12345(t6, 11)
+	t6 = e.nSquare(t6, 11)
 	t5 = e.Mul(t5, t6)
-	t5 = e.nSquareKarabina12345(t5, 3)
+	t5 = e.nSquare(t5, 3)
 	t5 = e.Mul(z, t5)
-	t5 = e.nSquareKarabina12345(t5, 17)
+	t5 = e.nSquare(t5, 17)
 	t4 = e.Mul(t4, t5)
-	t4 = e.nSquareKarabina12345(t4, 7)
+	t4 = e.nSquare(t4, 7)
 	t3 = e.Mul(t3, t4)
-	t3 = e.nSquareKarabina12345(t3, 11)
+	t3 = e.nSquare(t3, 11)
 	t2 = e.Mul(t2, t3)
-	t2 = e.nSquareKarabina12345(t2, 7)
+	t2 = e.nSquare(t2, 7)
 	t1 = e.Mul(t1, t2)
-	t1 = e.nSquareKarabina12345(t1, 3)
+	t1 = e.nSquare(t1, 3)
 	t1 = e.Mul(x, t1)
-	t1 = e.nSquareKarabina12345(t1, 35)
+	t1 = e.nSquare(t1, 35)
 	t1 = e.Mul(t0, t1)
-	t1 = e.nSquareKarabina12345(t1, 7)
+	t1 = e.nSquare(t1, 7)
 	t0 = e.Mul(t0, t1)
-	t0 = e.nSquareKarabina12345(t0, 5)
+	t0 = e.nSquare(t0, 5)
 	z = e.Mul(z, t0)
-	z = e.nSquareKarabina12345(z, 46)
+	z = e.nSquare(z, 46)
 	z = e.Mul(x, z)
 
 	return z

@@ -25,6 +25,7 @@ import (
 	"math/bits"
 
 	"github.com/consensys/gnark/frontend"
+	mathbits "github.com/consensys/gnark/std/math/bits"
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/math/uints"
 	"github.com/consensys/gnark/std/rangecheck"
@@ -108,11 +109,6 @@ func bytesToNative(api frontend.API, b []uints.U8) (frontend.Variable, error) {
 //
 // It errors when the provided bytes slice is too large to fit into an emulated
 // field element.
-//
-// NB! Currently it supports only the case when the emulated field element limb
-// width is divisible by 8 bits. If the limb width is not divisible by 8 bits,
-// then the method panics. Please open an issue if you need this functionality.
-// Otherwise, we will implement it when needed.
 func BytesToEmulated[T emulated.FieldParams](api frontend.API, b []uints.U8, opts ...Option) (*emulated.Element[T], error) {
 	// panics when couldn't fit
 	// we can have several approaches - when the limb width is divisible by 8, then we can just compose the limbs without needing to move to bits
@@ -177,7 +173,37 @@ func bytesToEmulatedDivisible[T emulated.FieldParams](cfg *config, api frontend.
 }
 
 func bytesToEmulatedNotDivisible[T emulated.FieldParams](cfg *config, api frontend.API, b []uints.U8) (*emulated.Element[T], error) {
-	panic("todo")
+	bapi, err := uints.NewBytes(api)
+	if err != nil {
+		return nil, fmt.Errorf("new bytes: %w", err)
+	}
+	effNbLimbs, effNbBits := emulated.GetEffectiveFieldParams[T](api.Compiler().Field())
+	totalBits := int(effNbLimbs * effNbBits)
+	valueBits := make([]frontend.Variable, 0, totalBits)
+	// Input bytes are MSB-first, while binary conversion and emulated limbs are
+	// LSB-first. Reverse the byte order and keep each byte's little-endian bits.
+	for i := len(b) - 1; i >= 0; i-- {
+		byteBits := mathbits.ToBinary(api, bapi.Value(b[i]), mathbits.WithNbDigits(8))
+		valueBits = append(valueBits, byteBits...)
+	}
+	for len(valueBits) < totalBits {
+		valueBits = append(valueBits, 0)
+	}
+
+	limbs := make([]frontend.Variable, effNbLimbs)
+	for i := range limbs {
+		start := i * int(effNbBits)
+		limbs[i] = mathbits.FromBinary(api, valueBits[start:start+int(effNbBits)], mathbits.WithUnconstrainedInputs())
+	}
+	f, err := emulated.NewField[T](api)
+	if err != nil {
+		return nil, fmt.Errorf("new field: %w", err)
+	}
+	e := f.NewElement(limbs)
+	if !cfg.allowOverflow {
+		f.AssertIsInRange(e)
+	}
+	return e, nil
 }
 
 // NativeToBytes converts a native field element to a slice of bytes in MSB order.
@@ -235,16 +261,9 @@ func NativeToBytes(api frontend.API, v frontend.Variable, opts ...Option) ([]uin
 // of malicious hint execution. The user could bypass the overflow checking if it
 // is done later, i.e. when composing the bytes back to a native field element
 // using [BytesToEmulated].
-//
-// NB! Currently it supports only the case when the emulated field element limb
-// width is divisible by 8 bits. If the limb width is not divisible by 8 bits,
-// then the method panics. Please open an issue if you need this functionality.
 func EmulatedToBytes[T emulated.FieldParams](api frontend.API, v *emulated.Element[T], opts ...Option) ([]uints.U8, error) {
 	var fr T
 	_, nbBitsPerLimb := emulated.GetEffectiveFieldParams[T](api.Compiler().Field())
-	if nbBitsPerLimb%8 != 0 {
-		panic("EmulatedToBytes: not supported for field with limb width not divisible by 8 bits")
-	}
 	f, err := emulated.NewField[T](api)
 	if err != nil {
 		return nil, fmt.Errorf("new field: %w", err)
@@ -258,6 +277,9 @@ func EmulatedToBytes[T emulated.FieldParams](api frontend.API, v *emulated.Eleme
 		vr = f.Reduce(v)
 	} else {
 		vr = f.ReduceStrict(v)
+	}
+	if nbBitsPerLimb%8 != 0 {
+		return emulatedToBytesNotDivisible(api, vr, nbBitsPerLimb)
 	}
 
 	nbBytes := (api.Compiler().Field().BitLen() + 7) / 8
@@ -286,6 +308,35 @@ func EmulatedToBytes[T emulated.FieldParams](api frontend.API, v *emulated.Eleme
 		api.AssertIsEqual(vr.Limbs[len(vr.Limbs)-i-1], computed)
 	}
 	return resU8, nil
+}
+
+func emulatedToBytesNotDivisible[T emulated.FieldParams](api frontend.API, v *emulated.Element[T], nbBitsPerLimb uint) ([]uints.U8, error) {
+	var fr T
+	nbOutputBytes := (fr.Modulus().BitLen() + 7) / 8
+	nbOutputBits := nbOutputBytes * 8
+	valueBits := make([]frontend.Variable, 0, len(v.Limbs)*int(nbBitsPerLimb))
+	for i := range v.Limbs {
+		limbBits := mathbits.ToBinary(api, v.Limbs[i], mathbits.WithNbDigits(int(nbBitsPerLimb)))
+		valueBits = append(valueBits, limbBits...)
+	}
+	for len(valueBits) < nbOutputBits {
+		valueBits = append(valueBits, 0)
+	}
+	for i := nbOutputBits; i < len(valueBits); i++ {
+		api.AssertIsEqual(valueBits[i], 0)
+	}
+	valueBits = valueBits[:nbOutputBits]
+
+	uapi, err := uints.NewBytes(api)
+	if err != nil {
+		return nil, fmt.Errorf("new uints: %w", err)
+	}
+	res := make([]uints.U8, nbOutputBytes)
+	for i := range nbOutputBytes {
+		byteValue := mathbits.FromBinary(api, valueBits[i*8:(i+1)*8], mathbits.WithUnconstrainedInputs())
+		res[nbOutputBytes-i-1] = uapi.ValueOf(byteValue)
+	}
+	return res, nil
 }
 
 // func NativeToEmulated[T emulated.FieldParams](api frontend.API, v frontend.Variable) *emulated.Element[T] {

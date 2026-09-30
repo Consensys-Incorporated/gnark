@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>gnark WebGPU API</title>
+  <style>
+    :root {
+      font-family: monospace;
+    }
+
+    .toolbar {
+      gap: 12px;
+      align-items: center;
+      margin: 0 0 16px;
+    }
+
+    label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+    }
+
+    pre {
+      overflow: auto;
+      white-space: pre-wrap;
+      margin: 0;
+      padding: 16px;
+      border: 1px solid;
+    }
+  </style>
+</head>
+
+<body data-status="idle">
+  <h1>gnark WebGPU API Suite</h1>
+  <div class="toolbar">
+    <label>curve <select id="curve-select"></select></label>
+    <label>suite <select id="suite-select"></select></label>
+    <button id="open-suite" type="button">Load Suite</button>
+    <span></span>
+  </div>
+  <div id="bench-controls" class="toolbar" hidden>
+    <label>min log2 <input id="min-log" type="number" value="10" min="1" max="24" /></label>
+    <label>max log2 <input id="max-log" type="number" value="19" min="1" max="24" /></label>
+    <label>iters <input id="iters" type="number" value="1" min="1" max="10" /></label>
+    <span></span>
+  </div>
+  <div class="toolbar">
+    <button id="run" type="button">Run</button>
+    <span id="status">Idle</span>
+  </div>
+  <pre id="log"></pre>
+  <script type="module" src="/dist/tests/api/src/curvegpu_page.js"></script>
+</body>
+
+</html>

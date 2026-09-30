@@ -45,7 +45,7 @@ jobs:
         run: |
           if [ "$STATUS" = "success" ]; then
             payload=$(jq -n --arg repository "$REPOSITORY" --arg branch "$BRANCH" --arg actor "$ACTOR" --arg run_id "$RUN_ID" '{
-              "channel": "team-gnark-build",
+              "channel": "gnark-build",
               "text": "GitHub Action build result: success",
               "blocks": [
                 {
@@ -68,7 +68,7 @@ jobs:
             }')
           else
             payload=$(jq -n --arg repository "$REPOSITORY" --arg branch "$BRANCH" --arg actor "$ACTOR" --arg run_id "$RUN_ID" '{
-              "channel": "team-gnark-build",
+              "channel": "gnark-build",
               "text": "GitHub Action build result: failure",
               "blocks": [
                 {

@@ -26,6 +26,22 @@ type CurveParams struct {
 	Gm           [][2]*big.Int // m*base point coords
 	Eigenvalue   *big.Int      // endomorphism eigenvalue
 	ThirdRootOne *big.Int      // endomorphism image scaler
+
+	// CofactorClearing is the constant c used to bind the hinted output of the
+	// fake-GLV / GLV+fake-GLV scalar multiplications into the prime-order
+	// subgroup, via a preimage check [c]S == R. It must be divisible by every
+	// cofactor prime-power ℓ^k with ℓ^k < 2^nbits (nbits = the sub-scalar range),
+	// i.e. every torsion order reachable by the r^(1/4)/√r sub-scalars. For
+	// prime-order groups (cofactor 1) it is nil and the check is skipped.
+	CofactorClearing *big.Int
+
+	// PreferClassicGLV routes [Curve.ScalarMul] through classic GLV instead of
+	// GLV+fake-GLV. It is set for cofactor curves where the fake-GLV
+	// subgroup-clearing ([CofactorClearing]) costs more than the r^(1/4) loop
+	// saves — measured on BLS12-381 G1 (classic GLV ≈ 105k vs GLV+fake-GLV+clearing
+	// ≈ 116k R1CS). Classic GLV is also inherently sound (computed output, no
+	// hinted off-subgroup point), so no clearing is needed on this path.
+	PreferClassicGLV bool
 }
 
 // GetSecp256k1Params returns curve parameters for the curve secp256k1. When
@@ -79,6 +95,23 @@ func GetBLS12381Params() CurveParams {
 		Gm:           computeBLS12381Table(),
 		Eigenvalue:   lambda,
 		ThirdRootOne: omega,
+		// G1 cofactor h = 3·11²·10177²·859267²·52437899² fully factors into
+		// primes whose powers are all < 2^nbits, so the entire cofactor is
+		// reachable by a chosen-scalar torsion forgery and must be cleared. (A
+		// smaller c covering only {3,11,10177} would leave order-859267 and
+		// order-52437899 torsion forgeries open, since [c] stays invertible on
+		// that torsion.)
+		CofactorClearing: func() *big.Int {
+			c := big.NewInt(3)
+			c.Mul(c, big.NewInt(11*11))
+			c.Mul(c, big.NewInt(10177*10177))
+			c.Mul(c, new(big.Int).Mul(big.NewInt(859267), big.NewInt(859267)))
+			c.Mul(c, new(big.Int).Mul(big.NewInt(52437899), big.NewInt(52437899)))
+			return c
+		}(),
+		// classic GLV is cheaper here than GLV+fake-GLV once the (expensive)
+		// cofactor clearing is included — see benchmarks.
+		PreferClassicGLV: true,
 	}
 }
 
@@ -131,6 +164,16 @@ func GetBW6761Params() CurveParams {
 		Gm:           computeBW6761Table(),
 		Eigenvalue:   lambda,
 		ThirdRootOne: omega,
+		// Routed through classic GLV (PreferClassicGLV below), whose output is
+		// computed rather than hinted and is therefore inherently in-subgroup, so
+		// no cofactor-clearing binding is used on this curve. This also avoids the
+		// pitfall that a *minimal* clearing constant is unsound here: a
+		// chosen-scalar forgery with a rational φ-eigenvector reaches torsion up
+		// to ~r^(1/2) (not ~r^(1/4)), so the reachable factors inside the ~330-bit
+		// cofactor remainder can't be cheaply isolated — only full-cofactor
+		// clearing (expensive) or classic GLV (chosen here) is sound.
+		CofactorClearing: nil,
+		PreferClassicGLV: true,
 	}
 }
 

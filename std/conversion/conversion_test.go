@@ -9,6 +9,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	fp_bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 	fr_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/math/emulated/emparams"
@@ -74,11 +75,12 @@ func TestBytesToEmulatedDivisible(t *testing.T) {
 		sbytes := S.Marshal()
 		sbytes = append([]byte{0x00}, sbytes...)
 		sint := S.BigInt(new(big.Int))
-		assert.CheckCircuit(
+		err := test.IsSolved(
 			&BytesToEmulatedCircuit[emparams.BLS12381Fp]{In: make([]uints.U8, len(sbytes))},
-			test.WithInvalidAssignment(&BytesToEmulatedCircuit[emparams.BLS12381Fp]{In: uints.NewU8Array(sbytes), Expected: emulated.ValueOf[emparams.BLS12381Fp](sint)}),
-			test.WithCurves(ecc.BLS12_377),
+			&BytesToEmulatedCircuit[emparams.BLS12381Fp]{In: uints.NewU8Array(sbytes), Expected: emulated.ValueOf[emparams.BLS12381Fp](sint)},
+			ecc.BLS12_377.ScalarField(),
 		)
+		assert.Error(err)
 	}, "length=larger")
 
 	// case where everything is good, but the bytes represent element larger than the modulus
@@ -104,6 +106,18 @@ func TestBytesToEmulatedDivisible(t *testing.T) {
 			test.WithCurves(ecc.BLS12_377),
 		)
 	}, "length=overflow-allow")
+}
+
+func TestBytesToEmulatedNotDivisible(t *testing.T) {
+	assert := test.NewAssert(t)
+	value := new(big.Int).Sub(fp_bls12381.Modulus(), big.NewInt(12345))
+	input := value.FillBytes(make([]byte, fp_bls12381.Bytes))
+	circuit := &BytesToEmulatedCircuit[emparams.BLS12381Fp]{In: make([]uints.U8, len(input))}
+	assignment := &BytesToEmulatedCircuit[emparams.BLS12381Fp]{
+		In:       uints.NewU8Array(input),
+		Expected: emulated.ValueOf[emparams.BLS12381Fp](value),
+	}
+	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithoutCurveChecks(), test.WithSmallfieldCheck())
 }
 
 type BytesToNativeCircuit struct {
@@ -160,11 +174,12 @@ func TestBytesToNative(t *testing.T) {
 		sbytes := S.Marshal()
 		sbytes = append([]byte{0x00}, sbytes...)
 		sint := S.BigInt(new(big.Int))
-		assert.CheckCircuit(
+		err := test.IsSolved(
 			&BytesToNativeCircuit{In: make([]uints.U8, len(sbytes))},
-			test.WithInvalidAssignment(&BytesToNativeCircuit{In: uints.NewU8Array(sbytes), Expected: sint}),
-			test.WithCurves(ecc.BN254),
+			&BytesToNativeCircuit{In: uints.NewU8Array(sbytes), Expected: sint},
+			ecc.BN254.ScalarField(),
 		)
+		assert.Error(err)
 	}, "length=larger")
 
 	// case where everything is good, but the bytes represent element larger than the modulus
@@ -279,10 +294,16 @@ func TestNativeToBytes(t *testing.T) {
 type EmulatedToBytesCircuit[T emulated.FieldParams] struct {
 	In       emulated.Element[T]
 	Expected []uints.U8
+
+	allowOverflow bool
 }
 
 func (c *EmulatedToBytesCircuit[T]) Define(api frontend.API) error {
-	res, err := EmulatedToBytes(api, &c.In)
+	var opts []Option
+	if c.allowOverflow {
+		opts = append(opts, WithAllowOverflow())
+	}
+	res, err := EmulatedToBytes(api, &c.In, opts...)
 	if err != nil {
 		return fmt.Errorf("to bytes: %w", err)
 	}
@@ -336,6 +357,156 @@ func TestEmulatedToBytes(t *testing.T) {
 			test.WithCurves(ecc.BLS12_377),
 		)
 	}, "length=smaller")
+}
+
+func TestEmulatedToBytesNotDivisible(t *testing.T) {
+	testCases := []struct {
+		name  string
+		value *big.Int
+	}{
+		{name: "exact-length-and-top-partial-byte", value: new(big.Int).Sub(fp_bls12381.Modulus(), big.NewInt(1))},
+		{name: "short-value", value: big.NewInt(0x123456)},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert := test.NewAssert(t)
+			expected := tc.value.FillBytes(make([]byte, fp_bls12381.Bytes))
+			if tc.name == "exact-length-and-top-partial-byte" && expected[0] == 0 {
+				t.Fatal("test value does not exercise the top partial byte")
+			}
+			circuit := &EmulatedToBytesCircuit[emparams.BLS12381Fp]{Expected: make([]uints.U8, len(expected))}
+			assignment := &EmulatedToBytesCircuit[emparams.BLS12381Fp]{
+				In:       emulated.ValueOf[emparams.BLS12381Fp](tc.value),
+				Expected: uints.NewU8Array(expected),
+			}
+			assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithoutCurveChecks(), test.WithSmallfieldCheck())
+		})
+	}
+}
+
+type EmulatedToBytesLazyCircuit[T emulated.FieldParams] struct {
+	In       emulated.Element[T]
+	Expected []uints.U8
+}
+
+func (c *EmulatedToBytesLazyCircuit[T]) Define(api frontend.API) error {
+	f, err := emulated.NewField[T](api)
+	if err != nil {
+		return err
+	}
+	v := &c.In
+	for range 10 {
+		v = f.Add(v, v)
+	}
+	res, err := EmulatedToBytes(api, v)
+	if err != nil {
+		return err
+	}
+	uapi, err := uints.NewBytes(api)
+	if err != nil {
+		return err
+	}
+	for i := range res {
+		uapi.AssertIsEqual(res[i], c.Expected[i])
+	}
+	return nil
+}
+
+func TestEmulatedToBytesNotDivisibleLazyOverflow(t *testing.T) {
+	assert := test.NewAssert(t)
+	value := new(big.Int).Sub(fp_bls12381.Modulus(), big.NewInt(17))
+	expectedValue := new(big.Int).Lsh(new(big.Int).Set(value), 10)
+	expectedValue.Mod(expectedValue, fp_bls12381.Modulus())
+	expected := expectedValue.FillBytes(make([]byte, fp_bls12381.Bytes))
+	circuit := &EmulatedToBytesLazyCircuit[emparams.BLS12381Fp]{Expected: make([]uints.U8, len(expected))}
+	assignment := &EmulatedToBytesLazyCircuit[emparams.BLS12381Fp]{
+		In:       emulated.ValueOf[emparams.BLS12381Fp](value),
+		Expected: uints.NewU8Array(expected),
+	}
+	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithoutCurveChecks(), test.WithSmallfieldCheck())
+}
+
+func unreducedElement[T emulated.FieldParams](native, value *big.Int) emulated.Element[T] {
+	nbLimbs, nbBits := emulated.GetEffectiveFieldParams[T](native)
+	limbValues := make([]frontend.Variable, nbLimbs)
+	mask := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), nbBits), big.NewInt(1))
+	remaining := new(big.Int).Set(value)
+	for i := range limbValues {
+		limbValues[i] = new(big.Int).And(remaining, mask)
+		remaining.Rsh(remaining, nbBits)
+	}
+	return emulated.Element[T]{Limbs: limbValues}
+}
+
+func TestEmulatedToBytesNotDivisibleAllowOverflow(t *testing.T) {
+	native := koalabear.Modulus()
+	overflowValue := new(big.Int).Add(fp_bls12381.Modulus(), big.NewInt(5))
+	topByteValue := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 383), big.NewInt(5))
+	for _, tc := range []struct {
+		name          string
+		allowOverflow bool
+		value         *big.Int
+		expected      *big.Int
+	}{
+		{name: "strict", value: overflowValue, expected: big.NewInt(5)},
+		{name: "allow-overflow", allowOverflow: true, value: topByteValue, expected: topByteValue},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expected := tc.expected.FillBytes(make([]byte, fp_bls12381.Bytes))
+			circuit := &EmulatedToBytesCircuit[emparams.BLS12381Fp]{
+				Expected:      make([]uints.U8, len(expected)),
+				allowOverflow: tc.allowOverflow,
+			}
+			assignment := &EmulatedToBytesCircuit[emparams.BLS12381Fp]{
+				In:            unreducedElement[emparams.BLS12381Fp](native, tc.value),
+				Expected:      uints.NewU8Array(expected),
+				allowOverflow: tc.allowOverflow,
+			}
+			if err := test.IsSolved(circuit, assignment, native); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+type EmulatedBytesRoundTripCircuit[T emulated.FieldParams] struct {
+	In, Expected []uints.U8
+}
+
+func (c *EmulatedBytesRoundTripCircuit[T]) Define(api frontend.API) error {
+	v, err := BytesToEmulated[T](api, c.In)
+	if err != nil {
+		return err
+	}
+	got, err := EmulatedToBytes(api, v)
+	if err != nil {
+		return err
+	}
+	uapi, err := uints.NewBytes(api)
+	if err != nil {
+		return err
+	}
+	for i := range got {
+		uapi.AssertIsEqual(got[i], c.Expected[i])
+	}
+	return nil
+}
+
+func TestEmulatedBytesNotDivisibleRoundTrip(t *testing.T) {
+	value := new(big.Int).Sub(fp_bls12381.Modulus(), big.NewInt(12345))
+	input := value.Bytes()
+	expected := value.FillBytes(make([]byte, fp_bls12381.Bytes))
+	circuit := &EmulatedBytesRoundTripCircuit[emparams.BLS12381Fp]{
+		In:       make([]uints.U8, len(input)),
+		Expected: make([]uints.U8, len(expected)),
+	}
+	assignment := &EmulatedBytesRoundTripCircuit[emparams.BLS12381Fp]{
+		In:       uints.NewU8Array(input),
+		Expected: uints.NewU8Array(expected),
+	}
+	if err := test.IsSolved(circuit, assignment, koalabear.Modulus()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type AssertBytesLeq struct {

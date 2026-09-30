@@ -92,6 +92,16 @@ func (d *digest) paddingFixedWidth(length frontend.Variable) (padded []uints.U8,
 	padded = append(padded, uints.NewU8Array(make([]uint8, maxPaddingCount))...)
 
 	quotient, remainder := d.quoRemRate(length)
+	// Bind the Euclidean relation length = quotient*rate + remainder over the
+	// integers. quoRemRate only range-checks remainder ∈ [0, rate) and derives
+	// quotient = (length-remainder)*rate⁻¹ as a linear expression (rate is a
+	// constant, so DivUnchecked adds no constraint). Without a bound on
+	// quotient a malicious prover could pick any in-range remainder and the
+	// mod-P identity would still hold via wraparound, unpinning remainder from
+	// length mod rate and forging the padding position. Bounding quotient to
+	// the max block count keeps quotient*rate + remainder well below the native
+	// modulus, so the identity holds over the integers and remainder is pinned.
+	comparator.AssertIsLessEq(quotient, maxTotalLen/d.rate)
 
 	// When i < minLen or i > maxLen, padding dsbyte is completely unnecessary
 	padDsbyte := uints.NewU8(d.dsbyte)

@@ -45,6 +45,7 @@ type resources struct {
 	schedule           constraint.GkrProvingSchedule
 	transcript         transcript
 	uniqueInputIndices [][]int // uniqueInputIndices[wI][claimI]: w's unique-input index in the layer its claimI-th evaluation is coming from
+	wireLevels         []constraint.GkrProvingLevel
 }
 
 func newResources(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.Hash) (resources, error) {
@@ -64,6 +65,7 @@ func newResources(c Circuit, schedule constraint.GkrProvingSchedule, assignment 
 		schedule:           schedule,
 		transcript:         transcript{h: hasher},
 		uniqueInputIndices: c.UniqueInputIndices(schedule),
+		wireLevels:         schedule.WireLevels(len(c)),
 	}, nil
 }
 
@@ -153,7 +155,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 		default:
 			panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
 		}
-		constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, c.UniqueGateInputs(r.schedule[levelI]), c.IsInput, r.schedule[levelI])
+		constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, c.UniqueGateInputs(r.schedule[levelI]), c.IsInput, r.schedule[levelI], r.wireLevels)
 	}
 
 	return proof, nil
@@ -189,7 +191,7 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAs
 		if err != nil {
 			return fmt.Errorf("level %d: %v", levelI, err)
 		}
-		constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, c.UniqueGateInputs(r.schedule[levelI]), c.IsInput, r.schedule[levelI])
+		constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, c.UniqueGateInputs(r.schedule[levelI]), c.IsInput, r.schedule[levelI], r.wireLevels)
 	}
 	return nil
 }

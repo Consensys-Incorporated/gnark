@@ -6,6 +6,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/std/internal/logderivprecomp"
+	stdbits "github.com/consensys/gnark/std/math/bits"
 	"github.com/consensys/gnark/std/rangecheck"
 )
 
@@ -103,6 +104,22 @@ func (bf *Bytes) packInternal(val frontend.Variable) U8 {
 	return U8{Val: val, internal: true}
 }
 
+// ToBits decomposes a byte into little-endian bits and constrains the byte to
+// equal the recomposition of these bits.
+func (bf *Bytes) ToBits(a U8) []frontend.Variable {
+	return bf.api.ToBinary(a.Val, 8)
+}
+
+// FromBits packs eight little-endian bits into a byte. The input bits are
+// constrained to be boolean unless they are already marked as boolean by the
+// compiler.
+func (bf *Bytes) FromBits(bits ...frontend.Variable) U8 {
+	if len(bits) != 8 {
+		panic("expected exactly 8 bits")
+	}
+	return bf.packInternal(stdbits.FromBinary(bf.api, bits))
+}
+
 // ValueOf returns a constrainted [U8] variable. For a constant value, use
 // [NewU8] instead.
 func (bf *Bytes) ValueOf(a frontend.Variable) U8 {
@@ -170,10 +187,9 @@ func (bf *Bytes) twoArgFn(tbl *logderivprecomp.Precomputed, a ...U8) U8 {
 	for i := 2; i < len(a); i++ {
 		ret = bf.queryOrFold(tbl, ret, a[i].Val)
 	}
-	// because the response comes from the lookup table (or from constant
-	// folding of width-checked operands), then (assuming that the function
-	// which built the table is correct) we can assume that the value is in
-	// range. Thus we set the internal flag to true.
+	// every intermediate result is in range: lookup responses are range checked
+	// in [Bytes.queryOrFold] and folded results are computed natively from
+	// width-checked operands. Thus we set the internal flag to true.
 	return bf.packInternal(ret)
 }
 
@@ -182,33 +198,45 @@ func (bf *Bytes) twoArgFn(tbl *logderivprecomp.Precomputed, a ...U8) U8 {
 // constraints. The operands are already width-checked ([Bytes.enforceWidth]
 // for the inputs, previous lookups or folds for the intermediates), but we
 // still guard on the width so that an out-of-range constant falls back to the
-// lookup path instead of being truncated silently.
+// lookup path instead of being truncated silently. The folded result needs no
+// range check as it is computed natively from in-range uint8 operands.
+//
+// NB! we cannot assume that the query result is in range even if the inputs
+// are. The log-derivative lookup only constrains the packed value
+// a + 2^8*b + 2^16*c, and a malicious prover could commit to an out-of-range
+// c which makes the packed value collide with a valid table entry (e.g.
+// Xor(1,0) = 1/256 since 1 + 2^8*0 + 2^16/256 = 257 = 0x000101 is the entry
+// for Xor(1,0)=1). We therefore range check every lookup response: an
+// out-of-range intermediate could be consumed by a subsequent query in a
+// variadic chain whose packed key collides, letting a forgery pass through.
 func (bf *Bytes) queryOrFold(tbl *logderivprecomp.Precomputed, x, y frontend.Variable) frontend.Variable {
 	cx, xIsConst := bf.api.ConstantValue(x)
-	if !xIsConst || cx.BitLen() > 8 {
-		return tbl.Query(x, y)[0]
-	}
 	cy, yIsConst := bf.api.ConstantValue(y)
-	if !yIsConst || cy.BitLen() > 8 {
-		return tbl.Query(x, y)[0]
+	if xIsConst && yIsConst && cx.BitLen() <= 8 && cy.BitLen() <= 8 {
+		xb, yb := uint8(cx.Uint64()), uint8(cy.Uint64())
+		switch tbl {
+		case bf.xorT:
+			return xb ^ yb
+		case bf.andT:
+			return xb & yb
+		case bf.orT:
+			return xb | yb
+		}
 	}
-	xb, yb := uint8(cx.Uint64()), uint8(cy.Uint64())
-	switch tbl {
-	case bf.xorT:
-		return xb ^ yb
-	case bf.andT:
-		return xb & yb
-	case bf.orT:
-		return xb | yb
-	default:
-		return tbl.Query(x, y)[0]
-	}
+	// at least one operand is a variable (or the table is not a known bitwise
+	// table): use the lookup and range check the response, see the comment
+	// above.
+	ret := tbl.Query(x, y)[0]
+	bf.rchecker.Check(ret, 8)
+	return ret
 }
 
 func (bf *Bytes) Not(a U8) U8 {
+	bf.enforceWidth(a)
 	ret := bf.xorT.Query(a.Val, bf.allOne.Val)
-	// the response comes from the lookup table, thus we can assume that the
-	// value is in range. Thus we set the internal flag to true.
+	// the result of the lookup is not range checked by the table (the packed key
+	// a + 2^8*b + 2^16*c can collide for out-of-range c), so range check it here.
+	bf.rchecker.Check(ret[0], 8)
 	return bf.packInternal(ret[0])
 }
 

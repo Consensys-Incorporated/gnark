@@ -24,6 +24,9 @@ func GetHints() []solver.Hint {
 		pairingCheckHint,
 		millerLoopAndCheckFinalExpHint,
 		scalarMulG2Hint,
+		scalarMulG2CofactorPreimageHint,
+		g2CombRecodeHint,
+		g2CombChainLambdaHint,
 		rationalReconstructExtG2,
 		g1SqrtRatioHint,
 		g2SqrtRatioHint,
@@ -437,6 +440,67 @@ func scalarMulG2Hint(field *big.Int, inputs []*big.Int, outputs []*big.Int) erro
 		Q.Y.A0.SetBigInt(baseInputs[2])
 		Q.Y.A1.SetBigInt(baseInputs[3])
 		Q.ScalarMultiplication(&Q, scalarInputs[0])
+		Q.X.A0.BigInt(baseOutputs[0])
+		Q.X.A1.BigInt(baseOutputs[1])
+		Q.Y.A0.BigInt(baseOutputs[2])
+		Q.Y.A1.BigInt(baseOutputs[3])
+		return nil
+	})
+}
+
+// g2CofactorClearingConstant is the cofactor-clearing constant for BLS12-381 G2:
+// the product of every cofactor prime-power < 2^nbits (h = 13²·23²·2713·11953·
+// 262069·(448-bit prime)). These are exactly the cofactor primes reachable by the
+// r^(1/4) sub-scalars, so [c]·E'(𝔽ₚ²) removes exactly the exploitable torsion; the
+// 448-bit prime part has order ≫ 2^nbits. Every reachable prime power must appear:
+// omitting e.g. 262069 leaves an order-262069 chosen-scalar torsion forgery open,
+// since [c] stays invertible on that torsion.
+var g2CofactorClearingConstant = func() *big.Int {
+	c := big.NewInt(13 * 13 * 23 * 23) // 89401
+	c.Mul(c, big.NewInt(2713))
+	c.Mul(c, big.NewInt(11953))
+	c.Mul(c, big.NewInt(262069))
+	return c
+}()
+
+// scalarMulG2CofactorPreimageHint returns S = [s · c⁻¹ mod r]·Q, a preimage of
+// R = [s]Q under multiplication by the cofactor-clearing constant c. The
+// in-circuit check [c]S == R with S constrained on-curve forces R into the
+// prime-order subgroup: a torsion-shifted R' = [s]Q + T (ord(T) | c) has no
+// on-curve preimage under [c], so no satisfying S exists.
+func scalarMulG2CofactorPreimageHint(field *big.Int, inputs []*big.Int, outputs []*big.Int) error {
+	return emulated.UnwrapHintContext(field, inputs, outputs, func(hc emulated.HintContext) error {
+		moduli := hc.EmulatedModuli()
+		if len(moduli) != 2 {
+			return fmt.Errorf("expecting two moduli, got %d", len(moduli))
+		}
+		baseModulus, scalarModulus := moduli[0], moduli[1]
+		baseInputs, baseOutputs := hc.InputsOutputs(baseModulus)
+		scalarInputs, _ := hc.InputsOutputs(scalarModulus)
+		if len(baseInputs) != 4 {
+			return fmt.Errorf("expecting four base inputs (Q.X.A0, Q.X.A1, Q.Y.A0, Q.Y.A1), got %d", len(baseInputs))
+		}
+		if len(baseOutputs) != 4 {
+			return fmt.Errorf("expecting four base outputs, got %d", len(baseOutputs))
+		}
+		if len(scalarInputs) != 1 {
+			return fmt.Errorf("expecting one scalar input, got %d", len(scalarInputs))
+		}
+
+		cInv := new(big.Int).ModInverse(g2CofactorClearingConstant, scalarModulus)
+		if cInv == nil {
+			return fmt.Errorf("cofactor-clearing constant not invertible mod r")
+		}
+		m := new(big.Int).Mul(scalarInputs[0], cInv)
+		m.Mod(m, scalarModulus)
+
+		// S = [s · c⁻¹ mod r]·Q, so [c]S = [s]Q = R.
+		var Q bls12381.G2Affine
+		Q.X.A0.SetBigInt(baseInputs[0])
+		Q.X.A1.SetBigInt(baseInputs[1])
+		Q.Y.A0.SetBigInt(baseInputs[2])
+		Q.Y.A1.SetBigInt(baseInputs[3])
+		Q.ScalarMultiplication(&Q, m)
 		Q.X.A0.BigInt(baseOutputs[0])
 		Q.X.A1.BigInt(baseOutputs[1])
 		Q.Y.A0.BigInt(baseOutputs[2])

@@ -134,32 +134,46 @@ func TestSHA3FixedLengthSum(t *testing.T) {
 			name := name
 			strategy := testCases[name]
 			nHasher := strategy.native()
-			for _, lengthBound := range []int{0, 1, nHasher.BlockSize() - 1, nHasher.BlockSize(), nHasher.BlockSize() + 1, len(in)} {
+			bs := nHasher.BlockSize()
+			// (minimalLength, length) pairs. Taking the full cross-product of the
+			// two grids costs 36 test-engine solves of a 310-byte sponge per hasher
+			// (~81s for the test overall) and most of those pairs sit far away from
+			// any boundary. Sample instead: the bound predicate is only interesting
+			// at length == bound-1 / bound / bound+1, and the absorb path is only
+			// interesting on a block edge, so cover exactly those.
+			pairs := [][2]int{
+				{0, 0},            // no bound, empty input
+				{0, len(in)},      // no bound, full input
+				{bs, bs - 1},      // one short of the bound, one short of a block
+				{bs, bs},          // exactly on the bound, on a block edge
+				{bs + 1, len(in)}, // over the bound, crossing block edges
+				{len(in), 1},      // far under the bound
+			}
+			for _, p := range pairs {
+				lengthBound, length := p[0], p[1]
 				circuit := &sha3FixedLengthSumCircuit{
 					In:            make([]uints.U8, len(in)),
 					Expected:      make([]uints.U8, nHasher.Size()),
 					hasher:        name,
 					minimalLength: lengthBound,
 				}
-				for _, length := range []int{0, 1, nHasher.BlockSize() - 1, nHasher.BlockSize(), nHasher.BlockSize() + 1, len(in)} {
-					assert.Run(func(assert *test.Assert) {
-						h := strategy.native()
-						h.Write(in[:length])
-						expected := h.Sum(nil)
+				assert.Run(func(assert *test.Assert) {
+					h := strategy.native()
+					h.Write(in[:length])
+					expected := h.Sum(nil)
 
-						witness := &sha3FixedLengthSumCircuit{
-							In:       uints.NewU8Array(in),
-							Expected: uints.NewU8Array(expected),
-							Length:   length,
-						}
-						err := test.IsSolved(circuit, witness, ecc.BN254.ScalarField())
-						if length >= lengthBound {
-							assert.NoError(err)
-						} else if length < lengthBound {
-							assert.Error(err, "expected error for length < lengthBound")
-						}
-					}, fmt.Sprintf("bound=%d/length=%d", lengthBound, length))
-				}
+					witness := &sha3FixedLengthSumCircuit{
+						In:       uints.NewU8Array(in),
+						Expected: uints.NewU8Array(expected),
+						Length:   length,
+					}
+					err := test.IsSolved(circuit, witness, ecc.BN254.ScalarField())
+					if length >= lengthBound {
+						assert.NoError(err)
+					} else {
+						assert.Error(err, "expected error for length < lengthBound")
+					}
+				}, fmt.Sprintf("bound=%d/length=%d", lengthBound, length))
 			}
 		}, fmt.Sprintf("hash=%s", name))
 	}

@@ -14,7 +14,6 @@ import (
 func GetHints() []solver.Hint {
 	return []solver.Hint{
 		decomposeScalar,
-		decompose,
 	}
 }
 
@@ -63,14 +62,20 @@ func callDecomposeScalar(api frontend.API, s frontend.Variable) (s1, s2 frontend
 	}
 	// lambda as nonnative element
 	lambdaEmu := sapi.NewElement(cc.lambda)
-	// the scalar as nonnative element, split into nbBits-wide limbs as per GetEffectiveFieldParams.
-	nbLimbs, nbBits := emulated.GetEffectiveFieldParams[emparams.GrumpkinFr](api.Compiler().Field())
-	limbs, err := api.NewHint(decompose, int(nbLimbs), s)
-	if err != nil {
-		panic(err)
-	}
-	semu := sapi.NewElement(limbs)
-	// s1 + λ * s2 == s mod r
+	// Bind the decomposition to the actual scalar s. We build semu = s as a
+	// GrumpkinFr element from the canonical bit-decomposition of the native s:
+	// api.ToBinary emits FieldBitLen bits and, since it decomposes to the full
+	// field bit-length, enforces reducedness (the recomposed value is ≤ r_native−1).
+	// Hence semu equals s exactly. This is sound because s < r_native < r_grumpkin,
+	// so there is no s+r_native wraparound into a distinct GrumpkinFr element.
+	//
+	// Without this binding, semu is an unconstrained hint value and the sole
+	// relation s1 − λ·s2 ≡ semu ties the sub-scalars to a free semu unrelated to s,
+	// letting a prover prove [semu]Q for an arbitrary semu ≠ s.
+	sBits := api.ToBinary(s)
+	semu := sapi.FromBits(sBits...)
+	_, nbBits := emulated.GetEffectiveFieldParams[emparams.GrumpkinFr](api.Compiler().Field())
+	// s1 − λ·s2 == s mod r
 	lhs := sapi.MulNoReduce(sd[1], lambdaEmu)
 	lhs = sapi.Sub(sd[0], lhs)
 
@@ -85,22 +90,4 @@ func callDecomposeScalar(api frontend.API, s frontend.Variable) (s1, s2 frontend
 		b.Lsh(b, nbBits)
 	}
 	return s1, s2
-}
-
-func decompose(mod *big.Int, inputs, outputs []*big.Int) error {
-	nbLimbs, nbBits := emulated.GetEffectiveFieldParams[emparams.GrumpkinFr](mod)
-	if uint(len(outputs)) != nbLimbs {
-		return errors.New("output length mismatch")
-	}
-	if len(inputs) != 1 {
-		return errors.New("input/output length mismatch")
-	}
-	tmp := new(big.Int).Set(inputs[0])
-	mask := new(big.Int).Lsh(big.NewInt(1), nbBits)
-	mask.Sub(mask, big.NewInt(1))
-	for i := range nbLimbs {
-		outputs[i].And(tmp, mask)
-		tmp.Rsh(tmp, nbBits)
-	}
-	return nil
 }

@@ -45,13 +45,16 @@ func TestSolverConsistency(t *testing.T) {
 
 	for name := range circuits.Circuits {
 		t.Run(name, func(t *testing.T) {
+			tc := circuits.Circuits[name]
+			if tc.U64Only {
+				t.Skip("circuit only supports U64 fields")
+			}
 			if name == "commit" {
 				// we skip the commit circuit for consistency check because small field circuits
 				// should use [frontend.WideCommitter] interface, but in this test we want to
 				// use the given builder not, the one wrapped using [widecommitter.From].
 				return
 			}
-			tc := circuits.Circuits[name]
 			t.Parallel()
 			err := consistentSolver(tc.Circuit, tc.HintFunctions)
 			if err != nil {

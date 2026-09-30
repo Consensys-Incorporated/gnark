@@ -605,6 +605,19 @@ func (builder *builder[E]) Lookup2(b0, b1 frontend.Variable, i0, i1, i2, i3 fron
 		return in2
 	}
 
+	if b0IsConstant {
+		if builder.isCstOne(c0) {
+			return builder.Select(s1, in3, in1)
+		}
+		return builder.Select(s1, in2, in0)
+	}
+	if b1IsConstant {
+		if builder.isCstOne(c1) {
+			return builder.Select(s0, in3, in2)
+		}
+		return builder.Select(s0, in1, in0)
+	}
+
 	// two-bit lookup for the general case can be done with three constraints as
 	// following:
 	//    (1) (in3 - in2 - in1 + in0) * s1 = tmp1 - in1 + in0
@@ -797,7 +810,8 @@ func (builder *builder[E]) Commit(v ...frontend.Variable) (frontend.Variable, er
 	}
 
 	commitments := builder.cs.GetCommitments().(constraint.Groth16Commitments)
-	existingCommitmentIndexes := commitments.CommitmentIndexes()
+	allCommitmentIndexes := commitments.CommitmentIndexes()
+	existingCommitmentIndexes := allCommitmentIndexes
 	privateCommittedSeeker := utils.MultiListSeeker(commitments.GetPrivateCommitted())
 
 	// we want to build a sorted slice of committed variables, without duplicates
@@ -865,7 +879,7 @@ func (builder *builder[E]) Commit(v ...frontend.Variable) (frontend.Variable, er
 		// Cannot commit to a secret variable that has already been committed to
 		// instead we commit to its commitment
 		if committer := privateCommittedSeeker.Seek(t.VID); committer != -1 {
-			committerWireIndex := existingCommitmentIndexes[committer]                                        // commit to this commitment instead
+			committerWireIndex := allCommitmentIndexes[committer]                                             // commit to this commitment instead
 			vars = append(vars, expr.LinearExpression[E]{{Coeff: builder.cs.One(), VID: committerWireIndex}}) // TODO Replace with mont 1
 			builder.heap.push(linMeta{lID: len(vars) - 1, tID: 0, val: committerWireIndex})                   // pushing to heap mid-op is okay because toCommit > t.VID > anything popped so far
 			continue

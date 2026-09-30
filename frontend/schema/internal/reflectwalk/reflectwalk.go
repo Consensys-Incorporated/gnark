@@ -121,7 +121,7 @@ func walk(v reflect.Value, w interface{}) (err error) {
 			pointerV = pointerV.Elem()
 		}
 
-		if pointerV.Kind() == reflect.Ptr {
+		if pointerV.Kind() == reflect.Pointer {
 			if pw, ok := w.(PointerValueWalker); ok {
 				if err = pw.Pointer(pointerV); err != nil {
 					if err == ErrSkipEntry {
@@ -143,7 +143,7 @@ func walk(v reflect.Value, w interface{}) (err error) {
 
 		// If we still have a pointer or interface we have to indirect another level.
 		switch pointerV.Kind() {
-		case reflect.Ptr, reflect.Interface:
+		case reflect.Pointer, reflect.Interface:
 			continue
 		}
 		break

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>gnark WebGPU PLONK</title>
+  <style>
+    :root {
+      font-family: monospace;
+    }
+
+    .toolbar {
+      gap: 12px;
+      align-items: center;
+      margin: 0 0 16px;
+    }
+
+    label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+    }
+
+    pre {
+      overflow: auto;
+      white-space: pre-wrap;
+      margin: 0;
+      padding: 16px;
+      border: 1px solid;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>gnark WebGPU PLONK</h1>
+  <div class="toolbar">
+    <label>
+      implementation
+      <select id="impl">
+        <option value="both">both</option>
+        <option value="webgpu-go">webgpu-go</option>
+        <option value="native-go">native-go</option>
+      </select>
+    </label>
+    <label>
+      curve
+      <select id="curve">
+        <option value="bn254">bn254</option>
+        <option value="bls12_377">bls12_377</option>
+        <option value="bls12_381">bls12_381</option>
+      </select>
+    </label>
+    <label>
+      fixture size
+      <select id="size-log">
+        <option value="12">2^12</option>
+        <option value="15">2^15</option>
+        <option value="18">2^18</option>
+      </select>
+    </label>
+    <label>
+      commitments
+      <select id="commitments">
+        <option value="0">0</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+      </select>
+    </label>
+    <label>
+      prove runs
+      <input id="prove-runs" type="number" min="1" value="1" />
+    </label>
+    <button id="run" type="button">Run</button>
+  </div>
+  <div id="status">Idle</div>
+  <pre id="log"></pre>
+  <script type="module" src="/dist/tests/plonk/main.js"></script>
+</body>
+
+</html>

@@ -132,3 +132,62 @@ func TestDefaultProvingSchedulePoseidon2(t *testing.T) {
 		&constraint.GkrSkipLevel{Wires: []int{24}, ClaimSources: []constraint.GkrClaimSource{{Level: 17}}},
 	}, schedule)
 }
+
+// TestDefaultProvingScheduleMiMCDepth2 pins the schedule shape for gkrtesting.MiMCCircuit, which is
+// faithful to std/permutation/gkr-mimc: the key input (wire 0) feeds every round and the final
+// gate, and the state input (wire 1) feeds the first round and the final gate. BOTH inputs are
+// therefore multi-source — the "62 and two claim sources" topology.
+// Depth 2 is the smallest circuit exhibiting this two-multi-source-input shape.
+func TestDefaultProvingScheduleMiMCDepth2(t *testing.T) {
+	// Wire layout for MiMCCircuit(2) — 4 wires total (numRounds=2 total rounds: 1 non-final + final):
+	//   0, 1   inputs (0 = key → round + final; 1 = state → round + final)
+	//   2      mimc round: wire 2 = mimcGate(0, 1)
+	//   3      final gate: mimcLastGate(0, 2, 1)
+	// Both inputs are claimed by exactly the round gate and the final gate (schedule levels 1 and 2),
+	// so they have identical claim sources and share a single claim group in one sumcheck level.
+	_, c := scheduleTestCache.Compile(t, gkrtesting.MiMCCircuit(2))
+	schedule, err := gkrcore.DefaultProvingSchedule(c)
+	require.NoError(t, err)
+
+	// 3 = len(schedule) = initial challenge sentinel.
+	require.Equal(t, constraint.GkrProvingSchedule{
+		// Level 0: both input wires 0 and 1, batched into one sumcheck level (identical claim sources).
+		&constraint.GkrSumcheckLevel{{Wires: []int{1, 0}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}, {Level: 2}}}},
+
+		// Levels 1–2: the gates, each single-source zero-check (degree 3 > 1).
+		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
+		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{3}, ClaimSources: []constraint.GkrClaimSource{{Level: 3}}},
+	}, schedule)
+}
+
+// TestDefaultProvingScheduleMiMCDepth3 pins the depth-3 schedule, where the two inputs NO LONGER share
+// identical claim sources: the key (wire 0) is claimed by both rounds and the final gate, while the
+// state (wire 1) is claimed only by the first round and the final gate. Their claim sources differ,
+// so they form two separate claim groups — but the scheduler bunches them into a SINGLE
+// GkrSumcheckLevel (one sumcheck invocation) rather than two separate levels.
+func TestDefaultProvingScheduleMiMCDepth3(t *testing.T) {
+	// Wire layout for MiMCCircuit(3) — 5 wires total (numRounds=3 total rounds: 2 non-final + final):
+	//   0, 1   inputs (0 = key → round1 + round2 + final; 1 = state → round1 + final)
+	//   2      round 1: mimcGate(0, 1)
+	//   3      round 2: mimcGate(0, 2)
+	//   4      final:   mimcLastGate(0, 3, 1)
+	_, c := scheduleTestCache.Compile(t, gkrtesting.MiMCCircuit(3))
+	schedule, err := gkrcore.DefaultProvingSchedule(c)
+	require.NoError(t, err)
+
+	// 4 = len(schedule) = initial challenge sentinel.
+	require.Equal(t, constraint.GkrProvingSchedule{
+		// Level 0: both inputs bunched into one sumcheck level as two claim groups (sources differ).
+		//   state wire 1 — claimed by round1 (level 1) and final (level 3).
+		//   key wire 0 — claimed by round1 (level 1), round2 (level 2) and final (level 3).
+		&constraint.GkrSumcheckLevel{
+			{Wires: []int{1}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}, {Level: 3}}},
+			{Wires: []int{0}, ClaimSources: []constraint.GkrClaimSource{{Level: 1}, {Level: 2}, {Level: 3}}},
+		},
+
+		// Levels 1–3: the gates, each single-source zero-check (degree 3 > 1).
+		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{2}, ClaimSources: []constraint.GkrClaimSource{{Level: 2}}},
+		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{3}, ClaimSources: []constraint.GkrClaimSource{{Level: 3}}},
+		&constraint.GkrSingleSourceZeroCheckLevel{Wires: []int{4}, ClaimSources: []constraint.GkrClaimSource{{Level: 4}}},
+	}, schedule)
+}

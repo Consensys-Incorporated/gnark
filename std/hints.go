@@ -26,6 +26,7 @@ import (
 	"github.com/consensys/gnark/std/math/cmp"
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/math/uints"
+	"github.com/consensys/gnark/std/permutation/keccakf"
 	"github.com/consensys/gnark/std/rangecheck"
 	"github.com/consensys/gnark/std/selector"
 )
@@ -51,6 +52,7 @@ func registerHints() {
 	solver.RegisterHint(logderivarg.GetHints()...)
 	solver.RegisterHint(bitslice.GetHints()...)
 	solver.RegisterHint(sha3.GetHints()...)
+	solver.RegisterHint(keccakf.GetHints()...)
 	solver.RegisterHint(uints.GetHints()...)
 	solver.RegisterHint(conversion.GetHints()...)
 	// emulated fields

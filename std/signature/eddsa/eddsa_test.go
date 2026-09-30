@@ -54,6 +54,8 @@ func forge(id tedwards.ID, sig []byte) ([]byte, error) {
 		offset = 32
 	case tedwards.BLS12_381:
 		offset = 32
+	case tedwards.BLS12_381_BANDERSNATCH:
+		offset = 32
 	case tedwards.BLS12_377:
 		offset = 32
 	case tedwards.BW6_761:
@@ -89,7 +91,7 @@ func TestEddsa(t *testing.T) {
 	confs := []testData{
 		{hash.MIMC_BN254, tedwards.BN254},
 		{hash.MIMC_BLS12_381, tedwards.BLS12_381},
-		// {hash.MIMC_BLS12_381, tedwards.BLS12_381_BANDERSNATCH},
+		{hash.MIMC_BLS12_381, tedwards.BLS12_381_BANDERSNATCH},
 		{hash.MIMC_BLS12_377, tedwards.BLS12_377},
 		{hash.MIMC_BW6_761, tedwards.BW6_761},
 	}

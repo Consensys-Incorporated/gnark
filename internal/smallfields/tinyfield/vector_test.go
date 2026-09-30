@@ -8,7 +8,9 @@ package tinyfield
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"testing"
@@ -451,51 +453,90 @@ func TestReadMismatchLength(t *testing.T) {
 	buf := new(bytes.Buffer)
 	_, err := v1.WriteTo(buf)
 	assert.NoError(err, "writing to buffer should not error out")
+	bufBytes := buf.Bytes()
 
 	// tamper with the length: set it to 10
-	binary.BigEndian.PutUint32(buf.Bytes()[0:4], 10)
+	binary.BigEndian.PutUint32(bufBytes[0:4], 10)
 
 	var v2 Vector
-	_, err = v2.ReadFrom(buf)
+	_, err = v2.ReadFrom(bytes.NewReader(bufBytes))
 	assert.Error(err, "should error out as the length encoded is larger than the input")
 	var v3 Vector
-	err = v3.unmarshalBinaryAsync(buf.Bytes())
+	err = v3.unmarshalBinaryAsync(bufBytes)
 	assert.Error(err, "should error out as the length encoded is larger than the input")
 	var v4 Vector
-	err = v4.UnmarshalBinary(buf.Bytes())
+	err = v4.UnmarshalBinary(bufBytes)
 	assert.Error(err, "should error out as the length encoded is larger than the input")
 }
 
-func TestReadLargeHeader(t *testing.T) {
-	// skip the test. Running it on its own requires only up to 4GB of RAM, but
-	// we run tests in parallel in test suite. In that case the RAM usage blows
-	// up quickly and the test OOMs.
-	t.Skip("skipping test that requires large memory allocation")
+func TestReadTamperedHeader(t *testing.T) {
+	assert := require.New(t)
 
-	// if header is very large (128GB) we don't allocate it directly
-	// at once but rather in smaller chunks and then read it
+	// Announce enough elements to detect an allocation or receiver mutation while
+	// keeping this regression test safe to run without the length guard.
+	var input [4]byte
+	binary.BigEndian.PutUint32(input[:], 1<<12)
+
+	newVector := func() Vector {
+		v := make(Vector, 1)
+		v[0].SetUint64(42)
+		return v
+	}
+	assertUnchanged := func(v Vector) {
+		assert.Len(v, 1)
+		assert.Equal(1, cap(v))
+		assert.Equal(uint64(42), v[0].Uint64())
+	}
+
+	v := newVector()
+	n, err, errCh := v.AsyncReadFrom(bytes.NewReader(input[:]))
+	assert.Equal(int64(4), n)
+	assert.ErrorIs(err, io.ErrUnexpectedEOF)
+	_, open := <-errCh
+	assert.False(open)
+	assertUnchanged(v)
+
+	v = newVector()
+	n, err = v.ReadFrom(bytes.NewReader(input[:]))
+	assert.Equal(int64(4), n)
+	assert.ErrorIs(err, io.ErrUnexpectedEOF)
+	assertUnchanged(v)
+
+	v = newVector()
+	err = v.UnmarshalBinary(input[:])
+	assert.True(errors.Is(err, io.ErrUnexpectedEOF))
+	assertUnchanged(v)
+}
+
+func TestReadTamperedHeaderWithoutLen(t *testing.T) {
 	assert := require.New(t)
 
 	v1 := make(Vector, 4)
 	v1.MustSetRandom()
-
 	buf := new(bytes.Buffer)
 	_, err := v1.WriteTo(buf)
-	assert.NoError(err, "writing to buffer should not error out")
+	assert.NoError(err)
 	bufBytes := buf.Bytes()
+	binary.BigEndian.PutUint32(bufBytes[:4], 1<<12)
 
-	// tamper with the length: set it to 2^32-1
-	binary.BigEndian.PutUint32(bufBytes[0:4], ^uint32(0))
+	readerWithoutLen := func() io.Reader {
+		return struct{ io.Reader }{Reader: bytes.NewReader(bufBytes)}
+	}
+
+	r := readerWithoutLen()
+	_, hasLen := r.(interface{ Len() int })
+	assert.False(hasLen)
 	var v2 Vector
-	_, err = v2.ReadFrom(bytes.NewBuffer(bufBytes))
-	assert.Error(err, "should error out as the length encoded is very large")
+	n, err := v2.ReadFrom(r)
+	assert.Equal(int64(len(bufBytes)), n)
+	assert.Error(err)
+
 	var v3 Vector
-	_, err, errCh := v3.AsyncReadFrom(bytes.NewBuffer(bufBytes))
-	assert.Error(err, "should error out as the length encoded is very large")
-	assert.NoError(<-errCh)
-	var v4 Vector
-	err = v4.UnmarshalBinary(bufBytes)
-	assert.Error(err, "should error out as the length encoded is very large")
+	n, err, errCh := v3.AsyncReadFrom(readerWithoutLen())
+	assert.Equal(int64(len(bufBytes)), n)
+	assert.Error(err)
+	_, open := <-errCh
+	assert.False(open)
 }
 
 func TestReuseSliceDeserialization(t *testing.T) {

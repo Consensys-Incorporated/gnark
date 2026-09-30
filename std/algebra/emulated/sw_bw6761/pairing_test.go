@@ -73,6 +73,59 @@ func TestMillerLoopTestSolve(t *testing.T) {
 	assert.NoError(err)
 }
 
+type FinalExponentiationIsOneCircuit struct {
+	In1G1, In2G1 G1Affine
+	In1G2, In2G2 G2Affine
+}
+
+func (c *FinalExponentiationIsOneCircuit) Define(api frontend.API) error {
+	pairing, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	res, err := pairing.MillerLoop([]*G1Affine{&c.In1G1, &c.In2G1}, []*G2Affine{&c.In1G2, &c.In2G2})
+	if err != nil {
+		return fmt.Errorf("miller loop: %w", err)
+	}
+	pairing.AssertFinalExponentiationIsOne(res)
+	return nil
+}
+
+func TestFinalExponentiationIsOneTestSolve(t *testing.T) {
+	assert := test.NewAssert(t)
+	// e(p1, q1) * e(-p1, q1) = 1, so the Miller loop output has trivial final
+	// exponentiation. This is a completeness check for AssertFinalExponentiationIsOne.
+	p1, q1 := randomG1G2Affines()
+	var p2 bw6761.G1Affine
+	p2.Neg(&p1)
+	q2 := q1
+	witness := FinalExponentiationIsOneCircuit{
+		In1G1: NewG1Affine(p1),
+		In1G2: NewG2Affine(q1),
+		In2G1: NewG1Affine(p2),
+		In2G2: NewG2Affine(q2),
+	}
+	err := test.IsSolved(&FinalExponentiationIsOneCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.NoError(err)
+}
+
+func TestFinalExponentiationIsOneSoundness(t *testing.T) {
+	assert := test.NewAssert(t)
+	// e(p1, q1) * e(p2, q2) for independent random pairs has non-trivial final
+	// exponentiation (=/= 1), so no valid witness exists and the circuit must be
+	// unsatisfiable. This is a soundness check for AssertFinalExponentiationIsOne.
+	p1, q1 := randomG1G2Affines()
+	p2, q2 := randomG1G2Affines()
+	witness := FinalExponentiationIsOneCircuit{
+		In1G1: NewG1Affine(p1),
+		In1G2: NewG2Affine(q1),
+		In2G1: NewG1Affine(p2),
+		In2G2: NewG2Affine(q2),
+	}
+	err := test.IsSolved(&FinalExponentiationIsOneCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.Error(err)
+}
+
 type FinalExponentiationCircuit struct {
 	InGt GTEl
 	Res  GTEl
@@ -99,6 +152,20 @@ func TestFinalExponentiationTestSolve(t *testing.T) {
 	}
 	err := test.IsSolved(&FinalExponentiationCircuit{}, &witness, ecc.BN254.ScalarField())
 	assert.NoError(err)
+}
+
+// TestFinalExponentiationRejectsZeroInput is a regression for the easy-part 0/0:
+// before the fix DivUnchecked(conj(0), 0) accepted a witness GT of 0 (only
+// enforcing q·0 == 0 and leaving the quotient free). The easy part now uses
+// Inverse, whose anchor result·result⁻¹ == 1 is unsatisfiable at result == 0, so
+// FinalExponentiation(0) is rejected. (With honest hints result=0 solves to
+// output 0 before the fix, i.e. it was accepted.)
+func TestFinalExponentiationRejectsZeroInput(t *testing.T) {
+	assert := test.NewAssert(t)
+	var zero bw6761.GT // = 0
+	witness := FinalExponentiationCircuit{InGt: NewGTEl(zero), Res: NewGTEl(zero)}
+	err := test.IsSolved(&FinalExponentiationCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.Error(err, "FinalExponentiation(0) must be rejected: Inverse(0) anchor is unsatisfiable")
 }
 
 type PairCircuit struct {
@@ -235,6 +302,60 @@ func TestPairingCheckTestSolve(t *testing.T) {
 		In1G1: NewG1Affine(p1),
 		In1G2: NewG2Affine(q1),
 		In2G1: NewG1Affine(p2),
+		In2G2: NewG2Affine(q2),
+	}
+	err := test.IsSolved(&PairingCheckCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.NoError(err)
+}
+
+type pairG1InfinityCircuit struct {
+	P1, P2 G1Affine
+	Q1, Q2 G2Affine
+	Res    GTEl
+}
+
+func (c *pairG1InfinityCircuit) Define(api frontend.API) error {
+	pairing, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	res, err := pairing.Pair([]*G1Affine{&c.P1, &c.P2}, []*G2Affine{&c.Q1, &c.Q2})
+	if err != nil {
+		return fmt.Errorf("pair: %w", err)
+	}
+	pairing.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+func TestPairG1Infinity(t *testing.T) {
+	assert := test.NewAssert(t)
+	// e(0,Q1) * e(P2,Q2) == e(P2,Q2)
+	_, q1 := randomG1G2Affines()
+	p2, q2 := randomG1G2Affines()
+	var infinity bw6761.G1Affine
+	res, err := bw6761.Pair([]bw6761.G1Affine{infinity, p2}, []bw6761.G2Affine{q1, q2})
+	assert.NoError(err)
+	witness := pairG1InfinityCircuit{
+		P1:  NewG1Affine(infinity),
+		P2:  NewG1Affine(p2),
+		Q1:  NewG2Affine(q1),
+		Q2:  NewG2Affine(q2),
+		Res: NewGTEl(res),
+	}
+	err = test.IsSolved(&pairG1InfinityCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.NoError(err)
+}
+
+func TestPairingCheckG1Infinity(t *testing.T) {
+	assert := test.NewAssert(t)
+	// e(0,Q1) * e(0,Q2) == 1
+	_, q1 := randomG1G2Affines()
+	_, q2 := randomG1G2Affines()
+	var infinity bw6761.G1Affine
+	witness := PairingCheckCircuit{
+		In1G1: NewG1Affine(infinity),
+		In1G2: NewG2Affine(q1),
+		In2G1: NewG1Affine(infinity),
 		In2G2: NewG2Affine(q2),
 	}
 	err := test.IsSolved(&PairingCheckCircuit{}, &witness, ecc.BN254.ScalarField())
