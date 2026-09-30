@@ -9,7 +9,7 @@ import (
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
 	"github.com/consensys/gnark/internal/backend/circuits"
-	{{- if eq .ElementType "U32"}}
+	{{- if .SmallField}}
 	"github.com/consensys/gnark/internal/widecommitter"
 	{{- end }}
 
@@ -27,7 +27,7 @@ func TestSerialization(t *testing.T) {
 	for name := range circuits.Circuits {
 		t.Run(name, func(t *testing.T) {
 		tc := circuits.Circuits[name]
-		{{- if eq .ElementType "U32"}}
+		{{- if .SmallField}}
 		if tc.U64Only {
 			t.Skip("circuit does not support small fields")
 		}
@@ -42,7 +42,7 @@ func TestSerialization(t *testing.T) {
 			}
 		{{- end}}
 		builder := r1cs.NewBuilder[constraint.{{ .ElementType }}]
-		{{- if eq .ElementType "U32"}}
+		{{- if .SmallField}}
 		if name == "commit" {
 			// smallfield builders do not support commitment. We use the wrapper which has the methods
 			builder = widecommitter.From(builder)
