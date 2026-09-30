@@ -4,7 +4,9 @@ import (
 	"math/big"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/field/babybear"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/backend/plonk"
@@ -177,52 +179,58 @@ func (assert *Assert) CheckCircuit(circuit frontend.Circuit, opts ...TestingOpti
 		}, curve.String())
 	}
 	if opt.checkSmallField {
-		smf := koalabear.Modulus()
-		smfName := "koalabear"
-		assert.Run(func(assert *Assert) {
-			var invalidWitnesses, validWitnesses []_witness
-			for _, a := range opt.validAssignments {
-				w := assert.parseAssignment(circuit, a, smf, smfName, opt.checkSerialization)
-				validWitnesses = append(validWitnesses, w)
+		smallFields := opt.smallFields
+		if len(smallFields) == 0 {
+			smallFields = []*big.Int{koalabear.Modulus()}
+		}
+		for _, smf := range smallFields {
+			smf := smf
+			smfName := smallFieldName(smf)
+			assert.Run(func(assert *Assert) {
+				var invalidWitnesses, validWitnesses []_witness
+				for _, a := range opt.validAssignments {
+					w := assert.parseAssignment(circuit, a, smf, smfName, opt.checkSerialization)
+					validWitnesses = append(validWitnesses, w)
 
-				// check that the assignment is valid with the test engine
-				if !opt.skipTestEngine {
-					err := IsSolved(circuit, w.assignment, smf)
-					assert.noError(smf, err, &w)
+					// check that the assignment is valid with the test engine
+					if !opt.skipTestEngine {
+						err := IsSolved(circuit, w.assignment, smf)
+						assert.noError(smf, err, &w)
+					}
 				}
-			}
 
-			for _, a := range opt.invalidAssignments {
-				w := assert.parseAssignment(circuit, a, smf, smfName, opt.checkSerialization)
-				invalidWitnesses = append(invalidWitnesses, w)
+				for _, a := range opt.invalidAssignments {
+					w := assert.parseAssignment(circuit, a, smf, smfName, opt.checkSerialization)
+					invalidWitnesses = append(invalidWitnesses, w)
 
-				// check that the assignment is invalid with the test engine
-				if !opt.skipTestEngine {
-					err := IsSolved(circuit, w.assignment, smf)
-					assert.error(smf, err, &w)
+					// check that the assignment is invalid with the test engine
+					if !opt.skipTestEngine {
+						err := IsSolved(circuit, w.assignment, smf)
+						assert.error(smf, err, &w)
+					}
 				}
-			}
-			// test that the circuit compiles and is deterministic
-			ccs, err := assert.compileU32(circuit, smf, opt.compileOpts)
-			assert.NoError(err, "compile in small field")
+				// test that the circuit compiles and is deterministic
+				ccs, err := assert.compileSmallField(circuit, smf, opt.compileOpts)
+				assert.NoError(err, "compile in small field")
 
-			for _, w := range invalidWitnesses {
-				w := w
-				assert.Run(func(assert *Assert) {
-					_, err = ccs.Solve(w.full, opt.solverOpts...)
-					assert.error(smf, err, &w)
-				}, "invalid_witness")
-			}
+				for _, w := range invalidWitnesses {
+					w := w
+					assert.Run(func(assert *Assert) {
+						_, err = ccs.Solve(w.full, opt.solverOpts...)
+						assert.error(smf, err, &w)
+					}, "invalid_witness")
+				}
 
-			for _, w := range validWitnesses {
-				w := w
-				assert.Run(func(assert *Assert) {
-					_, err = ccs.Solve(w.full, opt.solverOpts...)
-					assert.noError(smf, err, &w)
-				}, "valid_witness")
-			}
+				for _, w := range validWitnesses {
+					w := w
+					assert.Run(func(assert *Assert) {
+						_, err = ccs.Solve(w.full, opt.solverOpts...)
+						assert.noError(smf, err, &w)
+					}, "valid_witness")
+				}
 
-		}, smfName)
+			}, smfName)
+		}
 	}
 
 	// TODO @gbotrel revisit this.
@@ -333,3 +341,17 @@ var (
 		},
 	}
 )
+
+// smallFieldName gives a readable subtest name for a small field modulus.
+func smallFieldName(modulus *big.Int) string {
+	switch {
+	case modulus.Cmp(babybear.Modulus()) == 0:
+		return "babybear"
+	case modulus.Cmp(koalabear.Modulus()) == 0:
+		return "koalabear"
+	case modulus.Cmp(mamabear.Modulus()) == 0:
+		return "mamabear"
+	default:
+		return "smallfield_" + modulus.String()
+	}
+}

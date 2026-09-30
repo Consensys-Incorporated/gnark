@@ -1,6 +1,8 @@
 package test
 
 import (
+	"math/big"
+
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend"
 )
@@ -20,6 +22,9 @@ type profile struct {
 	fuzzing            bool
 	skipTestEngine     bool
 	checkSmallField    bool
+	// smallFields overrides which small fields the small-field checks run over.
+	// Empty means the default (koalabear).
+	smallFields []*big.Int
 }
 
 var testEngineChecks = profile{

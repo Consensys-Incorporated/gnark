@@ -15,6 +15,7 @@ import (
 	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/witness"
 	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -342,6 +343,24 @@ func (assert *Assert) compile(circuit frontend.Circuit, field *big.Int, backendI
 	}
 
 	return ccs, nil
+}
+
+// smallFieldCS is the part of a compiled small-field constraint system the
+// small-field checks use. The U32 and U64 constraint systems share no common
+// interface, so we narrow to what is needed.
+type smallFieldCS interface {
+	Solve(witness witness.Witness, opts ...solver.Option) (any, error)
+}
+
+// compileSmallField compiles over a small field with the element type that
+// field's constraint system uses: U32 for the 31-bit fields, U64 for wider ones
+// such as mamabear.
+func (assert *Assert) compileSmallField(circuit frontend.Circuit, field *big.Int, compileOpts []frontend.CompileOption) (smallFieldCS, error) {
+	if constraint.FitsElement[constraint.U64](field) {
+		newBuilder := widecommitter.From[constraint.U64](scs.NewBuilder)
+		return frontend.Compile(field, newBuilder, circuit, compileOpts...)
+	}
+	return assert.compileU32(circuit, field, compileOpts)
 }
 
 func (assert *Assert) compileU32(circuit frontend.Circuit, field *big.Int, compileOpts []frontend.CompileOption) (constraint.ConstraintSystemU32, error) {
