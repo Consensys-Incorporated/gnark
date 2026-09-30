@@ -5,6 +5,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -101,14 +102,14 @@ func TestWideCommitment(t *testing.T) {
 	assert.Error(err)
 
 	// should pass as we provide with builder with WideCommitment support
-	_, err = frontend.CompileU32(f, widecommitter.From(r1cs.NewBuilder), &wideCommitment{withCommitment: false})
+	_, err = frontend.CompileU32(f, widecommitter.From[constraint.U32](r1cs.NewBuilder), &wideCommitment{withCommitment: false})
 	assert.NoError(err)
-	_, err = frontend.CompileU32(f, widecommitter.From(scs.NewBuilder), &wideCommitment{withCommitment: false})
+	_, err = frontend.CompileU32(f, widecommitter.From[constraint.U32](scs.NewBuilder), &wideCommitment{withCommitment: false})
 	assert.NoError(err)
 
 	// shouldn't pass if we have mixed WithCommitment and WithWideCommitment
-	_, err = frontend.CompileU32(f, widecommitter.From(scs.NewBuilder), &wideCommitment{withCommitment: true})
+	_, err = frontend.CompileU32(f, widecommitter.From[constraint.U32](scs.NewBuilder), &wideCommitment{withCommitment: true})
 	assert.Error(err)
-	_, err = frontend.CompileU32(f, widecommitter.From(r1cs.NewBuilder), &wideCommitment{withCommitment: true})
+	_, err = frontend.CompileU32(f, widecommitter.From[constraint.U32](r1cs.NewBuilder), &wideCommitment{withCommitment: true})
 	assert.Error(err)
 }

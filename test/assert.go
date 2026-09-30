@@ -345,7 +345,7 @@ func (assert *Assert) compile(circuit frontend.Circuit, field *big.Int, backendI
 }
 
 func (assert *Assert) compileU32(circuit frontend.Circuit, field *big.Int, compileOpts []frontend.CompileOption) (constraint.ConstraintSystemU32, error) {
-	newBuilder := widecommitter.From(scs.NewBuilder)
+	newBuilder := widecommitter.From[constraint.U32](scs.NewBuilder)
 	// else compile it and ensure it is deterministic
 	ccs, err := frontend.CompileU32(field, newBuilder, circuit, compileOpts...)
 	if err != nil {
