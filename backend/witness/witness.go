@@ -54,6 +54,7 @@ import (
 	fr_grumpkin "github.com/consensys/gnark-crypto/ecc/grumpkin/fr"
 	"github.com/consensys/gnark-crypto/field/babybear"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/debug"
 	"github.com/consensys/gnark/frontend/schema"
 	"github.com/consensys/gnark/internal/smallfields/tinyfield"
@@ -189,6 +190,8 @@ func (w *witness) WriteTo(wr io.Writer) (n int64, err error) {
 		m, err = t.WriteTo(wr)
 	case koalabear.Vector:
 		m, err = t.WriteTo(wr)
+	case mamabear.Vector:
+		m, err = t.WriteTo(wr)
 	default:
 		panic("invalid input")
 	}
@@ -233,6 +236,9 @@ func (w *witness) ReadFrom(r io.Reader) (n int64, err error) {
 		m, err = t.ReadFrom(r)
 		w.vector = t
 	case koalabear.Vector:
+		m, err = t.ReadFrom(r)
+		w.vector = t
+	case mamabear.Vector:
 		m, err = t.ReadFrom(r)
 		w.vector = t
 	default:
