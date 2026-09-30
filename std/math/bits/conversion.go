@@ -2,6 +2,7 @@ package bits
 
 import (
 	"errors"
+	"math/big"
 
 	"github.com/consensys/gnark/frontend"
 )
@@ -53,6 +54,7 @@ type baseConversionConfig struct {
 	UnconstrainedInputs  bool
 
 	omitModulusCheck bool
+	upperBound       *big.Int
 }
 
 // BaseConversionOption configures the behaviour of scalar decomposition.
@@ -97,6 +99,37 @@ func WithUnconstrainedOutputs() BaseConversionOption {
 func WithUnconstrainedInputs() BaseConversionOption {
 	return func(opt *baseConversionConfig) error {
 		opt.UnconstrainedInputs = true
+		return nil
+	}
+}
+
+// WithUpperBound sets the constant the decomposed value is checked against,
+// instead of the default native field modulus minus one.
+//
+// The default check exists because a decomposition is only unique below the
+// modulus: for a small value a, both a and a+r decompose correctly, where r is
+// the native modulus, as the constraints are satisfied under the implicit
+// modular reduction. Checking against a smaller constant is a strictly stronger
+// statement, so it keeps that uniqueness and additionally pins the value into
+// the caller's own range.
+//
+// bound must be positive and must not exceed the native modulus minus one; a
+// larger bound would readmit the multiple-decomposition case the check exists
+// to prevent.
+//
+// Setting this option always enforces the comparison, including when
+// [WithNbDigits] is lower than the bitlength of the modulus, since the caller
+// is asking for a bound the digit count alone does not imply. It cannot be
+// combined with [OmitModulusCheck], and it only applies to binary conversion.
+func WithUpperBound(bound *big.Int) BaseConversionOption {
+	return func(opt *baseConversionConfig) error {
+		if bound == nil {
+			return errors.New("bound is nil")
+		}
+		if bound.Sign() <= 0 {
+			return errors.New("bound must be positive")
+		}
+		opt.upperBound = new(big.Int).Set(bound)
 		return nil
 	}
 }
