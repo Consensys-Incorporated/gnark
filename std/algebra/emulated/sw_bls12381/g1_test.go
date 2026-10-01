@@ -82,25 +82,30 @@ func onG1Witness(p bls12381.G1Affine) *assertIsOnG1Circuit {
 	}}
 }
 
-// randomCurvePoint returns a uniformly random point of E(Fp). The G1 cofactor
-// is ~2^126, so such a point is essentially never in the prime-order subgroup.
-func randomCurvePoint() bls12381.G1Affine {
-	var four fp_bls12381.Element
-	four.SetUint64(4)
-	for {
-		var x, y2 fp_bls12381.Element
-		x.SetRandom()
-		y2.Square(&x).Mul(&y2, &x).Add(&y2, &four)
-		if y2.Legendre() != 1 {
-			continue
-		}
-		var y fp_bls12381.Element
-		y.Sqrt(&y2)
-		p := bls12381.G1Affine{X: x, Y: y}
-		if p.IsOnCurve() {
-			return p
-		}
+// curvePointAtX returns the point of E(Fp): y² = x³ + 4 with the given small
+// integer x-coordinate and the canonical square root as y.
+//
+// The off-subgroup inputs here are built deterministically rather than sampled,
+// so a failure is reproducible and no candidate can be silently skipped for
+// landing in the subgroup. (sw_emulated's randomBLS12381CurvePoint samples
+// instead, because its check is statistical — it asserts [c]P lands in G1 over
+// many random P. The two are not interchangeable, so neither is a copy of the
+// other.)
+func curvePointAtX(t *testing.T, x uint64) bls12381.G1Affine {
+	t.Helper()
+	var xe, y2 fp_bls12381.Element
+	xe.SetUint64(x)
+	y2.Square(&xe).Mul(&y2, &xe).Add(&y2, new(fp_bls12381.Element).SetUint64(4))
+	if y2.Legendre() != 1 {
+		t.Fatalf("x = %d is not the x-coordinate of a curve point", x)
 	}
+	var y fp_bls12381.Element
+	y.Sqrt(&y2)
+	p := bls12381.G1Affine{X: xe, Y: y}
+	if !p.IsOnCurve() {
+		t.Fatalf("constructed point at x = %d is not on the curve", x)
+	}
+	return p
 }
 
 func TestAssertIsOnG1(t *testing.T) {
@@ -137,17 +142,17 @@ func TestAssertIsOnG1(t *testing.T) {
 	assert.CheckCircuit(&assertIsOnG1Circuit{}, test.WithInvalidAssignment(onG1Witness(tainted)),
 		test.WithCurves(ecc.BN254), test.NoProverChecks())
 
-	for i := 0; i < 3; i++ {
-		p := randomCurvePoint()
-		if p.IsInSubGroup() {
-			continue
-		}
+	// Generic off-subgroup curve points, carrying torsion in both the n-part
+	// and the 3-part of the cofactor rather than only the 3-torsion above.
+	for _, x := range []uint64{4, 5, 6} {
+		p := curvePointAtX(t, x)
+		assert.False(p.IsInSubGroup(), "x=%d should be off-subgroup", x)
 		assert.CheckCircuit(&assertIsOnG1Circuit{}, test.WithInvalidAssignment(onG1Witness(p)),
 			test.WithCurves(ecc.BN254), test.NoProverChecks())
 	}
 
 	// A point that is not on the curve at all must also be rejected.
-	notOnCurve := randomCurvePoint()
+	notOnCurve := curvePointAtX(t, 4)
 	notOnCurve.Y.Add(&notOnCurve.Y, &fp_bls12381.Element{1})
 	assert.False(notOnCurve.IsOnCurve())
 	assert.CheckCircuit(&assertIsOnG1Circuit{}, test.WithInvalidAssignment(onG1Witness(notOnCurve)),

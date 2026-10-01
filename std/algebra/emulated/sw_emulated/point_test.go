@@ -2774,6 +2774,14 @@ func TestBLS12381CofactorClearingConstant(t *testing.T) {
 
 // randomBLS12381CurvePoint returns a uniformly random point of E(Fp), which is
 // almost never in G1 (the cofactor is ~2^126).
+//
+// Both roots are returned with equal probability: taking only the canonical
+// Sqrt would sample one point out of each {P, -P} pair, which is harmless for a
+// subgroup test (G1 is closed under negation) but would quietly stop being
+// uniform for any other use.
+//
+// Deliberately random, unlike sw_bls12381's deterministic curvePointAtX: the
+// callers here are statistical, asserting [c]P lands in G1 over many P.
 func randomBLS12381CurvePoint() bls12381.G1Affine {
 	var four fp_bls381.Element
 	four.SetUint64(4)
@@ -2786,6 +2794,9 @@ func randomBLS12381CurvePoint() bls12381.G1Affine {
 		}
 		var y fp_bls381.Element
 		y.Sqrt(&y2)
+		if b, err := rand.Int(rand.Reader, big.NewInt(2)); err == nil && b.Sign() != 0 {
+			y.Neg(&y)
+		}
 		p := bls12381.G1Affine{X: x, Y: y}
 		if p.IsOnCurve() {
 			return p
