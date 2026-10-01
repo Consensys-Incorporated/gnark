@@ -46,3 +46,10 @@ tool (
 	github.com/klauspost/asmfmt/cmd/asmfmt
 	golang.org/x/tools/cmd/goimports
 )
+
+// TODO(martun): temporary local-path replace — the accelerated backends need
+// vec-ops that only exist in the extended icicle-gnark fork (see
+// https://github.com/ingonyama-zk/icicle-gnark/pull/4). This breaks builds
+// without a sibling checkout of that fork and MUST be replaced with a tagged
+// icicle-gnark release before this branch can merge upstream.
+replace github.com/ingonyama-zk/icicle-gnark/v3 => ../icicle-gnark-extended

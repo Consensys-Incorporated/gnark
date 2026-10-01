@@ -63,9 +63,32 @@ func main() {
 		if err := bgen.Generate(d, d.CurvePkg, "./templates/", entries...); err != nil {
 			panic(err)
 		}
+
+		plonkRoot := strings.Replace(d.RootPath, "groth16", "plonk", 1)
+		plonkEntries := []bavard.Entry{
+			{File: filepath.Join(plonkRoot, "doc.go"), Templates: []string{"plonk.icicle.doc.go.tmpl"}},
+			{File: filepath.Join(plonkRoot, "icicle.go"), Templates: []string{"plonk.icicle.go.tmpl"}},
+			{File: filepath.Join(plonkRoot, "provingkey.go"), Templates: []string{"plonk.icicle.provingkey.go.tmpl"}},
+		}
+		if err := bgen.Generate(d, d.CurvePkg, "./templates/", plonkEntries...); err != nil {
+			panic(err)
+		}
+
+		// solver-output cache helpers used by the accelerated backends; these
+		// live in the per-curve constraint package to access unexported types.
+		cacheEntry := bavard.Entry{
+			File:      filepath.Join("../../../../../constraint", strings.ToLower(d.Curve), "solution_cache.go"),
+			Templates: []string{"constraint.solution_cache.go.tmpl"},
+		}
+		if err := bgen.Generate(d, "cs", "./templates/", cacheEntry); err != nil {
+			panic(err)
+		}
 	}
 
-	runCmd("gofmt", "-w", "../../groth16")
+	runCmd("gofmt", "-w", "../../groth16", "../../plonk")
+	for _, d := range data {
+		runCmd("gofmt", "-w", filepath.Join("../../../../../constraint", strings.ToLower(d.Curve), "solution_cache.go"))
+	}
 	runGoImports()
 }
 
@@ -80,8 +103,8 @@ func runCmd(name string, arg ...string) {
 }
 
 func runGoImports() {
-	fmt.Println("go tool goimports", "-w", "../../groth16")
-	cmd := exec.Command("go", "tool", "goimports", "-w", "../../groth16")
+	fmt.Println("go tool goimports", "-w", "../../groth16", "../../plonk")
+	cmd := exec.Command("go", "tool", "goimports", "-w", "../../groth16", "../../plonk")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
