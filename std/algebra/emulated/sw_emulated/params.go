@@ -39,8 +39,21 @@ type CurveParams struct {
 	// and the smaller constant is what should be used (see BLS12-381 G1, where
 	// the exponent is (x-1) and h = (x-1)²/3).
 	//
-	// For prime-order groups (cofactor 1) it is nil and the check is skipped.
+	// For prime-order groups (cofactor 1) it is nil and the check is skipped;
+	// such curves must set [CurveParams.PrimeOrder] to say so explicitly.
 	CofactorClearing *big.Int
+
+	// PrimeOrder records that #E(Fp) = r, i.e. the curve has cofactor 1 and
+	// every on-curve point already lies in the prime-order subgroup. It is the
+	// only thing that licenses [Curve.AssertIsInSubgroup] to be a no-op.
+	//
+	// It must NOT be set for a curve with a nontrivial cofactor. Such a curve
+	// needs either a [CurveParams.CofactorClearing] constant, or it has no
+	// supported membership check at all — in which case
+	// [Curve.AssertIsInSubgroup] panics rather than silently accepting
+	// off-subgroup points. The zero value therefore fails closed: a newly added
+	// cofactor curve is rejected until its membership check is supplied.
+	PrimeOrder bool
 
 	// PreferClassicGLV routes [Curve.ScalarMul] through classic GLV instead of
 	// GLV+fake-GLV. It is set for cofactor curves where the fake-GLV
@@ -66,6 +79,7 @@ func GetSecp256k1Params() CurveParams {
 		Gm:           computeSecp256k1Table(),
 		Eigenvalue:   lambda,
 		ThirdRootOne: omega,
+		PrimeOrder:   true, // h = 1 (SEC 2 §2.4.1)
 	}
 }
 
@@ -84,6 +98,7 @@ func GetBN254Params() CurveParams {
 		Gm:           computeBN254Table(),
 		Eigenvalue:   lambda,
 		ThirdRootOne: omega,
+		PrimeOrder:   true, // BN curves have h = 1 on G1
 	}
 }
 
@@ -136,6 +151,7 @@ func GetP256Params() CurveParams {
 		Gm:           computeP256Table(),
 		Eigenvalue:   nil,
 		ThirdRootOne: nil,
+		PrimeOrder:   true, // h = 1 (FIPS 186-4 D.1.2.3)
 	}
 }
 
@@ -153,6 +169,7 @@ func GetP384Params() CurveParams {
 		Gm:           computeP384Table(),
 		Eigenvalue:   nil,
 		ThirdRootOne: nil,
+		PrimeOrder:   true, // h = 1 (FIPS 186-4 D.1.2.4)
 	}
 }
 
@@ -179,6 +196,13 @@ func GetBW6761Params() CurveParams {
 		// to ~r^(1/2) (not ~r^(1/4)), so the reachable factors inside the ~330-bit
 		// cofactor remainder can't be cheaply isolated — only full-cofactor
 		// clearing (expensive) or classic GLV (chosen here) is sound.
+		//
+		// G1 here has a nontrivial cofactor, so PrimeOrder stays false: this is
+		// the one supported curve with neither h = 1 nor a clearing constant,
+		// and [Curve.AssertIsInSubgroup] therefore panics on it rather than
+		// accepting the on-curve, off-subgroup points that exist (e.g. x = 2).
+		// Nothing in this package reaches that path internally — every
+		// assertPointInSubgroup call site is gated on !PreferClassicGLV.
 		CofactorClearing: nil,
 		PreferClassicGLV: true,
 	}
@@ -198,6 +222,7 @@ func GetStarkCurveParams() CurveParams {
 		Gm:           computeStarkCurveTable(),
 		Eigenvalue:   nil,
 		ThirdRootOne: nil,
+		PrimeOrder:   true, // h = 1
 	}
 }
 

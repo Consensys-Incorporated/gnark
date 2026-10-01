@@ -475,8 +475,9 @@ func naf4Digits(k *big.Int) []int8 {
 //
 // The R = O case (encoded (0,0)) has no affine preimage, so a dummy in-subgroup
 // point is substituted and the equality is made vacuous to preserve completeness.
+
 // AssertIsInSubgroup asserts that R lies in the prime-order subgroup of the
-// curve. It is a no-op on prime-order curves (params.CofactorClearing == nil).
+// curve.
 //
 // R must already be known to be on the curve; this method does not check that.
 // The (0,0) infinity encoding is accepted.
@@ -485,6 +486,12 @@ func naf4Digits(k *big.Int) []int8 {
 // preimage S is hinted and [c]S == R asserted, which is cheaper than a
 // [r]-order check and, on BLS12-381 G1, cheaper than the endomorphism test
 // phi(P) = [-x^2]P.
+//
+// On a prime-order curve ([CurveParams.PrimeOrder]) every on-curve point is
+// already in the subgroup and this is a no-op. On a curve that has a nontrivial
+// cofactor but no [CurveParams.CofactorClearing] constant — BW6-761 G1 — there
+// is no supported membership check, and this panics at circuit-definition time
+// rather than silently accepting off-subgroup points.
 func (c *Curve[B, S]) AssertIsInSubgroup(R *AffinePoint[B]) {
 	c.assertPointInSubgroup(R)
 }
@@ -492,6 +499,13 @@ func (c *Curve[B, S]) AssertIsInSubgroup(R *AffinePoint[B]) {
 func (c *Curve[B, S]) assertPointInSubgroup(R *AffinePoint[B]) {
 	cc := c.params.CofactorClearing
 	if cc == nil {
+		// Skipping is sound only because every on-curve point is in the
+		// subgroup. Without that, a missing constant would turn this assertion
+		// into a silent no-op, so fail closed instead.
+		if !c.params.PrimeOrder {
+			panic("sw_emulated: no subgroup membership check for this curve: " +
+				"it has a nontrivial cofactor but no CofactorClearing constant")
+		}
 		return
 	}
 	var sc S

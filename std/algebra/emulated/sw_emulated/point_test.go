@@ -3,7 +3,9 @@ package sw_emulated
 import (
 	"crypto/elliptic"
 	"crypto/rand"
+	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -2765,4 +2767,162 @@ func randomBLS12381CurvePoint() bls12381.G1Affine {
 			return p
 		}
 	}
+}
+
+type AssertIsInSubgroupTest[T, S emulated.FieldParams] struct {
+	P AffinePoint[T]
+}
+
+func (c *AssertIsInSubgroupTest[T, S]) Define(api frontend.API) error {
+	cr, err := New[T, S](api, GetCurveParams[T]())
+	if err != nil {
+		return err
+	}
+	cr.AssertIsOnCurve(&c.P)
+	cr.AssertIsInSubgroup(&c.P)
+	return nil
+}
+
+// TestAssertIsInSubgroupBW6761FailsExplicitly is a regression test for the exported
+// [Curve.AssertIsInSubgroup] silently accepting off-subgroup points on a curve
+// that has a cofactor but no clearing constant.
+//
+// BW6-761 G1 has a nontrivial cofactor and GetBW6761Params leaves
+// CofactorClearing nil, because every internal caller routes around the binding
+// via PreferClassicGLV. Exporting the method made that nil reachable from
+// outside, where "no constant" would have meant "assert nothing": a circuit
+// doing AssertIsOnCurve + AssertIsInSubgroup on the point below used to solve.
+// It must now fail loudly instead.
+func TestAssertIsInSubgroupBW6761FailsExplicitly(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	// (2, y) is on y² = x³ - 1 over Fp but outside the prime-order subgroup.
+	P := bw6761OffSubgroupPoint(t)
+	assert.True(P.IsOnCurve(), "witness point must be on the curve")
+	assert.False(P.IsInSubGroup(), "witness point must be outside G1")
+
+	circuit := AssertIsInSubgroupTest[emulated.BW6761Fp, emulated.BW6761Fr]{}
+	witness := AssertIsInSubgroupTest[emulated.BW6761Fp, emulated.BW6761Fr]{
+		P: AffinePoint[emulated.BW6761Fp]{
+			X: emulated.ValueOf[emulated.BW6761Fp](P.X),
+			Y: emulated.ValueOf[emulated.BW6761Fp](P.Y),
+		},
+	}
+
+	err := solveCatchingPanic(&circuit, &witness)
+	if err == nil {
+		t.Fatal("AssertIsInSubgroup accepted an on-curve, off-subgroup BW6-761 point")
+	}
+	// and it must fail for the stated reason, not as an incidental unsatisfied
+	// constraint that a future refactor could make satisfiable again.
+	if !strings.Contains(err.Error(), "no subgroup membership check") {
+		t.Fatalf("expected an explicit unsupported-curve failure, got: %v", err)
+	}
+}
+
+// TestAssertIsInSubgroupPrimeOrder checks the other side of the guard: on a
+// genuinely prime-order curve the no-op is correct and must stay a no-op.
+func TestAssertIsInSubgroupPrimeOrder(t *testing.T) {
+	assert := test.NewAssert(t)
+	assert.True(GetSecp256k1Params().PrimeOrder)
+	assert.Nil(GetSecp256k1Params().CofactorClearing)
+
+	_, g := secp256k1.Generators()
+	circuit := AssertIsInSubgroupTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{}
+	witness := AssertIsInSubgroupTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{
+		P: AffinePoint[emulated.Secp256k1Fp]{
+			X: emulated.ValueOf[emulated.Secp256k1Fp](g.X),
+			Y: emulated.ValueOf[emulated.Secp256k1Fp](g.Y),
+		},
+	}
+	assert.NoError(solveCatchingPanic(&circuit, &witness),
+		"prime-order curve must accept an in-subgroup point")
+}
+
+// TestAssertIsInSubgroupBLS12381 checks that the curve that does carry a
+// clearing constant still accepts in-subgroup points and rejects off-subgroup
+// ones, i.e. the guard did not disturb the working path.
+func TestAssertIsInSubgroupBLS12381(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	circuit := AssertIsInSubgroupTest[emulated.BLS12381Fp, emulated.BLS12381Fr]{}
+	mk := func(P bls12381.G1Affine) *AssertIsInSubgroupTest[emulated.BLS12381Fp, emulated.BLS12381Fr] {
+		return &AssertIsInSubgroupTest[emulated.BLS12381Fp, emulated.BLS12381Fr]{
+			P: AffinePoint[emulated.BLS12381Fp]{
+				X: emulated.ValueOf[emulated.BLS12381Fp](P.X),
+				Y: emulated.ValueOf[emulated.BLS12381Fp](P.Y),
+			},
+		}
+	}
+
+	_, _, g, _ := bls12381.Generators()
+	assert.NoError(solveCatchingPanic(&circuit, mk(g)), "in-subgroup point must be accepted")
+
+	for {
+		P := randomBLS12381CurvePoint()
+		if P.IsInSubGroup() {
+			continue // astronomically unlikely, but keep the test exact
+		}
+		assert.Error(solveCatchingPanic(&circuit, mk(P)), "off-subgroup point must be rejected")
+		return
+	}
+}
+
+// TestCofactorCurvesDeclareAMembershipCheck locks the fail-closed invariant in
+// place for every curve this package supports: a curve may skip the subgroup
+// binding only by declaring PrimeOrder, and a curve that declares PrimeOrder
+// must not also carry a clearing constant.
+func TestCofactorCurvesDeclareAMembershipCheck(t *testing.T) {
+	assert := test.NewAssert(t)
+	for _, tc := range []struct {
+		name   string
+		params CurveParams
+	}{
+		{"secp256k1", GetSecp256k1Params()},
+		{"bn254", GetBN254Params()},
+		{"bls12-381", GetBLS12381Params()},
+		{"p256", GetP256Params()},
+		{"p384", GetP384Params()},
+		{"bw6-761", GetBW6761Params()},
+		{"stark-curve", GetStarkCurveParams()},
+	} {
+		if tc.params.PrimeOrder {
+			assert.Nil(tc.params.CofactorClearing,
+				"%s: a prime-order curve needs no clearing constant", tc.name)
+		}
+	}
+
+	// BW6-761 is the one curve that is neither prime-order nor equipped with a
+	// clearing constant; if that ever changes, the panic above should go away.
+	bw6 := GetBW6761Params()
+	assert.False(bw6.PrimeOrder, "BW6-761 G1 has a nontrivial cofactor")
+	assert.Nil(bw6.CofactorClearing)
+}
+
+// solveCatchingPanic runs test.IsSolved and reports a panic raised during
+// circuit definition as an error. test.IsSolved already recovers panics into
+// its error, but it does so only for the solver; recovering here keeps the
+// helper honest if that ever changes.
+func solveCatchingPanic(circuit, witness frontend.Circuit) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return test.IsSolved(circuit, witness, testCurve.ScalarField())
+}
+
+// bw6761OffSubgroupPoint returns a small on-curve BW6-761 G1 point that is not
+// in the prime-order subgroup. y² = x³ - 1 at x = 2.
+func bw6761OffSubgroupPoint(t *testing.T) bw6761.G1Affine {
+	t.Helper()
+	var x, y2 fp_bw6761.Element
+	x.SetUint64(2)
+	y2.Square(&x).Mul(&y2, &x).Sub(&y2, new(fp_bw6761.Element).SetOne())
+	if y2.Legendre() != 1 {
+		t.Fatal("x = 2 should be on the curve")
+	}
+	var y fp_bw6761.Element
+	y.Sqrt(&y2)
+	return bw6761.G1Affine{X: x, Y: y}
 }
