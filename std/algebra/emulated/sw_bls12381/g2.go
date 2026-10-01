@@ -809,7 +809,10 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 		panic(err)
 	}
 	var st ScalarField
-	// LLL Hermite bound: u_i, v_i < γ₄·r^(1/4), fits in (BitLen+3)/4 + 1 bits.
+	// u_i, v_i < 1.2534·r^(1/4), the LLL δ=0.99 bound on the rank-4 lattice of
+	// determinant r reduced by rationalReconstructExtG2; fits in
+	// (BitLen+3)/4 + 1 bits. Not the Hermite constant — see the derivation on
+	// [sw_emulated.Curve.scalarMulGLVAndFakeGLV].
 	nbits := (st.Modulus().BitLen()+3)/4 + 1
 
 	// handle 0-scalar and (-1)-scalar cases

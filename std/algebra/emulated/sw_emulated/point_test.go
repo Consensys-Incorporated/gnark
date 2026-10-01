@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/consensys/gnark-crypto/algebra/lattice"
 	"github.com/consensys/gnark-crypto/ecc"
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	fp_bls381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
@@ -2960,4 +2961,131 @@ func bw6761OffSubgroupPoint(t *testing.T) bw6761.G1Affine {
 	var y fp_bw6761.Element
 	y.Sqrt(&y2)
 	return bw6761.G1Affine{X: x, Y: y}
+}
+
+// TestSubScalarBound pins the facts that make the fake-GLV subscalar bound
+// nbits = (BitLen+3)/4 + 1 correct, i.e. that rationalReconstructExt's four
+// outputs always fit in that many bits.
+//
+// The bound rests on two things, and the test checks both:
+//
+//  1. gnark-crypto's LLL runs at δ = 99/100, so the first reduced vector of the
+//     rank-4 lattice L = {(x,y,z,t) : x+λy ≡ k(z+λt) mod r}, det L = r, obeys
+//     ‖b₁‖ ≤ (1/(δ−1/4))^(3/4)·r^(1/4) = 1.2534·r^(1/4) < 2·r^(1/4).
+//  2. the hint returns the minimum-infinity-norm row with (z,t) ≠ (0,0), and b₁
+//     always qualifies, because a vector with (z,t) = (0,0) lies in the 2D GLV
+//     sublattice whose minimum is ≈ √r — far above ‖b₁‖ ≈ r^(1/4).
+//
+// Fact 2 is the one that an existence bound alone would not give, and it is
+// what makes the selected row bounded rather than merely some short vector.
+func TestSubScalarBound(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	for _, tc := range []struct {
+		name   string
+		r      *big.Int
+		lambda *big.Int
+	}{
+		{"secp256k1", fr_secp.Modulus(), GetSecp256k1Params().Eigenvalue},
+		{"BN254", fr_bn.Modulus(), GetBN254Params().Eigenvalue},
+		{"BLS12-381", fr_bls381.Modulus(), GetBLS12381Params().Eigenvalue},
+	} {
+		nbits := (tc.r.BitLen()+3)/4 + 1
+		rc := lattice.NewReconstructor(tc.r).SetLambda(tc.lambda)
+
+		// (2) the denominator condition never forces a longer row: the 2D
+		// sublattice {(x,y) : x+λy ≡ 0 mod r} has minimum ≈ √r, so no vector
+		// anywhere near 2^nbits can have a zero denominator.
+		min2D := shortest2DSublattice(tc.r, tc.lambda)
+		assert.Greater(min2D.BitLen(), nbits+32,
+			"%s: 2D sublattice minimum (2^%d) must dwarf the subscalar bound (2^%d), "+
+				"else b1 could be skipped for a zero denominator",
+			tc.name, min2D.BitLen(), nbits)
+
+		// (1) every output of the hint fits in nbits, over deterministic
+		// scalars chosen to include the extremes of the range and values that
+		// previously sat at the 64/65-bit boundary.
+		scalars := []*big.Int{
+			big.NewInt(0), big.NewInt(1), big.NewInt(2), big.NewInt(3),
+			new(big.Int).Sub(tc.r, big.NewInt(1)),
+			new(big.Int).Sub(tc.r, big.NewInt(2)),
+			new(big.Int).Rsh(tc.r, 1),
+			new(big.Int).Lsh(big.NewInt(1), 64),
+			new(big.Int).Lsh(big.NewInt(1), 128),
+			new(big.Int).Lsh(big.NewInt(1), 192),
+			new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 128), big.NewInt(1)),
+			new(big.Int).Set(tc.lambda),
+			new(big.Int).Sub(tc.r, tc.lambda),
+		}
+		// plus a deterministic pseudo-random spread (fixed multiplier, no RNG,
+		// so a failure is reproducible)
+		x := new(big.Int).SetUint64(0x9e3779b97f4a7c15)
+		for i := 0; i < 256; i++ {
+			x.Mul(x, big.NewInt(6364136223846793005))
+			x.Add(x, big.NewInt(1442695040888963407))
+			x.Mod(x, tc.r)
+			scalars = append(scalars, new(big.Int).Set(x))
+		}
+
+		maxBits := 0
+		for _, s := range scalars {
+			k := new(big.Int).Neg(s)
+			k.Mod(k, tc.r)
+			res := rc.RationalReconstructExt(k)
+			for j, v := range res {
+				a := new(big.Int).Abs(v)
+				assert.LessOrEqual(a.BitLen(), nbits,
+					"%s: output %d for s=%s is %d bits, over the %d-bit range check",
+					tc.name, j, s.String(), a.BitLen(), nbits)
+				if a.BitLen() > maxBits {
+					maxBits = a.BitLen()
+				}
+			}
+			// the relation the circuit then checks must actually hold
+			u1, u2, v1, v2 := res[0], res[1], res[2], res[3]
+			lhs := new(big.Int).Add(u1, new(big.Int).Mul(tc.lambda, u2))
+			den := new(big.Int).Add(v1, new(big.Int).Mul(tc.lambda, v2))
+			lhs.Add(lhs, new(big.Int).Mul(s, den))
+			lhs.Mod(lhs, tc.r)
+			assert.Equal(0, lhs.Sign(),
+				"%s: (u1+λu2) + s(v1+λv2) must vanish mod r for s=%s", tc.name, s)
+			assert.False(v1.Sign() == 0 && v2.Sign() == 0,
+				"%s: denominator must be nonzero for s=%s", tc.name, s)
+		}
+		t.Logf("%s: nbits=%d, max observed subscalar = %d bits", tc.name, nbits, maxBits)
+	}
+}
+
+// shortest2DSublattice returns the shortest vector (Euclidean) of
+// {(x,y) ∈ Z² : x + λy ≡ 0 mod r} by Gauss reduction. This is the set the
+// hint's nonzero-denominator condition excludes; its minimum being ≈ √r is what
+// guarantees the condition never rejects the short vector LLL found.
+func shortest2DSublattice(r, lambda *big.Int) *big.Int {
+	norm := func(v [2]*big.Int) *big.Int {
+		x := new(big.Int).Mul(v[0], v[0])
+		y := new(big.Int).Mul(v[1], v[1])
+		return x.Add(x, y)
+	}
+	a := [2]*big.Int{new(big.Int).Set(r), big.NewInt(0)}
+	l := new(big.Int).Mod(lambda, r)
+	b := [2]*big.Int{new(big.Int).Neg(l), big.NewInt(1)}
+	for {
+		if norm(a).Cmp(norm(b)) > 0 {
+			a, b = b, a
+		}
+		dot := new(big.Int).Add(new(big.Int).Mul(a[0], b[0]), new(big.Int).Mul(a[1], b[1]))
+		na := norm(a)
+		mu := new(big.Int).Mul(dot, big.NewInt(2))
+		mu.Add(mu, na)
+		mu.Div(mu, new(big.Int).Mul(na, big.NewInt(2)))
+		if mu.Sign() == 0 {
+			break
+		}
+		b[0].Sub(b[0], new(big.Int).Mul(mu, a[0]))
+		b[1].Sub(b[1], new(big.Int).Mul(mu, a[1]))
+	}
+	if norm(a).Cmp(norm(b)) > 0 {
+		a = b
+	}
+	return new(big.Int).Sqrt(norm(a))
 }

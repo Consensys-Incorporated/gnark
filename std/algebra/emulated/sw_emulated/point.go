@@ -1933,9 +1933,39 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 		panic(err)
 	}
 	var st S
-	// LLL Hermite bound (gnark-crypto/algebra/lattice): u1, u2, v1, v2 are
-	// bounded by γ₄·r^(1/4) ≈ 1.25·r^(1/4), which fits in (BitLen+3)/4 + 1 bits.
-	// This is tighter than the previous heuristic BitLen/4 + 9 (saves ~8 iters).
+	// Bound on the subscalars u1, u2, v1, v2 returned by rationalReconstructExt.
+	//
+	// The hint reduces the rank-4 lattice
+	//
+	//	L = {(x,y,z,t) ∈ Z⁴ : x + λy ≡ k(z + λt) mod r},  det L = r
+	//
+	// (L is the kernel of a surjection Z⁴ → Z/r, hence of index r) and returns
+	// a row with a nonzero denominator (z,t). gnark-crypto's LLL runs at
+	// δ = 99/100, so the first reduced vector obeys the LLL guarantee
+	//
+	//	‖b₁‖ ≤ (1/(δ−1/4))^((n−1)/4) · (det L)^(1/n) = 1.2534·r^(1/4)
+	//
+	// and 1.2534 < 2, so every coordinate fits in ⌈BitLen/4⌉ + 1 bits.
+	//
+	// Note this is the LLL approximation factor, NOT the Hermite constant: γ₄
+	// is √2, and Hermite would only bound λ₁(L) ≤ 2^(1/4)·r^(1/4), the length
+	// of the shortest vector, which LLL is not guaranteed to find.
+	//
+	// The selected row is the minimum-infinity-norm row among those with
+	// (z,t) ≠ (0,0), so bounding b₁ bounds it — provided b₁ is itself a
+	// candidate. It always is: a lattice vector with (z,t) = (0,0) satisfies
+	// x + λy ≡ 0 mod r, i.e. lies in the 2D GLV sublattice, whose minimum is
+	// ≈ √r ≈ 2^127. That is far above ‖b₁‖ ≈ 2^64, so b₁ can never have a zero
+	// denominator and is never skipped. (Measured: the 2D minimum is 2^128 for
+	// secp256k1 and BLS12-381, 2^127 for BN254 — see TestSubScalarBound.)
+	//
+	// +1 is minimal, not conservative: 1.2534·r^(1/4) ≈ 2^64.33 for a 256-bit
+	// r, so ⌈BitLen/4⌉ bits alone would not be provable. The hint does try an
+	// early-termination path bounded by r^(1/4) (which would fit ⌈BitLen/4⌉),
+	// but it falls through to the general reduction often enough to matter —
+	// roughly 1 in 6000 random scalars — so the bound has to cover the
+	// fallback. This is why the 64-bit bound used by hand-built circuits that
+	// search for a Minkowski-optimal vector does not transfer here.
 	nbits := (st.Modulus().BitLen()+3)/4 + 1
 
 	// handle 0-scalar and (-1)-scalar cases
@@ -1979,7 +2009,7 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 	// return the absolute value in the hint and negate the corresponding
 	// points here when needed.
 	signs, sd, err := c.scalarApi.NewHintGeneric(rationalReconstructExt, 4, 4, nil, []*emulated.Element[S]{_s, c.eigenvalue},
-		// we later need to check that u1, u2, v1, v2 < c*r^(1/4) so we provide a hint output range check with nbits = (BitLen+3)/4 + 2
+		// we later need to check that u1, u2, v1, v2 < c*r^(1/4) so we provide a hint output range check with nbits = (BitLen+3)/4 + 1 (see above)
 		emulated.WithHintOutputRangeCheckBits(map[int]int{4: nbits, 5: nbits, 6: nbits, 7: nbits}),
 	)
 	if err != nil {
