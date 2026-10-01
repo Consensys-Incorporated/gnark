@@ -52,9 +52,17 @@ import (
 // selection's wide constant linear combinations are free in R1CS but expand
 // into one addition gate per term in PLONK, making the selector cost scale
 // with 2^w·nbLimbs per window; a smaller window rebalances selector versus
-// chain-addition cost. With a partial top window, w=5 is the current SCS
-// optimum measured on secp256k1.
-const combPlonkWindow = 5
+// chain-addition cost, which is why this sits below the R1CS widths that
+// combOptimalWindow picks.
+//
+// w=6 is the measured SCS optimum, and it is the optimum for every supported
+// curve rather than just one, so a single constant suffices here (SCS counts
+// for w=4..8, see TestScalarMulBaseCombPlonkWindow):
+//
+//	secp256k1   101776  92472  89890  97852  123576
+//	BN254 G1    101538  91162  89652  97614  120402
+//	BLS12-381   148187 132226 129875 141905 176699
+const combPlonkWindow = 6
 
 // combOptimalWindow returns the R1CS-optimal comb window width for the given
 // base-field limb count and scalar bit length. It minimises an estimated
