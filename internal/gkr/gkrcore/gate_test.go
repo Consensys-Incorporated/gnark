@@ -11,8 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TODO have this return what is now PrimeField(bn254())
-func bn254() *big.Int { return ecc.BN254.ScalarField() }
+func bn254() Field { return PrimeField(ecc.BN254.ScalarField()) }
 
 // koalabearE6 describes KoalaBear's degree-6 extension E6, whose tower generator v has minimal
 // polynomial X⁶ - 2X³ - 2. It is test data only here; the next PR exports this description
@@ -24,10 +23,10 @@ func koalabearE6() Field {
 	}
 }
 
-// testFields runs under PrimeField(bn254()), as before commit A, and under the KoalaBear E6
+// testFields runs under bn254(), as before commit A, and under the KoalaBear E6
 // description, to check that both agree on every gate's metadata.
 func testFields() []Field {
-	return []Field{PrimeField(bn254()), koalabearE6()}
+	return []Field{bn254(), koalabearE6()}
 }
 
 // test gate functions

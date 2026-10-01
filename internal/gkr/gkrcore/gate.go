@@ -242,7 +242,7 @@ func (gc *gateCompiler) remapIndices() {
 // CompileGateFunction converts a gate function into a SerializableGate.
 // This consists of compiling into bytecode as well as computing gate metadata
 // such as degree and solvable var index for the given field.
-func CompileGateFunction(f gkr.GateFunction, nbInputs int, field *big.Int) (SerializableGate, error) {
+func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (SerializableGate, error) {
 	// Create compiling API
 	compiler := gateCompiler{
 		constantIndex: make(map[string]uint16),
@@ -291,7 +291,7 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field *big.Int) (Seri
 	}
 
 	// Compute degree and solvable variable
-	tester := gateTester{field: PrimeField(field)}
+	tester := gateTester{field: field}
 	tester.setGate(bytecode, nbInputs)
 
 	degree := len(tester.fitPoly(bytecode.EstimateDegree(nbInputs))) - 1
