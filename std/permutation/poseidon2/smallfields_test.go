@@ -69,8 +69,12 @@ func TestMamabearParameters(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 16, p.Width)
 	require.Equal(t, 3, p.DegreeSBox)
-	require.Equal(t, 6, p.NbFullRounds)
-	require.Equal(t, 21, p.NbPartialRounds)
+	// Round numbers follow Eq. (1) of the Poseidon2 paper for n = 49, t = 16,
+	// d = 3 at kappa = 128: R_F = 8, R_P = ceil(1.075 * 29) = 32. They are NOT
+	// koalabear's 6/21 -- the bound grows with min{kappa, log2(p)}, so a wider
+	// field needs more rounds. See the gnark-crypto parameters this reads.
+	require.Equal(t, 8, p.NbFullRounds)
+	require.Equal(t, 32, p.NbPartialRounds)
 	require.Len(t, p.DiagM1, p.Width)
 	require.Len(t, p.RoundKeys, p.NbFullRounds+p.NbPartialRounds)
 
