@@ -3089,3 +3089,60 @@ func shortest2DSublattice(r, lambda *big.Int) *big.Int {
 	}
 	return new(big.Int).Sqrt(norm(a))
 }
+
+// mulByConstantCircuit exposes mulByConstant with no further constraints on its
+// output, so the only thing that can make it unsatisfiable is a guard inside.
+type mulByConstantCircuit struct {
+	P AffinePoint[emulated.BLS12381Fp]
+}
+
+func (c *mulByConstantCircuit) Define(api frontend.API) error {
+	cr, err := New[emulated.BLS12381Fp, emulated.BLS12381Fr](api, GetBLS12381Params())
+	if err != nil {
+		return err
+	}
+	cr.mulByConstant(&c.P, GetBLS12381Params().CofactorClearing)
+	return nil
+}
+
+// TestMulByConstantRejectsInfinity pins the guard that lets mulByConstant use
+// the incomplete group law.
+//
+// mulByConstant pins each slope with λ·den − num ≡ 0, which leaves λ
+// unconstrained exactly when den ≡ num ≡ 0. For the tangent on a = 0 that is
+// 2y ≡ 0 and 3x² ≡ 0, i.e. the point (0,0) — not on the curve, but accepted by
+// AssertIsOnCurve as the infinity encoding, so a malicious cofactor-preimage
+// hint can supply it. A free λ there makes the ladder output unconstrained and
+// lets it wander off the curve, since intermediates are not re-checked.
+//
+// The circuit above constrains nothing but the guard, so this distinguishes
+// "guard present" from "guard absent": with the guard the (0,0) witness is
+// unsatisfiable, without it the honest tangent hint returns λ = 0, the ladder
+// returns (0,0), and the circuit solves.
+//
+// Note this tests the guard, not an end-to-end forgery: mounting one also
+// requires replacing the tangent hint, since the honest hint yields λ = 0 at
+// (0,0) and the resulting (0,0) output then fails the [c]S == R equality on its
+// own.
+func TestMulByConstantRejectsInfinity(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	// a genuine curve point must still go through
+	_, _, g, _ := bls12381.Generators()
+	good := mulByConstantCircuit{P: AffinePoint[emulated.BLS12381Fp]{
+		X: emulated.ValueOf[emulated.BLS12381Fp](g.X),
+		Y: emulated.ValueOf[emulated.BLS12381Fp](g.Y),
+	}}
+	assert.NoError(test.IsSolved(&mulByConstantCircuit{}, &good, testCurve.ScalarField()),
+		"an honest curve point must still be accepted")
+
+	// the (0,0) infinity encoding must not
+	bad := mulByConstantCircuit{P: AffinePoint[emulated.BLS12381Fp]{
+		X: emulated.ValueOf[emulated.BLS12381Fp](0),
+		Y: emulated.ValueOf[emulated.BLS12381Fp](0),
+	}}
+	if err := test.IsSolved(&mulByConstantCircuit{}, &bad, testCurve.ScalarField()); err == nil {
+		t.Fatal("mulByConstant accepted the (0,0) infinity encoding: the tangent " +
+			"slope is unconstrained there, so the incomplete ladder is unsound")
+	}
+}

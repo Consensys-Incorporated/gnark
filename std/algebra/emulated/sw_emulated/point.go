@@ -397,22 +397,63 @@ func (c *Curve[B, S]) Add(p, q *AffinePoint[B]) *AffinePoint[B] {
 }
 
 // mulByConstant returns [k]p for a fixed k > 0, via a width-4 signed-window (NAF)
-// double-and-add using complete (unified) operations, so it is exception-free for
-// any on-curve p. Used to clear the cofactor torsion in the fake-GLV subgroup
-// binding. k is a [big.Int] because the cofactor-clearing constant can exceed 64
-// bits (e.g. the full BLS12-381 G1 cofactor is 126 bits). The signed window trims
-// the additions to ~the w-NAF weight (vs the binary Hamming weight); the doubling
-// count is unchanged. All operations stay unified (infinity-complete), which is
-// soundness-critical since p is an adversarial preimage.
+// double-and-add on the *incomplete* group law, with a guard on every step. Used
+// to clear the cofactor torsion in the fake-GLV subgroup binding. k is a
+// [big.Int] because the cofactor-clearing constant can exceed 64 bits (e.g. the
+// full BLS12-381 G1 cofactor is 126 bits). The signed window trims the additions
+// to ~the w-NAF weight (vs the binary Hamming weight); the doubling count is
+// unchanged.
+//
+// ⚠️  p must be a genuine curve point of large prime order. The (0,0) infinity
+// encoding is rejected up front, and every step asserts its own denominator is
+// nonzero, so a p that would reach an exceptional case makes the circuit
+// unsatisfiable rather than producing a wrong result.
+//
+// Why incomplete plus guards, rather than unified: [Curve.assertedRatio] pins
+// the slope with λ·den − num ≡ 0, which leaves λ *free* exactly when
+// den ≡ num ≡ 0, and makes the circuit unsatisfiable whenever den ≡ 0 with
+// num ≢ 0. So only two cases need closing, and each is closed by one emulated
+// non-zero check:
+//
+//   - tangent, a = 0: den = 2y, num = 3x², both vanish only at (0,0) — which is
+//     not on the curve but which [Curve.AssertIsOnCurve] accepts as the infinity
+//     encoding, so it can reach here from the hinted preimage. Rejected up front,
+//     and each doubling additionally asserts y ≠ 0.
+//   - chord: den = q.x − t.x, num = q.y − t.y, both vanish iff q = t, i.e. adding
+//     a point to itself. Each addition asserts q.x ≠ t.x, which also rules out
+//     q = −t (whose sum is the unrepresentable infinity).
+//
+// Every other degeneracy already fails closed via the num ≢ 0 case. This is much
+// cheaper than carrying unified formulas through all ~62 doublings and ~7
+// additions, and is sound against an adversarial preimage because a guard can
+// only reject.
+//
+// Completeness for an honest preimage: p has order r, a 255-bit prime for
+// BLS12-381 G1, while every intermediate NAF scalar stays in (0, 2^64). No
+// intermediate can therefore be infinity, equal to the summand, or its negative.
 func (c *Curve[B, S]) mulByConstant(p *AffinePoint[B], k *big.Int) *AffinePoint[B] {
+	zero := c.baseApi.Zero()
+	// Reject the (0,0) infinity encoding: on a = 0 the tangent assertion
+	// degenerates to 0 ≡ 0 there, which would leave λ unconstrained.
+	c.api.AssertIsEqual(c.api.And(c.baseApi.IsZero(&p.X), c.baseApi.IsZero(&p.Y)), 0)
+
+	double := func(q *AffinePoint[B]) *AffinePoint[B] {
+		c.baseApi.AssertIsDifferent(&q.Y, zero)
+		return c.double(q)
+	}
+	addDistinct := func(q, t *AffinePoint[B]) *AffinePoint[B] {
+		c.baseApi.AssertIsDifferent(&q.X, &t.X)
+		return c.add(q, t)
+	}
+
 	digits := naf4Digits(k) // LSB-first; each digit is 0 or an odd d with |d| < 8
 	// precompute the odd multiples 1p, 3p, 5p, 7p (negated on demand)
-	p2 := c.doubleGeneric(p, true)
+	p2 := double(p)
 	var odd [8]*AffinePoint[B]
 	odd[1] = p
-	odd[3] = c.AddUnified(p2, p)
-	odd[5] = c.AddUnified(odd[3], p2)
-	odd[7] = c.AddUnified(odd[5], p2)
+	odd[3] = addDistinct(p2, p)
+	odd[5] = addDistinct(odd[3], p2)
+	odd[7] = addDistinct(odd[5], p2)
 	pick := func(d int8) *AffinePoint[B] {
 		if d > 0 {
 			return odd[d]
@@ -426,9 +467,9 @@ func (c *Curve[B, S]) mulByConstant(p *AffinePoint[B], k *big.Int) *AffinePoint[
 	}
 	acc := pick(digits[top])
 	for i := top - 1; i >= 0; i-- {
-		acc = c.doubleGeneric(acc, true) // unified (complete) doubling
+		acc = double(acc)
 		if digits[i] != 0 {
-			acc = c.AddUnified(acc, pick(digits[i]))
+			acc = addDistinct(acc, pick(digits[i]))
 		}
 	}
 	return acc
