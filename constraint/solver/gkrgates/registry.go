@@ -10,8 +10,8 @@ import (
 	"runtime"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 )
 
 type registerSettings struct {

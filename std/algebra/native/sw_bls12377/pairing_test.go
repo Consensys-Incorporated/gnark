@@ -202,6 +202,49 @@ func TestPairingCheckBLS377(t *testing.T) {
 
 }
 
+type pairingG1InfinityBLS377 struct {
+	P1, P2 G1Affine
+	Q1, Q2 G2Affine
+	Res    GT
+}
+
+func (circuit *pairingG1InfinityBLS377) Define(api frontend.API) error {
+	res, err := Pair(api, []G1Affine{circuit.P1, circuit.P2}, []G2Affine{circuit.Q1, circuit.Q2})
+	if err != nil {
+		return fmt.Errorf("pair: %w", err)
+	}
+	res.AssertIsEqual(api, circuit.Res)
+	return nil
+}
+
+func TestPairingG1InfinityBLS377(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, _, g2 := bls12377.Generators()
+	P, Q, _, _ := pairingData()
+	var infinity bls12377.G1Affine
+
+	// e(0,g2) * e(P,Q) == e(P,Q)
+	res, err := bls12377.Pair([]bls12377.G1Affine{infinity, P}, []bls12377.G2Affine{g2, Q})
+	assert.NoError(err)
+	witness := pairingG1InfinityBLS377{
+		P1:  NewG1Affine(infinity),
+		P2:  NewG1Affine(P),
+		Q1:  NewG2Affine(g2),
+		Q2:  NewG2Affine(Q),
+		Res: NewGTEl(res),
+	}
+	assert.CheckCircuit(&pairingG1InfinityBLS377{}, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761), test.NoProverChecks())
+
+	// e(0,g2) * e(0,Q) == 1
+	witnessCheck := pairingCheckBLS377{
+		P1: NewG1Affine(infinity),
+		P2: NewG1Affine(infinity),
+		Q1: NewG2Affine(g2),
+		Q2: NewG2Affine(Q),
+	}
+	assert.CheckCircuit(&pairingCheckBLS377{}, test.WithValidAssignment(&witnessCheck), test.WithCurves(ecc.BW6_761), test.NoProverChecks())
+}
+
 type groupMembership struct {
 	P G1Affine
 	Q G2Affine

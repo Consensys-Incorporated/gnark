@@ -596,7 +596,9 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) IsValidProof(vk VerifyingKey[G1El, G2El
 	if err != nil {
 		return 0, fmt.Errorf("multi scalar mul: %w", err)
 	}
-	kSum = v.curve.Add(kSum, &vk.G1.K[0])
+	// kSum is the point at infinity when there are no public inputs or when all
+	// of them are zero, so we need complete addition here.
+	kSum = v.curve.AddUnified(kSum, &vk.G1.K[0])
 
 	for i := range proof.Commitments {
 		kSum = v.curve.Add(kSum, &proof.Commitments[i].G1El)

@@ -59,7 +59,7 @@ func millerLoopLines(api frontend.API, P []G1Affine, lines []lineEvaluations) (G
 	yInv := make([]frontend.Variable, n)
 	xNegOverY := make([]frontend.Variable, n)
 	for k := 0; k < n; k++ {
-		yInv[k] = api.DivUnchecked(1, P[k].Y)
+		yInv[k] = invYWithInfinityGuard(api, P[k].Y)
 		xNegOverY[k] = api.Mul(P[k].X, yInv[k])
 		xNegOverY[k] = api.Neg(xNegOverY[k])
 	}
@@ -316,7 +316,7 @@ func PairingCheck(api frontend.API, P []G1Affine, Q []G2Affine) error {
 	yInv := make([]frontend.Variable, nP)
 	xNegOverY := make([]frontend.Variable, nP)
 	for k := 0; k < nP; k++ {
-		yInv[k] = api.DivUnchecked(1, P[k].Y)
+		yInv[k] = invYWithInfinityGuard(api, P[k].Y)
 		xNegOverY[k] = api.Mul(P[k].X, yInv[k])
 		xNegOverY[k] = api.Neg(xNegOverY[k])
 	}
@@ -510,4 +510,13 @@ func divE2WithZeroGuard(api frontend.API, n, d fields_bls12377.E2) fields_bls123
 	l.DivUnchecked(api, n, dSafe)
 	res.Select(api, dIsZero, zero, l)
 	return res
+}
+
+// invYWithInfinityGuard returns 1/y, or 0 when y is 0. The G1 point at infinity
+// is represented as (0,0) and setting yInv to 0 makes its line evaluations
+// equal to 1, so the point doesn't contribute to the Miller loop.
+func invYWithInfinityGuard(api frontend.API, y frontend.Variable) frontend.Variable {
+	isYZero := api.IsZero(y)
+	y = api.Select(isYZero, 1, y)
+	return api.Select(isYZero, 0, api.DivUnchecked(1, y))
 }

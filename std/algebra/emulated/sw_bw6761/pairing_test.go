@@ -308,6 +308,60 @@ func TestPairingCheckTestSolve(t *testing.T) {
 	assert.NoError(err)
 }
 
+type pairG1InfinityCircuit struct {
+	P1, P2 G1Affine
+	Q1, Q2 G2Affine
+	Res    GTEl
+}
+
+func (c *pairG1InfinityCircuit) Define(api frontend.API) error {
+	pairing, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	res, err := pairing.Pair([]*G1Affine{&c.P1, &c.P2}, []*G2Affine{&c.Q1, &c.Q2})
+	if err != nil {
+		return fmt.Errorf("pair: %w", err)
+	}
+	pairing.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+func TestPairG1Infinity(t *testing.T) {
+	assert := test.NewAssert(t)
+	// e(0,Q1) * e(P2,Q2) == e(P2,Q2)
+	_, q1 := randomG1G2Affines()
+	p2, q2 := randomG1G2Affines()
+	var infinity bw6761.G1Affine
+	res, err := bw6761.Pair([]bw6761.G1Affine{infinity, p2}, []bw6761.G2Affine{q1, q2})
+	assert.NoError(err)
+	witness := pairG1InfinityCircuit{
+		P1:  NewG1Affine(infinity),
+		P2:  NewG1Affine(p2),
+		Q1:  NewG2Affine(q1),
+		Q2:  NewG2Affine(q2),
+		Res: NewGTEl(res),
+	}
+	err = test.IsSolved(&pairG1InfinityCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.NoError(err)
+}
+
+func TestPairingCheckG1Infinity(t *testing.T) {
+	assert := test.NewAssert(t)
+	// e(0,Q1) * e(0,Q2) == 1
+	_, q1 := randomG1G2Affines()
+	_, q2 := randomG1G2Affines()
+	var infinity bw6761.G1Affine
+	witness := PairingCheckCircuit{
+		In1G1: NewG1Affine(infinity),
+		In1G2: NewG2Affine(q1),
+		In2G1: NewG1Affine(infinity),
+		In2G2: NewG2Affine(q2),
+	}
+	err := test.IsSolved(&PairingCheckCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.NoError(err)
+}
+
 type ThreePairingCheckCircuit struct {
 	In1G1 G1Affine
 	In2G1 G1Affine

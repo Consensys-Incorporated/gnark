@@ -22,6 +22,10 @@
 	],
 	"proof": [
 		{
+			"finalEvalProof": [],
+			"partialSumPolys": []
+		},
+		{
 			"finalEvalProof": [
 				1
 			],
@@ -29,6 +33,7 @@
 		},
 		{
 			"finalEvalProof": [
+				1,
 				1
 			],
 			"partialSumPolys": []

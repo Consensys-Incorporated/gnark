@@ -129,7 +129,12 @@ func (c *GkrVerifierCircuit) Define(api frontend.API) error {
 		}
 	}
 
-	return Verify(api, testCase.Circuit, testCase.Schedule, assignment, proof, hsh)
+	claims, err := Verify(api, testCase.Circuit, testCase.Schedule, assignment.NbVars(), proof, hsh)
+	if err != nil {
+		return err
+	}
+	claims.Check(api, assignment)
+	return nil
 }
 
 func makeInOutAssignment(c Circuit, inputValues [][]frontend.Variable, outputValues [][]frontend.Variable) WireAssignment {
@@ -191,7 +196,7 @@ func getTestCase(path string) (*testCase, error) {
 			serializableCircuit, gadgetCircuit := cache.GetCircuit(filepath.Join(dir, info.Circuit))
 			cse.Circuit = gadgetCircuit
 
-			schedule, schedErr := gkrcore.DefaultProvingSchedule(serializableCircuit)
+			schedule, schedErr := gkrcore.DefaultProvingSchedule(serializableCircuit, gkrcore.SNARKConsolidationMode)
 			if schedErr != nil {
 				return nil, schedErr
 			}
@@ -275,6 +280,10 @@ func TestLogNbInstances(t *testing.T) {
 
 type hashDescription map[string]interface{}
 
+// hashFromDescription returns the hash a test vector names. The only type is "const": a
+// messageCounter with step 0, so every challenge equals the given value regardless of what was
+// bound to the transcript. Test vectors therefore pin down the GKR and sumcheck arithmetic only.
+// Transcript handling is exercised end to end by the std/gkrapi tests, which use real hashes.
 func hashFromDescription(api frontend.API, d hashDescription) (hash.FieldHasher, error) {
 	if _type, ok := d["type"]; ok {
 		switch _type {
@@ -288,6 +297,8 @@ func hashFromDescription(api frontend.API, d hashDescription) (hash.FieldHasher,
 	return nil, fmt.Errorf("hash description missing type")
 }
 
+// messageCounter is a stand-in hash whose state depends only on the number of variables written
+// to it, not on their values.
 type messageCounter struct {
 	startState int64
 	state      int64

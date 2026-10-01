@@ -147,12 +147,13 @@ func main() {
 				curvePackageName := strings.ToLower(d.Curve)
 
 				cfg := gkrConfig{
-					ElementType:      "fr.Element",
-					FieldPackageName: "fr",
-					FieldPackagePath: "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
-					FieldID:          d.CurveID,
-					GkrPackageName:   curvePackageName,
-					CanUseFFT:        true,
+					ElementType:        "fr.Element",
+					FieldPackageName:   "fr",
+					FieldPackagePath:   "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
+					FieldID:            d.CurveID,
+					GkrPackageName:     curvePackageName,
+					CanUseFFT:          true,
+					EvaluatorQualifier: "evaluator.",
 				}
 
 				assertNoError(generateGkrBackend(cfg))
@@ -297,7 +298,13 @@ type templateData struct {
 }
 
 func generateGkrBackend(cfg gkrConfig) error {
-	packageDir := filepath.Join("../../../internal/gkr", cfg.GkrPackageName)
+	internalDir := filepath.Join("../../../internal/gkr", cfg.GkrPackageName)
+	// The prover, verifier and their tests live alongside the evaluators in internalDir for
+	// small_rational (test-vector generation), and in the public gkr/<field> package for curves.
+	proverDir := internalDir
+	if !cfg.GenerateTestVectors {
+		proverDir = filepath.Join("../../../gkr", cfg.GkrPackageName)
+	}
 
 	testVectorUtilsFileName := "test_vector_utils_test.go"
 	if cfg.GenerateTestVectors {
@@ -306,31 +313,37 @@ func generateGkrBackend(cfg gkrConfig) error {
 
 	// gkr backend
 	entries := []bavard.Entry{
-		{File: filepath.Join(packageDir, "gkr.go"), Templates: []string{"gkr.go.tmpl"}},
-		{File: filepath.Join(packageDir, "sumcheck.go"), Templates: []string{"sumcheck.go.tmpl"}},
-		{File: filepath.Join(packageDir, "sumcheck_test.go"), Templates: []string{"sumcheck.test.go.tmpl", "sumcheck.test.defs.go.tmpl"}},
-		{File: filepath.Join(packageDir, testVectorUtilsFileName), Templates: []string{"test_vector_utils.go.tmpl"}},
+		{File: filepath.Join(internalDir, "evaluator.go"), Templates: []string{"evaluator.go.tmpl"}},
+		{File: filepath.Join(proverDir, "gkr.go"), Templates: []string{"gkr.go.tmpl"}},
+		{File: filepath.Join(proverDir, "sumcheck.go"), Templates: []string{"sumcheck.go.tmpl"}},
+		{File: filepath.Join(proverDir, "sumcheck_test.go"), Templates: []string{"sumcheck.test.go.tmpl", "sumcheck.test.defs.go.tmpl"}},
+		{File: filepath.Join(proverDir, testVectorUtilsFileName), Templates: []string{"test_vector_utils.go.tmpl"}},
 	}
 
 	if !cfg.NoGkrTests {
 		entries = append(entries, bavard.Entry{
-			File: filepath.Join(packageDir, "gkr_test.go"), Templates: []string{"gkr.test.go.tmpl", "gkr.test.vectors.go.tmpl"},
+			File: filepath.Join(proverDir, "gkr_test.go"), Templates: []string{"gkr.test.go.tmpl", "gkr.test.vectors.go.tmpl"},
 		})
 	}
 
 	if cfg.GenerateTestVectors {
 		entries = append(entries, []bavard.Entry{
-			{File: filepath.Join(packageDir, "test_vector_gen.go"), Templates: []string{"gkr.test.vectors.gen.go.tmpl", "gkr.test.vectors.go.tmpl"}},
-			{File: filepath.Join(packageDir, "sumcheck_test_vector_gen.go"), Templates: []string{"sumcheck.test.vectors.gen.go.tmpl", "sumcheck.test.defs.go.tmpl"}},
-		}...)
-	} else {
-		entries = append(entries, []bavard.Entry{
-			{File: filepath.Join(packageDir, "blueprint.go"), Templates: []string{"blueprint.go.tmpl"}},
+			{File: filepath.Join(proverDir, "test_vector_gen.go"), Templates: []string{"gkr.test.vectors.gen.go.tmpl", "gkr.test.vectors.go.tmpl"}},
+			{File: filepath.Join(proverDir, "sumcheck_test_vector_gen.go"), Templates: []string{"sumcheck.test.vectors.gen.go.tmpl", "sumcheck.test.defs.go.tmpl"}},
 		}...)
 	}
 
 	if err := bgen.Generate(cfg, "gkr", "./template/gkr/", entries...); err != nil {
 		return err
+	}
+
+	if !cfg.GenerateTestVectors {
+		// The blueprints call the prover, which imports the evaluators; putting them in the
+		// evaluators' package would close an import cycle, so they get their own package.
+		blueprintEntry := bavard.Entry{File: filepath.Join(internalDir, "blueprints", "blueprint.go"), Templates: []string{"blueprint.go.tmpl"}}
+		if err := bgen.Generate(cfg, "blueprints", "./template/gkr/", blueprintEntry); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -345,6 +358,9 @@ type gkrConfig struct {
 	CanUseFFT           bool
 	GenerateTestVectors bool
 	NoGkrTests          bool
+	// EvaluatorQualifier prefixes references to the gate evaluator types, for fields whose prover
+	// package is not the evaluators' own package. Empty when they are the same package.
+	EvaluatorQualifier string
 }
 
 func assertNoError(err error) {

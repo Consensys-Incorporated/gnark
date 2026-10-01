@@ -73,7 +73,7 @@ func newTestCase(path string) (*TestCase, error) {
 		return nil, err
 	}
 	if schedule == nil {
-		if schedule, err = gkrcore.DefaultProvingSchedule(circuit); err != nil {
+		if schedule, err = gkrcore.DefaultProvingSchedule(circuit, gkrcore.SNARKConsolidationMode); err != nil {
 			return nil, err
 		}
 	}
