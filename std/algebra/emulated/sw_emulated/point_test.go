@@ -2734,6 +2734,30 @@ func TestBLS12381CofactorClearingConstant(t *testing.T) {
 	h.Div(h, big.NewInt(3))
 	assert.Equal(0, new(big.Int).Mod(h, c).Sign(), "c must divide h")
 
+	// The shape that makes c the torsion exponent: with n = (x-1)/3, the
+	// cofactor is h = 3n² and the constant is c = 3n, where 3 does NOT divide
+	// n. The n-part of the torsion is Z_n x Z_n (rank 2, by 2021/1359 Cor. 1
+	// the full n-torsion is rational) and the leftover factor 3 is cyclic, so
+	// the exponent is lcm(n, 3n) = 3n = c. The single factor of 3 in h is
+	// therefore expected and is not a counterexample to the rank-2 claim, which
+	// is made about n only.
+	three := big.NewInt(3)
+	n := new(big.Int).Div(xm1, three)
+	assert.Equal(0, new(big.Int).Mod(xm1, three).Sign(), "3 must divide x-1")
+	assert.Equal(0, h.Cmp(new(big.Int).Mul(three, new(big.Int).Mul(n, n))),
+		"h must equal 3n^2")
+	assert.Equal(0, c.Cmp(new(big.Int).Mul(three, n)), "c must equal 3n")
+	assert.NotEqual(0, new(big.Int).Mod(n, three).Sign(),
+		"3 must not divide n, else the 3-part would not be cyclic")
+	// n is squarefree-coprime-to-3 and factors as the odd primes of h
+	assert.Equal(0, n.Cmp(new(big.Int).Mul(
+		big.NewInt(11*10177), big.NewInt(859267*52437899))),
+		"n must be 11*10177*859267*52437899")
+	// exponent lcm(n, 3n) = 3n = c
+	lcm := new(big.Int).Div(new(big.Int).Mul(n, new(big.Int).Mul(three, n)),
+		new(big.Int).GCD(nil, nil, n, new(big.Int).Mul(three, n)))
+	assert.Equal(0, lcm.Cmp(c), "torsion exponent lcm(n, 3n) must equal c")
+
 	assert.Equal(0, new(big.Int).GCD(nil, nil, c, fr_bls381.Modulus()).Cmp(big.NewInt(1)),
 		"gcd(c, r) must be 1 for [c] to be invertible on G1")
 

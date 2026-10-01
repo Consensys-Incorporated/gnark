@@ -120,13 +120,25 @@ func GetBLS12381Params() CurveParams {
 		// c = |x-1| = 0xd201000000010001 (64 bits), NOT the full cofactor
 		// h = (x-1)²/3 = 3·11²·10177²·859267²·52437899² (126 bits).
 		//
-		// E(Fp) ≅ Z_{(x-1)/3} × Z_{(x-1)·r} (Wahby-Boneh, eprint 2019/403 §5),
-		// so the cofactor torsion has *rank 2* and its exponent is (x-1), not
-		// h: every prime ℓ | h has ℓ² | h but E(Fp)[ℓ^∞] ≅ Z_ℓ × Z_ℓ, so the
-		// squares are redundant. Hence [x-1]E(Fp) = G1 exactly, which is what
-		// the binding needs — a torsion-tainted R has no on-curve preimage
-		// under [x-1]. Completeness holds because gcd(x-1, r) = 1 makes [x-1]
-		// a bijection on G1, so an honest R keeps a preimage (take it in G1).
+		// Write n = (x-1)/3 = 11·10177·859267·52437899, so that
+		//
+		//	h = 3n²  and  x-1 = 3n,  with 3 ∤ n.
+		//
+		// El Housni-Guillevic (eprint 2021/1359 §3.2, Cor. 1) prove for every
+		// BLS curve that the *full* n-torsion is rational, E[n] ⊂ E(Fp): there
+		// are n² points of order n and none of order n². So the n-part of the
+		// cofactor torsion is Z_n × Z_n — rank 2, exponent n rather than n².
+		// The remaining lone factor 3 of h is exactly the 3 in 3n = x-1, and it
+		// contributes a *cyclic* Z_3; it is not squared in h and no rank-2 claim
+		// is made about it. The cofactor torsion is therefore Z_n × Z_{3n} of
+		// order 3n² = h and exponent lcm(n, 3n) = 3n = x-1. Equivalently
+		// E(Fp) ≅ Z_{(x-1)/3} × Z_{(x-1)·r} (Wahby-Boneh, eprint 2019/403 §5).
+		//
+		// Multiplying by the exponent kills the torsion, so [x-1]E(Fp) = G1
+		// exactly — which is what the binding needs: a torsion-tainted R has no
+		// on-curve preimage under [x-1]. Completeness holds because
+		// gcd(x-1, r) = 1 makes [x-1] a bijection on G1, so an honest R keeps a
+		// preimage (take it in G1).
 		//
 		// This is the same constant gnark-crypto's G1 ClearCofactor uses.
 		// Halving the bit length halves the binding ladder: 178k -> 80k R1CS.
