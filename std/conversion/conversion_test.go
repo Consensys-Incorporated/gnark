@@ -1,6 +1,7 @@
 package conversion
 
 import (
+	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
 	"math/big"
@@ -381,6 +382,33 @@ func TestEmulatedToBytesNotDivisible(t *testing.T) {
 			}
 			assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithoutCurveChecks(), test.WithSmallfieldCheck())
 		})
+	}
+}
+
+// p224Fp is a 224-bit modulus with 4x64-bit limbs, so the most significant
+// limb holds only 32 bits.
+type p224Fp struct{}
+
+func (p224Fp) NbLimbs() uint     { return 4 }
+func (p224Fp) BitsPerLimb() uint { return 64 }
+func (p224Fp) IsPrime() bool     { return true }
+func (p224Fp) Modulus() *big.Int { return elliptic.P224().Params().P }
+
+func TestEmulatedToBytesPartialTopLimb(t *testing.T) {
+	var fp p224Fp
+	nbBytes := (fp.Modulus().BitLen() + 7) / 8
+	for _, v := range []*big.Int{
+		big.NewInt(0x1234567),
+		new(big.Int).Sub(fp.Modulus(), big.NewInt(1)),
+	} {
+		assert := test.NewAssert(t)
+		expected := v.FillBytes(make([]byte, nbBytes))
+		circuit := &EmulatedToBytesCircuit[p224Fp]{Expected: make([]uints.U8, nbBytes)}
+		assignment := &EmulatedToBytesCircuit[p224Fp]{
+			In:       emulated.ValueOf[p224Fp](v),
+			Expected: uints.NewU8Array(expected),
+		}
+		assert.NoError(test.IsSolved(circuit, assignment, ecc.BN254.ScalarField()))
 	}
 }
 
