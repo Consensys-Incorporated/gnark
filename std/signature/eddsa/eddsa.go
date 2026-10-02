@@ -36,6 +36,9 @@ type Signature struct {
 
 // Verify verifies an eddsa signature using MiMC hash function
 // cf https://en.wikipedia.org/wiki/EdDSA
+//
+// The method asserts in-circuit that S < order and that the public key A is
+// not of small order (in particular, not the identity).
 func Verify(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pubKey PublicKey, hash hash.FieldHasher) error {
 	res, err := IsValid(curve, sig, msg, pubKey, hash)
 	if err != nil {
@@ -46,7 +49,8 @@ func Verify(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pu
 }
 
 // IsValid checks if the signature is valid for the given message and public
-// key. It returns 1 if the signature is valid and 0 otherwise.
+// key. It returns 1 if the signature is valid and 0 otherwise. Signatures
+// for small-order public keys (including the identity) are considered invalid.
 func IsValid(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pubKey PublicKey, hash hash.FieldHasher) (frontend.Variable, error) {
 	// compute H(R, A, M)
 	hash.Write(sig.R.X)
@@ -74,23 +78,46 @@ func IsValid(curve twistededwards.Curve, sig Signature, msg frontend.Variable, p
 	Q = curve.Add(curve.Neg(Q), sig.R)
 
 	// [cofactor]*(lhs-rhs)
+	Q, err := clearCofactor(curve, Q)
+	if err != nil {
+		return 0, err
+	}
+
+	// Reject small-order public keys (including the identity). For such A the
+	// term [H(R,A,M)]A vanishes after cofactor clearing, so the equation can be
+	// satisfied for any message by anyone (e.g. S=1, R=G).
+	cA, err := clearCofactor(curve, pubKey.A)
+	if err != nil {
+		return 0, err
+	}
+
+	api := curve.API()
+	return api.And(
+		api.And(
+			api.IsZero(Q.X),
+			api.IsZero(api.Sub(Q.Y, 1)),
+		),
+		api.Sub(1, api.And(
+			api.IsZero(cA.X),
+			api.IsZero(api.Sub(cA.Y, 1)),
+		)),
+	), nil
+}
+
+// clearCofactor returns [cofactor]P.
+func clearCofactor(curve twistededwards.Curve, P twistededwards.Point) (twistededwards.Point, error) {
 	if !curve.Params().Cofactor.IsUint64() {
-		return 0, fmt.Errorf("invalid cofactor: %s", curve.Params().Cofactor.String())
+		return twistededwards.Point{}, fmt.Errorf("invalid cofactor: %s", curve.Params().Cofactor.String())
 	}
 	cofactor := curve.Params().Cofactor.Uint64()
 	switch cofactor {
 	case 4:
-		Q = curve.Double(curve.Double(Q))
+		return curve.Double(curve.Double(P)), nil
 	case 8:
-		Q = curve.Double(curve.Double(curve.Double(Q)))
+		return curve.Double(curve.Double(curve.Double(P))), nil
 	default:
-		return 0, fmt.Errorf("cofactor %d not implemented", cofactor)
+		return twistededwards.Point{}, fmt.Errorf("cofactor %d not implemented", cofactor)
 	}
-
-	return curve.API().And(
-		curve.API().IsZero(Q.X),
-		curve.API().IsZero(curve.API().Sub(Q.Y, 1)),
-	), nil
 }
 
 // Assign is a helper to assigned a compressed binary public key representation into its uncompressed form
