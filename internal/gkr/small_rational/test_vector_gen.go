@@ -25,7 +25,7 @@ import (
 // The properties of test gates are expected to be the same across all relevant fields.
 // We can therefore use the gate testing functions for any curve rather than reimplementing
 // for small_rational.
-var cache = gkrtesting.NewCache(ecc.BN254.ScalarField())
+var cache = gkrtesting.NewCache(gkrcore.PrimeField(ecc.BN254.ScalarField()))
 
 func GenerateVectors() error {
 	testDirPath, err := filepath.Abs("../../gkr/test_vectors")
@@ -178,7 +178,7 @@ func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 			finalEvalSlice := reflect.ValueOf(printable[i].FinalEvalProof)
 			finalEvalProof = make([]small_rational.SmallRational, finalEvalSlice.Len())
 			for k := range finalEvalProof {
-				if _, err := finalEvalProof[k].SetInterface(finalEvalSlice.Index(k).Interface()); err != nil {
+				if _, err := setElement(&finalEvalProof[k], finalEvalSlice.Index(k).Interface()); err != nil {
 					return nil, err
 				}
 			}

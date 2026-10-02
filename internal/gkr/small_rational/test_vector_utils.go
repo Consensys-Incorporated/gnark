@@ -8,11 +8,11 @@ package gkr
 import (
 	"fmt"
 	"hash"
-
-	"github.com/consensys/gnark/internal/small_rational"
-	"github.com/consensys/gnark/internal/small_rational/polynomial"
+	"math/big"
 
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
+	"github.com/consensys/gnark/internal/small_rational"
+	"github.com/consensys/gnark/internal/small_rational/polynomial"
 )
 
 func toElement(i int64) *small_rational.SmallRational {
@@ -87,10 +87,37 @@ func newMessageCounterGenerator(startState, step int) func() hash.Hash {
 	}
 }
 
+// setElement parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
+// then sets z to its numerator divided by its denominator, via SetBigInt, Inverse and Mul.
+func setElement(z *small_rational.SmallRational, value interface{}) (*small_rational.SmallRational, error) {
+	var r big.Rat
+	switch v := value.(type) {
+	case string:
+		if _, ok := r.SetString(v); !ok {
+			return nil, fmt.Errorf("cannot parse %q", v)
+		}
+	case float64:
+		asInt := int64(v)
+		if float64(asInt) != v {
+			return nil, fmt.Errorf("cannot currently parse float")
+		}
+		r.SetFloat64(v)
+	default:
+		return nil, fmt.Errorf("cannot parse value of type %T", value)
+	}
+
+	var denom small_rational.SmallRational
+	z.SetBigInt(r.Num())
+	denom.SetBigInt(r.Denom())
+	denom.Inverse(&denom)
+	z.Mul(z, &denom)
+	return z, nil
+}
+
 func sliceToElementSlice[T any](slice []T) ([]small_rational.SmallRational, error) {
 	elementSlice := make([]small_rational.SmallRational, len(slice))
 	for i, v := range slice {
-		if _, err := elementSlice[i].SetInterface(v); err != nil {
+		if _, err := setElement(&elementSlice[i], v); err != nil {
 			return nil, err
 		}
 	}

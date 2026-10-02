@@ -8,7 +8,7 @@ package gkr
 import (
 	"fmt"
 	"hash"
-	"strings"
+	"math/big"
 
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr/polynomial"
@@ -87,35 +87,31 @@ func newMessageCounterGenerator(startState, step int) func() hash.Hash {
 	}
 }
 
+// setElement parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
+// then sets z to its numerator divided by its denominator, via SetBigInt, Inverse and Mul.
 func setElement(z *fr.Element, value interface{}) (*fr.Element, error) {
-
-	// TODO: Put this in element.SetString?
+	var r big.Rat
 	switch v := value.(type) {
 	case string:
-
-		if sep := strings.Split(v, "/"); len(sep) == 2 {
-			var denom fr.Element
-			if _, err := z.SetString(sep[0]); err != nil {
-				return nil, err
-			}
-			if _, err := denom.SetString(sep[1]); err != nil {
-				return nil, err
-			}
-			denom.Inverse(&denom)
-			z.Mul(z, &denom)
-			return z, nil
+		if _, ok := r.SetString(v); !ok {
+			return nil, fmt.Errorf("cannot parse %q", v)
 		}
-
 	case float64:
 		asInt := int64(v)
 		if float64(asInt) != v {
 			return nil, fmt.Errorf("cannot currently parse float")
 		}
-		z.SetInt64(asInt)
-		return z, nil
+		r.SetFloat64(v)
+	default:
+		return nil, fmt.Errorf("cannot parse value of type %T", value)
 	}
 
-	return z.SetInterface(value)
+	var denom fr.Element
+	z.SetBigInt(r.Num())
+	denom.SetBigInt(r.Denom())
+	denom.Inverse(&denom)
+	z.Mul(z, &denom)
+	return z, nil
 }
 
 func sliceToElementSlice[T any](slice []T) ([]fr.Element, error) {

@@ -151,8 +151,8 @@ func main() {
 					FieldPackageName:   "fr",
 					FieldPackagePath:   "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
 					FieldID:            d.CurveID,
+					FieldDescription:   "gkrcore.PrimeField(ecc." + d.CurveID + ".ScalarField())",
 					GkrPackageName:     curvePackageName,
-					CanUseFFT:          true,
 					EvaluatorQualifier: "evaluator.",
 				}
 
@@ -238,7 +238,6 @@ func main() {
 			FieldPackagePath:    "github.com/consensys/gnark/internal/small_rational",
 			FieldPackageName:    "small_rational",
 			GkrPackageName:      "small_rational",
-			CanUseFFT:           false,
 			NoGkrTests:          true,
 			GenerateTestVectors: true,
 		}
@@ -355,7 +354,6 @@ type gkrConfig struct {
 	FieldPackageName    string
 	GkrPackageName      string // the GKR package, relative to the repo root
 	FieldID             string // e.g. BLS12_377, BABYBEAR, etc.
-	CanUseFFT           bool
 	GenerateTestVectors bool
 	NoGkrTests          bool
 	// EvaluatorQualifier prefixes references to the gate evaluator types, for fields whose prover
@@ -365,6 +363,10 @@ type gkrConfig struct {
 	// extension's types and constants (e.g. VectorE6, BytesE6). Empty for the curves and
 	// small_rational.
 	ExtensionSuffix string
+	// FieldDescription is the Go expression of the field's gkrcore.Field description, e.g.
+	// "gkrcore.PrimeField(ecc.BN254.ScalarField())". Used only where gkr.test.go.tmpl is
+	// generated (NoGkrTests false), so small_rational leaves it empty.
+	FieldDescription string
 }
 
 func assertNoError(err error) {

@@ -25,7 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var cache = gkrtesting.NewCache(ecc.BLS12_381.ScalarField())
+var cache = gkrtesting.NewCache(gkrcore.PrimeField(ecc.BLS12_381.ScalarField()))
 
 func TestNoGateTwoInstances(t *testing.T) {
 	// Testing a single instance is not possible because the sumcheck implementation doesn't cover the trivial 0-variate case

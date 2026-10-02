@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -58,7 +57,7 @@ func selectInput3Gate(_ gkr.GateAPI, in ...frontend.Variable) frontend.Variable 
 	return in[2]
 }
 
-func NewCache(field *big.Int) *Cache {
+func NewCache(field gkrcore.Field) *Cache {
 	gates := make(map[string]gkr.GateFunction, 7)
 	gates[""] = nil
 	gates["identity"] = gkrcore.Identity
@@ -70,7 +69,7 @@ func NewCache(field *big.Int) *Cache {
 	gates["select-input-3"] = selectInput3Gate
 
 	return &Cache{
-		field:    gkrcore.PrimeField(field),
+		field:    field,
 		circuits: make(map[string]circuits),
 		gates:    gates,
 	}

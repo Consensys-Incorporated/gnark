@@ -9,7 +9,7 @@ func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 			finalEvalSlice := reflect.ValueOf(printable[i].FinalEvalProof)
 			finalEvalProof = make([]{{ .ElementType }}, finalEvalSlice.Len())
 			for k := range finalEvalProof {
-				if _, err := {{ setElement "finalEvalProof[k]" "finalEvalSlice.Index(k).Interface()" .ElementType}}; err != nil {
+				if _, err := setElement(&finalEvalProof[k], finalEvalSlice.Index(k).Interface()); err != nil {
 					return nil, err
 				}
 			}
@@ -139,11 +139,3 @@ func newTestCase(path string) (*TestCase, error) {
 }
 
 {{ end }}
-
-{{- define "setElement element value elementType"}}
-{{- if eq .elementType "fr.Element"}} setElement(&{{.element}}, {{.value}})
-{{- else if eq .elementType "small_rational.SmallRational"}} {{.element}}.SetInterface({{.value}})
-{{- else}}
-{{print "\"UNEXPECTED TYPE" .elementType "\""}}
-{{- end}}
-{{- end}}

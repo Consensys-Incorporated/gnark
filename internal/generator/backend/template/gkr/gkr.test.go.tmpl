@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var cache = gkrtesting.NewCache(ecc.{{ .FieldID }}.ScalarField())
+var cache = gkrtesting.NewCache({{ .FieldDescription }})
 
 func TestNoGateTwoInstances(t *testing.T) {
 	// Testing a single instance is not possible because the sumcheck implementation doesn't cover the trivial 0-variate case
@@ -175,7 +175,7 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 
 	for i := range ins {
 		insAssignment[i] = make([]{{ .ElementType }}, maxSize)
-		{{ .FieldPackageName }}.Vector(insAssignment[i]).MustSetRandom()
+		{{ .FieldPackageName }}.Vector{{ .ExtensionSuffix }}(insAssignment[i]).MustSetRandom()
 	}
 
 	fullAssignment := make(WireAssignment, len(circuit))
@@ -282,8 +282,8 @@ func benchmarkGkrMiMC(b *testing.B, nbInstances, mimcDepth int) {
 
 	in0 := make([]{{ .ElementType }}, nbInstances)
 	in1 := make([]{{ .ElementType }}, nbInstances)
-	{{ .FieldPackageName }}.Vector(in0).MustSetRandom()
-	{{ .FieldPackageName }}.Vector(in1).MustSetRandom()
+	{{ .FieldPackageName }}.Vector{{ .ExtensionSuffix }}(in0).MustSetRandom()
+	{{ .FieldPackageName }}.Vector{{ .ExtensionSuffix }}(in1).MustSetRandom()
 
 	fmt.Println("evaluating circuit")
 	start := time.Now().UnixMicro()
