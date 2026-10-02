@@ -50,6 +50,12 @@ func (f *Field[T]) computeInverseHint(inLimbs []frontend.Variable) (inverseLimbs
 	p := f.Modulus()
 	hintInputs = append(hintInputs, p.Limbs...)
 	hintInputs = append(hintInputs, inLimbs...)
+	// InverseHint expects the input on NbLimbs limbs, but an element may be
+	// stored on fewer limbs (e.g. a constant or a selection between small
+	// constants). Pad it with zero limbs.
+	for i := len(inLimbs); i < int(f.fParams.NbLimbs()); i++ {
+		hintInputs = append(hintInputs, 0)
+	}
 	return f.api.NewHint(InverseHint, int(f.fParams.NbLimbs()), hintInputs...)
 }
 
