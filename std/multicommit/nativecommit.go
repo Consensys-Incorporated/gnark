@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/internal/circuitdefer"
 	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/internal/smallfields"
 	"github.com/consensys/gnark/profile"
@@ -31,6 +32,8 @@ type multicommitter struct {
 	cbs      []WithCommitmentFn
 	wcbs     []wcbInfo
 	maxWidth int
+	// deferIdx is the position of commitAndCall in the deferred function queue.
+	deferIdx int
 }
 
 type wcbInfo struct {
@@ -59,11 +62,24 @@ func getCached(api frontend.API) *multicommitter {
 	}
 	mct := &multicommitter{}
 	kv.SetKeyValue(ctxMulticommitterKey{}, mct)
-	api.Compiler().Defer(mct.commitAndCall)
+	mct.deferCommitAndCall(api)
 	return mct
 }
 
+func (mct *multicommitter) deferCommitAndCall(api frontend.API) {
+	mct.deferIdx = len(circuitdefer.GetAll[func(frontend.API) error](api.Compiler()))
+	api.Compiler().Defer(mct.commitAndCall)
+}
+
 func (mct *multicommitter) commitAndCall(api frontend.API) error {
+	// Deferred functions are called in FIFO order. If something was deferred
+	// after us (for example a gadget which calls WithCommitment in its own
+	// deferred function, like lookup tables or range checks), then we move to
+	// the end of the queue so that it can still add its callback.
+	if len(circuitdefer.GetAll[func(frontend.API) error](api.Compiler())) > mct.deferIdx+1 {
+		mct.deferCommitAndCall(api)
+		return nil
+	}
 	// close collecting input in case anyone wants to check more variables to commit to.
 	mct.closed = true
 	if len(mct.cbs) == 0 && len(mct.wcbs) == 0 {
