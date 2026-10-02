@@ -160,3 +160,67 @@ func TestEddsa(t *testing.T) {
 	}
 
 }
+
+func TestEddsaSmallOrderPublicKey(t *testing.T) {
+	// For a small-order public key A, the term [H(R,A,M)]A vanishes after
+	// cofactor clearing, so S=1, R=G satisfies the verification equation for
+	// any message. Such keys must be rejected.
+	assert := test.NewAssert(t)
+
+	confs := []struct {
+		hash  hash.Hash
+		curve tedwards.ID
+	}{
+		{hash.MIMC_BN254, tedwards.BN254},
+		{hash.MIMC_BLS12_381, tedwards.BLS12_381},
+		{hash.MIMC_BLS12_381, tedwards.BLS12_381_BANDERSNATCH},
+		{hash.MIMC_BLS12_377, tedwards.BLS12_377},
+		{hash.MIMC_BW6_761, tedwards.BW6_761},
+	}
+
+	randomness := rand.New(rand.NewSource(time.Now().Unix())) //#nosec G404 -- This is a false positive
+
+	for _, conf := range confs {
+		snarkField, err := twistededwards.GetSnarkField(conf.curve)
+		assert.NoError(err)
+		snarkCurve := utils.FieldToCurve(snarkField)
+		params, err := twistededwards.GetCurveParams(conf.curve)
+		assert.NoError(err)
+
+		// honest signature, so that the circuit has a valid assignment
+		privKey, err := eddsa.New(conf.curve, randomness)
+		assert.NoError(err)
+		msgData := make([]byte, len(snarkField.Bytes()))
+		signature, err := privKey.Sign(msgData, conf.hash.New())
+		assert.NoError(err)
+		var validWitness eddsaCircuit
+		validWitness.Message = 0
+		validWitness.PublicKey.Assign(conf.curve, privKey.Public().Bytes())
+		validWitness.Signature.Assign(conf.curve, signature)
+
+		minusOne := new(big.Int).Sub(snarkField, big.NewInt(1))
+		smallOrderKeys := []twistededwards.Point{
+			{X: 0, Y: 1},        // identity
+			{X: 0, Y: minusOne}, // order 2
+		}
+
+		opts := []test.TestingOption{
+			test.WithValidAssignment(&validWitness),
+			test.WithCurves(snarkCurve),
+		}
+		for _, A := range smallOrderKeys {
+			opts = append(opts, test.WithInvalidAssignment(&eddsaCircuit{
+				PublicKey: PublicKey{A: A},
+				Signature: Signature{
+					R: twistededwards.Point{X: params.Base[0], Y: params.Base[1]},
+					S: 1,
+				},
+				Message: 42,
+			}))
+		}
+
+		var circuit eddsaCircuit
+		circuit.curveID = conf.curve
+		assert.CheckCircuit(&circuit, opts...)
+	}
+}
