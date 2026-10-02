@@ -530,7 +530,9 @@ func (builder *builder[E]) addConstraintExist(a, b expr.Term[E], k E) (expr.Term
 				// compute n, the coefficient for the output wire
 				q2, ok = builder.cs.Inverse(q2)
 				if !ok {
-					panic("div by 0") // shouldn't happen
+					// q2 is zero when a term cancelled out in reduce (e.g. x + y - y),
+					// we can't compute n from it so we just add a new constraint.
+					return expr.Term[E]{}, false
 				}
 				q2 = builder.cs.Mul(q2, q4)
 				return expr.NewTerm(int(c.XC), q2), true
