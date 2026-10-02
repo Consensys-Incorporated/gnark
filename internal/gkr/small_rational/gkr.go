@@ -63,7 +63,7 @@ type resources struct {
 	workers            *utils.WorkerPool
 	circuit            Circuit
 	schedule           constraint.GkrProvingSchedule
-	transcript         transcript
+	transcript         *transcript
 	claimValueIndices  [][]int // claimValueIndices[wI][claimI]: index of w's claimI-th claimed value in its source level's finalEvalProof
 	claims             Claims
 	consolidated       []bool // the wires of schedule[0], indexed by wire
@@ -83,7 +83,7 @@ func newResources(c Circuit, schedule constraint.GkrProvingSchedule, nbVars int,
 		nbVars:             nbVars,
 		circuit:            c,
 		schedule:           schedule,
-		transcript:         transcript{h: hasher},
+		transcript:         gkrcore.NewHashTranscript[small_rational.SmallRational](hasher),
 		claimValueIndices:  c.ClaimValueIndices(schedule),
 		claims:             make(Claims),
 		consolidated:       c.LevelWires(schedule[0]),
@@ -159,7 +159,7 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 		panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
 	}
 	bind, include := r.levelPredicates(levelI)
-	constraint.BindGkrFinalEvalProof(&r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	constraint.BindGkrFinalEvalProof(r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
 	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], entry.finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return entry
 }
@@ -202,7 +202,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	// Derive the initial challenge point
 	firstChallenge := make([]small_rational.SmallRational, r.nbVars)
 	for j := range r.nbVars {
-		firstChallenge[j] = r.transcript.getChallenge()
+		firstChallenge[j] = r.transcript.Challenge()
 	}
 	r.outgoingEvalPoints[len(schedule)] = [][]small_rational.SmallRational{firstChallenge}
 
@@ -247,7 +247,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 		return fmt.Errorf("level %d: %v", levelI, err)
 	}
 	bind, include := r.levelPredicates(levelI)
-	constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	constraint.BindGkrFinalEvalProof(r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
 	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return nil
 }
@@ -294,7 +294,7 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 	// Derive the initial challenge point
 	firstChallenge := make([]small_rational.SmallRational, r.nbVars)
 	for j := range r.nbVars {
-		firstChallenge[j] = r.transcript.getChallenge()
+		firstChallenge[j] = r.transcript.Challenge()
 	}
 	r.outgoingEvalPoints[len(schedule)] = [][]small_rational.SmallRational{firstChallenge}
 	var boundOutputEvals []small_rational.SmallRational

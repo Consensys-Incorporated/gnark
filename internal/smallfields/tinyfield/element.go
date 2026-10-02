@@ -368,6 +368,8 @@ func (z *Element) Double(x *Element) *Element {
 
 // Sub z = x - y (mod q)
 func (z *Element) Sub(x, y *Element) *Element {
+	// valid only because the modulus leaves a spare high bit: on underflow
+	// the wrapped difference is always > q.
 	t := x[0] - y[0]
 	if t > q { // underflow occurred
 		t += q

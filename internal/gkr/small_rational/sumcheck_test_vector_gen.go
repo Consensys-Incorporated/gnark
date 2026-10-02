@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime/pprof"
 
+	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/consensys/gnark/internal/small_rational"
 	"github.com/consensys/gnark/internal/small_rational/polynomial"
@@ -38,8 +39,8 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	}
 
 	claim := singleMultilinClaim{poly}
-	t := transcript{h: hsh}
-	proof := sumcheckProve(&claim, &t)
+	t := gkrcore.NewHashTranscript[small_rational.SmallRational](hsh)
+	proof := sumcheckProve(&claim, t)
 	testCaseInfo.Proof = sumcheckToPrintableProof(proof)
 
 	// Verification
@@ -56,8 +57,8 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}
-	t = transcript{h: hsh}
-	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, &t); err != nil {
+	t = gkrcore.NewHashTranscript[small_rational.SmallRational](hsh)
+	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, t); err != nil {
 		return fmt.Errorf("proof rejected: %v", err)
 	}
 
@@ -65,8 +66,8 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}
-	t = transcript{h: hsh}
-	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, &t); err == nil {
+	t = gkrcore.NewHashTranscript[small_rational.SmallRational](hsh)
+	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, t); err == nil {
 		return fmt.Errorf("bad proof accepted")
 	}
 

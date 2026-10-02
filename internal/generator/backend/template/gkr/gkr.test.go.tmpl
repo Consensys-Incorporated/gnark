@@ -9,8 +9,9 @@ import (
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	gcHash "github.com/consensys/gnark-crypto/hash"
+	_ "github.com/consensys/gnark-crypto/hash/all" // registers the hash benchmarkGkrMiMC uses
 	"{{ .FieldPackagePath }}"
-	"{{ .FieldPackagePath }}/mimc"
 	"{{ .FieldPackagePath }}/polynomial"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
@@ -293,7 +294,7 @@ func benchmarkGkrMiMC(b *testing.B, nbInstances, mimcDepth int) {
 	//b.ResetTimer()
 	fmt.Println("constructing proof")
 	start = time.Now().UnixMicro()
-	_, _, err = Prove(c, schedule, assignment, mimc.NewMiMC())
+	_, _, err = Prove(c, schedule, assignment, gcHash.POSEIDON2_{{ .FieldID }}.New())
 	proved := time.Now().UnixMicro() - start
 	fmt.Println("proved in", proved, "μs")
 	assert.NoError(b, err)

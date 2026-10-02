@@ -361,6 +361,10 @@ type gkrConfig struct {
 	// EvaluatorQualifier prefixes references to the gate evaluator types, for fields whose prover
 	// package is not the evaluators' own package. Empty when they are the same package.
 	EvaluatorQualifier string
+	// ExtensionSuffix is the suffix gnark-crypto's extensions package appends to the names of an
+	// extension's types and constants (e.g. VectorE6, BytesE6). Empty for the curves and
+	// small_rational.
+	ExtensionSuffix string
 }
 
 func assertNoError(err error) {

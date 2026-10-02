@@ -439,7 +439,7 @@ func (z *SmallRational) BigInt(dst *big.Int) *big.Int {
 	return dst
 }
 
-func (z *SmallRational) SetBytes(b []byte) {
+func (z *SmallRational) SetBytes(b []byte) *SmallRational {
 	if len(b) > Bytes/2 {
 		z.numerator = bytesToBigIntSigned(b[:Bytes/2])
 		z.denominator = bytesToBigIntSigned(b[Bytes/2:])
@@ -449,6 +449,7 @@ func (z *SmallRational) SetBytes(b []byte) {
 	}
 	z.simplify()
 	z.UpdateText()
+	return z
 }
 
 func (z *SmallRational) SetBytesCanonical(bytes []byte) error {

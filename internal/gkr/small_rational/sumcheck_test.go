@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"hash"
 
+	"github.com/consensys/gnark/internal/gkr/gkrcore"
+	"github.com/consensys/gnark/internal/small_rational"
 	"github.com/consensys/gnark/internal/small_rational/polynomial"
 	"github.com/stretchr/testify/assert"
 
@@ -23,9 +25,9 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() hash
 	}
 
 	claim := singleMultilinClaim{g: poly.Clone()}
-	t := transcript{h: hashGenerator()}
+	t := gkrcore.NewHashTranscript[small_rational.SmallRational](hashGenerator())
 
-	proof := sumcheckProve(&claim, &t)
+	proof := sumcheckProve(&claim, t)
 
 	var sb strings.Builder
 	for _, p := range proof.partialSumPolys {
@@ -41,15 +43,15 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() hash
 	}
 
 	lazyClaim := singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
-	t = transcript{h: hashGenerator()}
-	if err := sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, &t); err != nil {
+	t = gkrcore.NewHashTranscript[small_rational.SmallRational](hashGenerator())
+	if err := sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t); err != nil {
 		return err
 	}
 
 	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], toElement(1))
 	lazyClaim = singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
-	t = transcript{h: hashGenerator()}
-	if sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, &t) == nil {
+	t = gkrcore.NewHashTranscript[small_rational.SmallRational](hashGenerator())
+	if sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t) == nil {
 		return fmt.Errorf("bad proof accepted")
 	}
 	return nil

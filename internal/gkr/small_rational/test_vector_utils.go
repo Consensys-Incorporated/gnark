@@ -39,6 +39,9 @@ func hashFromDescription(d gkrtesting.HashDescription) (hash.Hash, error) {
 	return nil, fmt.Errorf("hash description missing type")
 }
 
+// messageCounterBlockSize is the length of an element's Marshal().
+const messageCounterBlockSize = small_rational.Bytes
+
 // messageCounter is a stand-in hash whose state depends only on the number of field-element
 // blocks written to it, not on their values.
 type messageCounter struct {
@@ -48,18 +51,17 @@ type messageCounter struct {
 }
 
 func (m *messageCounter) Write(p []byte) (n int, err error) {
-	inputBlockSize := (len(p)-1)/small_rational.Bytes + 1
+	inputBlockSize := (len(p)-1)/messageCounterBlockSize + 1
 	m.state += int64(inputBlockSize) * m.step
 	return len(p), nil
 }
 
 func (m *messageCounter) Sum(b []byte) []byte {
-	inputBlockSize := (len(b)-1)/small_rational.Bytes + 1
+	inputBlockSize := (len(b)-1)/messageCounterBlockSize + 1
 	resI := m.state + int64(inputBlockSize)*m.step
 	var res small_rational.SmallRational
 	res.SetInt64(int64(resI))
-	resBytes := res.Bytes()
-	return resBytes[:]
+	return (&res).Marshal()
 }
 
 func (m *messageCounter) Reset() {
@@ -67,11 +69,11 @@ func (m *messageCounter) Reset() {
 }
 
 func (m *messageCounter) Size() int {
-	return small_rational.Bytes
+	return messageCounterBlockSize
 }
 
 func (m *messageCounter) BlockSize() int {
-	return small_rational.Bytes
+	return messageCounterBlockSize
 }
 
 func newMessageCounter(startState, step int) hash.Hash {

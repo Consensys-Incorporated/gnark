@@ -7,7 +7,6 @@ package gkr
 
 import (
 	"errors"
-	"hash"
 	"sync"
 
 	"github.com/consensys/gnark/constraint"
@@ -18,39 +17,8 @@ import (
 
 // This does not make use of parallelism and represents polynomials as lists of coefficients.
 
-// transcript is a Fiat-Shamir transcript backed by a running hash.
-// Field elements are written via Bind; challenges are derived via getChallenge.
-// The hash is never reset — all previous data is implicitly part of future challenges.
-type transcript struct {
-	h     hash.Hash
-	bound bool // whether Bind was called since the last getChallenge
-}
-
-// Bind writes field elements to the transcript as bindings for the next challenge.
-func (t *transcript) Bind(elements ...small_rational.SmallRational) {
-	if len(elements) == 0 {
-		return
-	}
-	for i := range elements {
-		bytes := elements[i].Bytes()
-		t.h.Write(bytes[:])
-	}
-	t.bound = true
-}
-
-// getChallenge binds optional elements, then squeezes a challenge from the current hash state.
-// If no bindings were added since the last squeeze, a separator byte is written first
-// to advance the state and prevent repeated values.
-func (t *transcript) getChallenge(bindings ...small_rational.SmallRational) small_rational.SmallRational {
-	t.Bind(bindings...)
-	if !t.bound {
-		t.h.Write([]byte{0})
-	}
-	t.bound = false
-	var res small_rational.SmallRational
-	res.SetBytes(t.h.Sum(nil))
-	return res
-}
+// transcript specializes gkrcore's generic hash transcript to this field.
+type transcript = gkrcore.HashTranscript[small_rational.SmallRational, *small_rational.SmallRational]
 
 // sumcheckClaims to a multi-sumcheck statement. i.e. one of the form ∑_{0≤i<2ⁿ} fⱼ(i) = cⱼ for 1 ≤ j ≤ m.
 // Later evolving into a claim of the form gⱼ = ∑_{0≤i<2ⁿ⁻ʲ} g(r₁, r₂, ..., rⱼ₋₁, Xⱼ, i...)
@@ -84,11 +52,11 @@ func sumcheckProve(claims sumcheckClaims, t *transcript) sumcheckProof {
 	challenges := make([]small_rational.SmallRational, varsNum)
 
 	for j := range varsNum - 1 {
-		challenges[j] = t.getChallenge(proof.partialSumPolys[j]...)
+		challenges[j] = t.Challenge(proof.partialSumPolys[j]...)
 		claims.roundFold(challenges[j])
 		proof.partialSumPolys[j+1] = claims.roundPolynomial()
 	}
-	challenges[varsNum-1] = t.getChallenge(proof.partialSumPolys[varsNum-1]...)
+	challenges[varsNum-1] = t.Challenge(proof.partialSumPolys[varsNum-1]...)
 
 	proof.finalEvalProof = claims.proveFinalEval(challenges)
 	return proof
@@ -110,7 +78,7 @@ func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum s
 		copy(gJ[1:], proof.partialSumPolys[j])
 		gJ[0].Sub(&gJR, &proof.partialSumPolys[j][0])
 
-		r[j] = t.getChallenge(proof.partialSumPolys[j]...)
+		r[j] = t.Challenge(proof.partialSumPolys[j]...)
 		gJCoeffs := polynomial.InterpolateOnRange(gJ[:(degree + 1)])
 		gJR = gJCoeffs.Eval(&r[j])
 	}
@@ -385,7 +353,7 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 	c.resources = r
 	level := r.schedule[levelI]
 	if level.NbClaims() >= 2 {
-		c.foldingCoeff = r.transcript.getChallenge()
+		c.foldingCoeff = r.transcript.Challenge()
 	}
 
 	uniqueInputs, inputIndices := r.circuit.InputMapping(level)
@@ -460,7 +428,7 @@ func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
 		}
 	}
 
-	return sumcheckProve(&claims, &r.transcript)
+	return sumcheckProve(&claims, r.transcript)
 }
 
 // verifyLevelSetup derives the folding coefficient, collects all claimed wire
@@ -470,7 +438,7 @@ func (r *resources) verifyLevelSetup(levelI int, proof Proof) (small_rational.Sm
 	level := r.schedule[levelI]
 	var foldingCoeff small_rational.SmallRational
 	if level.NbClaims() >= 2 {
-		foldingCoeff = r.transcript.getChallenge()
+		foldingCoeff = r.transcript.Challenge()
 	}
 
 	claimedEvals := make(polynomial.Polynomial, 0, level.NbClaims())
@@ -492,7 +460,7 @@ func (r *resources) verifyLevelSetup(levelI int, proof Proof) (small_rational.Sm
 func (r *resources) verifySumcheckLevel(levelI int, proof Proof) error {
 	claimedSum, lazyClaims := r.verifyLevelSetup(levelI, proof)
 	level := r.schedule[levelI].(*constraint.GkrSumcheckLevel)
-	return sumcheckVerify(lazyClaims, proof[levelI], claimedSum, r.circuit.ZeroCheckDegree(level), &r.transcript)
+	return sumcheckVerify(lazyClaims, proof[levelI], claimedSum, r.circuit.ZeroCheckDegree(level), r.transcript)
 }
 
 // singleSourceZeroCheckClaims is the prover-side claim for a single-source
@@ -686,7 +654,7 @@ func (r *resources) proveSingleSourceZeroCheckLevel(levelI int) sumcheckProof {
 	q := r.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex]
 	claims.suffixEq = r.buildSuffixEq(q)
 
-	return sumcheckProve(&claims, &r.transcript)
+	return sumcheckProve(&claims, r.transcript)
 }
 
 func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) error {
@@ -727,7 +695,7 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 
 		copy(gPrime[1:], partialPoly)
 
-		challenges[j] = r.transcript.getChallenge(partialPoly...)
+		challenges[j] = r.transcript.Challenge(partialPoly...)
 		gPrimeCoeffs := polynomial.InterpolateOnRange(gPrime[:(degree + 1)])
 		claimedSum = gPrimeCoeffs.Eval(&challenges[j])
 	}

@@ -14,8 +14,7 @@ import (
 func bn254() Field { return PrimeField(ecc.BN254.ScalarField()) }
 
 // koalabearE6 describes KoalaBear's degree-6 extension E6, whose tower generator v has minimal
-// polynomial X⁶ - 2X³ - 2. It is test data only here; the next PR exports this description
-// alongside gnark-crypto's own E6 type.
+// polynomial X⁶ - 2X³ - 2. It is test data only here, not a public description of the field.
 func koalabearE6() Field {
 	return Field{
 		Modulus: big.NewInt(2130706433), // 2^31 - 2^24 + 1
@@ -23,8 +22,8 @@ func koalabearE6() Field {
 	}
 }
 
-// testFields runs under bn254(), as before commit A, and under the KoalaBear E6
-// description, to check that both agree on every gate's metadata.
+// testFields runs under bn254() and under the KoalaBear E6 description, to check that both
+// agree on every gate's metadata.
 func testFields() []Field {
 	return []Field{bn254(), koalabearE6()}
 }
