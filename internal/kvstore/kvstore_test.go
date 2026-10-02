@@ -50,6 +50,9 @@ func (c *Circuit[T]) Define(api frontend.API) error {
 	if tStored3.Value != t {
 		return fmt.Errorf("expected %v, got %v", t, tStored3.Value)
 	}
+	// the circuit is about the key-value store; bind the input so that the
+	// circuit has no unconstrained wire
+	api.AssertIsDifferent(c.A, 0)
 	return nil
 }
 
