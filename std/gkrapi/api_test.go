@@ -872,3 +872,57 @@ func TestPoseidon2Gadget(t *testing.T) {
 	}
 	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithCurves(ecc.BN254))
 }
+
+// inputAsOutputCircuit has an input wire which is also an output of the GKR
+// circuit: either because no gate uses it or because it is exported.
+type inputAsOutputCircuit struct {
+	X, Y   []frontend.Variable
+	export bool
+}
+
+func (c *inputAsOutputCircuit) Define(api frontend.API) error {
+	gkrApi, err := New(api)
+	if err != nil {
+		return err
+	}
+	x := gkrApi.NewInput()
+	y := gkrApi.NewInput()
+	z := gkrApi.Mul(x, x)
+	var w gkr.Variable
+	if c.export {
+		// y is used by a gate and exported
+		w = gkrApi.Mul(y, z)
+		gkrApi.Export(y)
+	}
+	gc, err := gkrApi.Compile("MIMC")
+	if err != nil {
+		return err
+	}
+	for i := range c.X {
+		out, err := gc.AddInstance(map[gkr.Variable]frontend.Variable{x: c.X[i], y: c.Y[i]})
+		if err != nil {
+			return err
+		}
+		xx := api.Mul(c.X[i], c.X[i])
+		if c.export {
+			api.AssertIsEqual(out[w], api.Mul(c.Y[i], xx))
+		} else {
+			api.AssertIsEqual(out[z], xx)
+		}
+		api.AssertIsEqual(out[y], c.Y[i])
+	}
+	return nil
+}
+
+func TestInputAsOutput(t *testing.T) {
+	for _, export := range []bool{false, true} {
+		for _, n := range []int{1, 2, 3, 5} {
+			assignment := inputAsOutputCircuit{X: make([]frontend.Variable, n), Y: make([]frontend.Variable, n)}
+			for i := range n {
+				assignment.X[i], assignment.Y[i] = i+2, i+7
+			}
+			circuit := inputAsOutputCircuit{X: make([]frontend.Variable, n), Y: make([]frontend.Variable, n), export: export}
+			require.NoError(t, test.IsSolved(&circuit, &assignment, ecc.BN254.ScalarField()), "export=%v n=%d", export, n)
+		}
+	}
+}

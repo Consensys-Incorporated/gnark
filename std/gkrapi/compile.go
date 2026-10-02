@@ -190,6 +190,13 @@ func (c *Circuit) AddInstance(input map[gkr.Variable]frontend.Variable) (map[gkr
 	// Convert outputs to map
 	res := make(map[gkr.Variable]frontend.Variable, len(c.outs))
 	for i, v := range c.outs {
+		if c.circuit[v].IsInput() {
+			// an input wire which is not used by any gate or is exported is
+			// also an output. Its value is the input value, already recorded
+			// in the assignment above.
+			res[v] = input[v]
+			continue
+		}
 		outVar := compiler.InternalVariable(outputs[i])
 		res[v] = outVar
 		c.assignments[v] = append(c.assignments[v], outVar)
