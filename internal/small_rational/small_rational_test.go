@@ -1,48 +1,33 @@
 package small_rational
 
 import (
-	"math/big"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
-func TestBigDivides(t *testing.T) {
-	assert.True(t, bigDivides(big.NewInt(-1), big.NewInt(4)))
-	assert.False(t, bigDivides(big.NewInt(-3), big.NewInt(4)))
-}
-
 func TestCmp(t *testing.T) {
-
-	cases := make([]SmallRational, 36)
-
+	// 9 distinct values, (i-4)/2 for i = 0..8: -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, alternating
+	// between two SetInterface input forms: a plain integer and an explicit "n/2" fraction string.
+	cases := make([]SmallRational, 9)
 	for i := int64(0); i < 9; i++ {
+		var err error
 		if i%2 == 0 {
-			cases[4*i].numerator.SetInt64((i - 4) / 2)
-			cases[4*i].denominator.SetInt64(1)
+			_, err = cases[i].SetInterface((i - 4) / 2)
 		} else {
-			cases[4*i].numerator.SetInt64(i - 4)
-			cases[4*i].denominator.SetInt64(2)
+			_, err = cases[i].SetInterface(fmt.Sprintf("%d/2", i-4))
 		}
-
-		cases[4*i+1].numerator.Neg(&cases[4*i].numerator)
-		cases[4*i+1].denominator.Neg(&cases[4*i].denominator)
-
-		cases[4*i+2].numerator.Lsh(&cases[4*i].numerator, 1)
-		cases[4*i+2].denominator.Lsh(&cases[4*i].denominator, 1)
-
-		cases[4*i+3].numerator.Neg(&cases[4*i+2].numerator)
-		cases[4*i+3].denominator.Neg(&cases[4*i+2].denominator)
+		assert.NoError(t, err)
 	}
 
 	for i := range cases {
 		for j := range cases {
-			I, J := i/4, j/4
 			var expectedCmp int
 			cmp := cases[i].Cmp(&cases[j])
-			if I < J {
+			if i < j {
 				expectedCmp = -1
-			} else if I == J {
+			} else if i == j {
 				expectedCmp = 0
 			} else {
 				expectedCmp = 1
@@ -51,29 +36,28 @@ func TestCmp(t *testing.T) {
 		}
 	}
 
-	zeroIndex := len(cases) / 8
-	var weirdZero SmallRational
+	const zeroIndex = 4 // (4-4)/2 = 0
+	var zero SmallRational
 	for i := range cases {
-		I := i / 4
 		var expectedCmp int
-		cmp := cases[i].Cmp(&weirdZero)
-		cmpNeg := weirdZero.Cmp(&cases[i])
-		if I < zeroIndex {
+		cmp := cases[i].Cmp(&zero)
+		cmpNeg := zero.Cmp(&cases[i])
+		if i < zeroIndex {
 			expectedCmp = -1
-		} else if I == zeroIndex {
+		} else if i == zeroIndex {
 			expectedCmp = 0
 		} else {
 			expectedCmp = 1
 		}
 
-		assert.Equal(t, expectedCmp, cmp, "comparing index %d, 0/0", i)
-		assert.Equal(t, -expectedCmp, cmpNeg, "comparing 0/0, index %d", i)
+		assert.Equal(t, expectedCmp, cmp, "comparing index %d, 0", i)
+		assert.Equal(t, -expectedCmp, cmpNeg, "comparing 0, index %d", i)
 	}
 }
 
 func TestDouble(t *testing.T) {
-	values := []interface{}{1, 2, 3, 4, 5, "2/3", "3/2", "-3/-2"}
-	valsDoubled := []interface{}{2, 4, 6, 8, 10, "-4/-3", 3, 3}
+	values := []interface{}{1, 2, 3, 4, 5, "2/3", "3/2", "6/4"}
+	valsDoubled := []interface{}{2, 4, 6, 8, 10, "8/6", 3, 3}
 
 	for i := range values {
 		var v, vDoubled, vDoubledExpected SmallRational
@@ -83,7 +67,7 @@ func TestDouble(t *testing.T) {
 		assert.NoError(t, err)
 		vDoubled.Double(&v)
 		assert.True(t, vDoubled.Equal(&vDoubledExpected),
-			"mismatch at %d: expected 2×%s = %s, saw %s", i, v.text, vDoubledExpected.text, vDoubled.text)
+			"mismatch at %d: expected 2×%s = %s, saw %s", i, v.String(), vDoubledExpected.String(), vDoubled.String())
 
 	}
 }

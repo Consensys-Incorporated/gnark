@@ -4,157 +4,68 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
-	"strconv"
-	"strings"
 )
 
 const Bytes = 64
 
 // SmallRational implements the rational field, used to generate field agnostic test vectors.
 // It is not optimized for performance, so it is best used sparingly.
-type SmallRational struct {
-	text        string //For debugging purposes
-	numerator   big.Int
-	denominator big.Int // By convention, denominator == 0 also indicates zero
-}
+//
+// SmallRational wraps a big.Rat. Every method writes its result into a fresh big.Rat and assigns
+// it to z.r, never mutating a receiver's existing storage, which makes value copies safe.
+type SmallRational struct{ r big.Rat }
 
-var smallPrimes = []*big.Int{
-	big.NewInt(2), big.NewInt(3), big.NewInt(5),
-	big.NewInt(7), big.NewInt(11), big.NewInt(13),
-}
-
-func bigDivides(p, a *big.Int) bool {
-	var remainder big.Int
-	remainder.Mod(a, p)
-	return remainder.BitLen() == 0
-}
-
-func (z *SmallRational) UpdateText() {
-	z.text = z.Text(10)
-}
-
-func (z *SmallRational) simplify() {
-
-	if z.numerator.BitLen() == 0 || z.denominator.BitLen() == 0 {
-		return
-	}
-
-	var num, den big.Int
-
-	num.Set(&z.numerator)
-	den.Set(&z.denominator)
-
-	for _, p := range smallPrimes {
-		for bigDivides(p, &num) && bigDivides(p, &den) {
-			num.Div(&num, p)
-			den.Div(&den, p)
-		}
-	}
-
-	if bigDivides(&den, &num) {
-		num.Div(&num, &den)
-		den.SetInt64(1)
-	}
-
-	z.numerator = num
-	z.denominator = den
-
-}
 func (z *SmallRational) Square(x *SmallRational) *SmallRational {
-	var num, den big.Int
-	num.Mul(&x.numerator, &x.numerator)
-	den.Mul(&x.denominator, &x.denominator)
-
-	z.numerator = num
-	z.denominator = den
-
-	z.UpdateText()
-
+	var res big.Rat
+	res.Mul(&x.r, &x.r)
+	z.r = res
 	return z
 }
 
 func (z *SmallRational) String() string {
-	z.text = z.Text(10)
-	return z.text
+	return z.Text(10)
 }
 
 func (z *SmallRational) Add(x, y *SmallRational) *SmallRational {
-	if x.denominator.BitLen() == 0 {
-		*z = *y
-	} else if y.denominator.BitLen() == 0 {
-		*z = *x
-	} else {
-		//TODO: Exploit cases where one denom divides the other
-		var numDen, denNum big.Int
-		numDen.Mul(&x.numerator, &y.denominator)
-		denNum.Mul(&x.denominator, &y.numerator)
-
-		numDen.Add(&denNum, &numDen)
-		z.numerator = numDen //to avoid shallow copy problems
-
-		denNum.Mul(&x.denominator, &y.denominator)
-		z.denominator = denNum
-		z.simplify()
-	}
-
-	z.UpdateText()
-
+	var res big.Rat
+	res.Add(&x.r, &y.r)
+	z.r = res
 	return z
 }
 
 func (z *SmallRational) IsZero() bool {
-	return z.numerator.BitLen() == 0 || z.denominator.BitLen() == 0
+	return z.r.Sign() == 0
 }
 
+// Inverse sets z to 1/x, except that the inverse of 0 is 0, as for the curves' elements
+// (big.Rat.Inv panics on 0).
 func (z *SmallRational) Inverse(x *SmallRational) *SmallRational {
-	if x.IsZero() {
-		*z = *x
-	} else {
-		*z = SmallRational{numerator: x.denominator, denominator: x.numerator}
-		z.UpdateText()
+	if x.r.Sign() == 0 {
+		z.r = big.Rat{}
+		return z
 	}
-
+	var res big.Rat
+	res.Inv(&x.r)
+	z.r = res
 	return z
 }
 
 func (z *SmallRational) Neg(x *SmallRational) *SmallRational {
-	z.numerator.Neg(&x.numerator)
-	z.denominator = x.denominator
-
-	if x.text == "" {
-		x.UpdateText()
-	}
-
-	if x.text[0] == '-' {
-		z.text = x.text[1:]
-	} else {
-		z.text = "-" + x.text
-	}
-
+	var res big.Rat
+	res.Neg(&x.r)
+	z.r = res
 	return z
 }
 
 func (z *SmallRational) Double(x *SmallRational) *SmallRational {
-
-	var y big.Int
-
-	if x.denominator.Bit(0) == 0 {
-		z.numerator = x.numerator
-		y.Rsh(&x.denominator, 1)
-		z.denominator = y
-	} else {
-		y.Lsh(&x.numerator, 1)
-		z.numerator = y
-		z.denominator = x.denominator
-	}
-
-	z.UpdateText()
-
+	var res big.Rat
+	res.Add(&x.r, &x.r)
+	z.r = res
 	return z
 }
 
 func (z *SmallRational) Sign() int {
-	return z.numerator.Sign() * z.denominator.Sign()
+	return z.r.Sign()
 }
 
 func (z *SmallRational) MarshalJSON() ([]byte, error) {
@@ -171,33 +82,14 @@ func (z *SmallRational) Equal(x *SmallRational) bool {
 }
 
 func (z *SmallRational) Sub(x, y *SmallRational) *SmallRational {
-	var yNeg SmallRational
-	yNeg.Neg(y)
-	z.Add(x, &yNeg)
-
-	z.UpdateText()
+	var res big.Rat
+	res.Sub(&x.r, &y.r)
+	z.r = res
 	return z
 }
 
 func (z *SmallRational) Cmp(x *SmallRational) int {
-	zSign, xSign := z.Sign(), x.Sign()
-
-	if zSign > xSign {
-		return 1
-	}
-	if zSign < xSign {
-		return -1
-	}
-
-	var Z, X big.Int
-	Z.Mul(&z.numerator, &x.denominator)
-	X.Mul(&x.numerator, &z.denominator)
-
-	Z.Abs(&Z)
-	X.Abs(&X)
-
-	return Z.Cmp(&X) * zSign
-
+	return z.r.Cmp(&x.r)
 }
 
 func BatchInvert(a []SmallRational) []SmallRational {
@@ -209,42 +101,23 @@ func BatchInvert(a []SmallRational) []SmallRational {
 }
 
 func (z *SmallRational) Mul(x, y *SmallRational) *SmallRational {
-	var num, den big.Int
-
-	num.Mul(&x.numerator, &y.numerator)
-	den.Mul(&x.denominator, &y.denominator)
-
-	z.numerator = num
-	z.denominator = den
-
-	z.simplify()
-	z.UpdateText()
+	var res big.Rat
+	res.Mul(&x.r, &y.r)
+	z.r = res
 	return z
 }
 
 func (z *SmallRational) Div(x, y *SmallRational) *SmallRational {
-	var num, den big.Int
-
-	num.Mul(&x.numerator, &y.denominator)
-	den.Mul(&x.denominator, &y.numerator)
-
-	z.numerator = num
-	z.denominator = den
-
-	z.simplify()
-	z.UpdateText()
+	var res big.Rat
+	res.Quo(&x.r, &y.r)
+	z.r = res
 	return z
 }
 
 func (z *SmallRational) Halve() *SmallRational {
-	if z.numerator.Bit(0) == 0 {
-		z.numerator.Rsh(&z.numerator, 1)
-	} else {
-		z.denominator.Lsh(&z.denominator, 1)
-	}
-
-	z.simplify()
-	z.UpdateText()
+	var res big.Rat
+	res.Quo(&z.r, big.NewRat(2, 1))
+	z.r = res
 	return z
 }
 
@@ -257,20 +130,22 @@ func (z *SmallRational) SetZero() *SmallRational {
 }
 
 func (z *SmallRational) SetInt64(i int64) *SmallRational {
-	z.numerator = *big.NewInt(i)
-	z.denominator = *big.NewInt(1)
-	z.text = strconv.FormatInt(i, 10)
+	var res big.Rat
+	res.SetInt64(i)
+	z.r = res
 	return z
 }
 
 // SetBigInt sets z to the integer value i (denominator = 1).
 func (z *SmallRational) SetBigInt(i *big.Int) *SmallRational {
-	z.numerator.Set(i)
-	z.denominator.SetInt64(1)
-	z.text = i.String()
+	var res big.Rat
+	res.SetInt(i)
+	z.r = res
 	return z
 }
 
+// SetRandom sets z to a uniform random numerator in [-8, 7] over a uniform random denominator in
+// [0, 15], with denominator 0 giving 0.
 func (z *SmallRational) SetRandom() (*SmallRational, error) {
 
 	bytes := make([]byte, 1)
@@ -282,11 +157,14 @@ func (z *SmallRational) SetRandom() (*SmallRational, error) {
 		return nil, fmt.Errorf("%d bytes read instead of %d", n, len(bytes))
 	}
 
-	z.numerator = *big.NewInt(int64(bytes[0]%16) - 8)
-	z.denominator = *big.NewInt(int64((bytes[0]) / 16))
+	num := int64(bytes[0]%16) - 8
+	den := int64(bytes[0] / 16)
 
-	z.simplify()
-	z.UpdateText()
+	var res big.Rat
+	if den != 0 {
+		res.SetFrac64(num, den)
+	}
+	z.r = res
 
 	return z, nil
 }
@@ -299,49 +177,29 @@ func (z *SmallRational) MustSetRandom() *SmallRational {
 }
 
 func (z *SmallRational) SetUint64(i uint64) {
-	var num big.Int
-	num.SetUint64(i)
-	z.numerator = num
-	z.denominator = *big.NewInt(1)
-	z.text = strconv.FormatUint(i, 10)
+	var bi big.Int
+	bi.SetUint64(i)
+	var res big.Rat
+	res.SetInt(&bi)
+	z.r = res
 }
 
 func (z *SmallRational) IsOne() bool {
-	return z.numerator.Cmp(&z.denominator) == 0 && z.denominator.BitLen() != 0
+	return z.r.Cmp(big.NewRat(1, 1)) == 0
 }
 
+// Text writes the numerator alone, in base, if z is an integer, else the numerator and the
+// denominator, both in base, separated by "/". It does not modify z.
 func (z *SmallRational) Text(base int) string {
-
-	if z.denominator.BitLen() == 0 {
-		return "0"
+	if z.r.IsInt() {
+		return z.r.Num().Text(base)
 	}
-
-	if z.denominator.Sign() < 0 {
-		var num, den big.Int
-		num.Neg(&z.numerator)
-		den.Neg(&z.denominator)
-		z.numerator = num
-		z.denominator = den
-	}
-
-	if bigDivides(&z.denominator, &z.numerator) {
-		var num big.Int
-		num.Div(&z.numerator, &z.denominator)
-		z.numerator = num
-		z.denominator = *big.NewInt(1)
-	}
-
-	numerator := z.numerator.Text(base)
-
-	if z.denominator.IsInt64() && z.denominator.Int64() == 1 {
-		return numerator
-	}
-
-	return numerator + "/" + z.denominator.Text(base)
+	return z.r.Num().Text(base) + "/" + z.r.Denom().Text(base)
 }
 
+// Set sets z to x.
 func (z *SmallRational) Set(x *SmallRational) *SmallRational {
-	*z = *x // shallow copy is safe because ops are never in place
+	*z = *x
 	return z
 }
 
@@ -363,31 +221,11 @@ func (z *SmallRational) SetInterface(x interface{}) (*SmallRational, error) {
 		}
 		z.SetInt64(asInt)
 	case string:
-		z.text = v
-		sep := strings.Split(v, "/")
-		switch len(sep) {
-		case 1:
-			if asInt, err := strconv.Atoi(sep[0]); err == nil {
-				z.SetInt64(int64(asInt))
-			} else {
-				return nil, err
-			}
-		case 2:
-			var err error
-			var num, denom int
-			num, err = strconv.Atoi(sep[0])
-			if err != nil {
-				return nil, err
-			}
-			denom, err = strconv.Atoi(sep[1])
-			if err != nil {
-				return nil, err
-			}
-			z.numerator = *big.NewInt(int64(num))
-			z.denominator = *big.NewInt(int64(denom))
-		default:
-			return nil, fmt.Errorf("cannot parse \"%s\"", v)
+		var res big.Rat
+		if _, ok := res.SetString(v); !ok {
+			return nil, fmt.Errorf("cannot parse %q", v)
 		}
+		z.r = res
 	default:
 		return nil, fmt.Errorf("cannot parse %T", x)
 	}
@@ -405,8 +243,8 @@ func bigIntToBytesSigned(dst []byte, src big.Int) {
 
 func (z *SmallRational) Bytes() [Bytes]byte {
 	var res [Bytes]byte
-	bigIntToBytesSigned(res[:Bytes/2], z.numerator)
-	bigIntToBytesSigned(res[Bytes/2:], z.denominator)
+	bigIntToBytesSigned(res[:Bytes/2], *z.r.Num())
+	bigIntToBytesSigned(res[Bytes/2:], *z.r.Denom())
 	return res
 }
 
@@ -424,31 +262,34 @@ func bytesToBigIntSigned(src []byte) big.Int {
 	return res
 }
 
-// BigInt returns sets dst to the value of z if it is an integer.
+// BigInt sets dst to the value of z if it is an integer, and returns dst.
 // if z is not an integer, nil is returned.
-// if the given dst is nil, the address of the numerator is returned.
-// if the given dst is non-nil, it is returned.
+// if the given dst is nil, a new big.Int is allocated rather than returning a pointer into z.
 func (z *SmallRational) BigInt(dst *big.Int) *big.Int {
-	if z.denominator.Cmp(big.NewInt(1)) != 0 {
+	if !z.r.IsInt() {
 		return nil
 	}
 	if dst == nil {
-		return &z.numerator
+		dst = new(big.Int)
 	}
-	dst.Set(&z.numerator)
+	dst.Set(z.r.Num())
 	return dst
 }
 
 func (z *SmallRational) SetBytes(b []byte) *SmallRational {
+	var num, den big.Int
 	if len(b) > Bytes/2 {
-		z.numerator = bytesToBigIntSigned(b[:Bytes/2])
-		z.denominator = bytesToBigIntSigned(b[Bytes/2:])
+		num = bytesToBigIntSigned(b[:Bytes/2])
+		den = bytesToBigIntSigned(b[Bytes/2:])
 	} else {
-		z.numerator.SetBytes(b)
-		z.denominator.SetInt64(1)
+		num.SetBytes(b)
+		den.SetInt64(1)
 	}
-	z.simplify()
-	z.UpdateText()
+	var res big.Rat
+	if den.BitLen() != 0 { // a zero denominator gives 0, as big.Rat.SetFrac panics on it
+		res.SetFrac(&num, &den)
+	}
+	z.r = res
 	return z
 }
 
@@ -458,16 +299,7 @@ func (z *SmallRational) SetBytesCanonical(bytes []byte) error {
 }
 
 func One() SmallRational {
-	res := SmallRational{
-		text: "1",
-	}
-	res.numerator.SetInt64(1)
-	res.denominator.SetInt64(1)
-	return res
-}
-
-func Modulus() *big.Int {
-	res := big.NewInt(1)
-	res.Lsh(res, 64)
+	var res SmallRational
+	res.SetInt64(1)
 	return res
 }
