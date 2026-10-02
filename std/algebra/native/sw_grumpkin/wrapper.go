@@ -206,6 +206,10 @@ func (c *Curve) MultiScalarMul(P []*G1Affine, scalars []*Scalar, opts ...algopts
 		if len(scalars) == 0 {
 			return nil, errors.New("need scalar for folding")
 		}
+		// with a single point the result is P[0] (gamma^0 * P[0])
+		if len(P) == 1 {
+			return P[0], nil
+		}
 		gamma := c.packScalarToVar(scalars[0])
 		// decompose gamma in the endomorphism eigenvalue basis and bit-decompose the sub-scalars
 		gamma1, gamma2 := callDecomposeScalar(c.api, gamma)

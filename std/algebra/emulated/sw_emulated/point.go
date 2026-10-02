@@ -1597,6 +1597,10 @@ func (c *Curve[B, S]) MultiScalarMul(p []*AffinePoint[B], s []*emulated.Element[
 		if len(s) == 0 {
 			return nil, fmt.Errorf("need scalar for folding")
 		}
+		// with a single point the result is p[0] (gamma^0 * p[0])
+		if len(p) == 1 {
+			return p[0], nil
+		}
 		gamma := s[0]
 		res := c.ScalarMul(p[len(p)-1], gamma, opts...)
 		for i := len(p) - 2; i > 0; i-- {

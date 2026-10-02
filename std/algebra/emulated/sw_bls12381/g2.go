@@ -1112,6 +1112,10 @@ func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.Algebra
 		if len(s) == 0 {
 			return nil, fmt.Errorf("need scalar for folding")
 		}
+		// with a single point the result is p[0] (gamma^0 * p[0])
+		if len(p) == 1 {
+			return p[0], nil
+		}
 		gamma := s[0]
 		res := g2.ScalarMul(p[len(p)-1], gamma, opts...)
 		for i := len(p) - 2; i > 0; i-- {

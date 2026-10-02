@@ -2710,3 +2710,28 @@ func TestScalarMulGLVAndFakeGLV_TrivialDecompositionRegression(t *testing.T) {
 		t.Fatal("malicious all-zeros Eisenstein decomposition was accepted — soundness break")
 	}
 }
+
+// TestMultiScalarMulFoldedSinglePoint checks that folding a single point
+// returns the point itself (gamma^0 * P0).
+func TestMultiScalarMulFoldedSinglePoint(t *testing.T) {
+	assert := test.NewAssert(t)
+	var s, gamma fr_bw6761.Element
+	s.SetRandom()
+	gamma.SetRandom()
+	var p bw6761.G1Affine
+	p.ScalarMultiplicationBase(s.BigInt(new(big.Int)))
+	cp := AffinePoint[emparams.BW6761Fp]{
+		X: emulated.ValueOf[emparams.BW6761Fp](p.X),
+		Y: emulated.ValueOf[emparams.BW6761Fp](p.Y),
+	}
+	assignment := MultiScalarMulFoldedEdgeCasesTest[emparams.BW6761Fp, emparams.BW6761Fr]{
+		Points:  []AffinePoint[emparams.BW6761Fp]{cp},
+		Scalars: []emulated.Element[emparams.BW6761Fr]{emulated.ValueOf[emparams.BW6761Fr](gamma)},
+		Res:     cp,
+	}
+	err := test.IsSolved(&MultiScalarMulFoldedEdgeCasesTest[emparams.BW6761Fp, emparams.BW6761Fr]{
+		Points:  make([]AffinePoint[emparams.BW6761Fp], 1),
+		Scalars: make([]emulated.Element[emparams.BW6761Fr], 1),
+	}, &assignment, ecc.BN254.ScalarField())
+	assert.NoError(err)
+}
