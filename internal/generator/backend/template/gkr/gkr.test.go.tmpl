@@ -287,7 +287,10 @@ func benchmarkGkrMiMC(b *testing.B, nbInstances, mimcDepth int) {
 
 	fmt.Println("evaluating circuit")
 	start := time.Now().UnixMicro()
-	assignment := WireAssignment{in0, in1}.Complete(c)
+	assignment := make(WireAssignment, len(c))
+	assignment[0] = in0
+	assignment[1] = in1
+	assignment = assignment.Complete(c)
 	solved := time.Now().UnixMicro() - start
 	fmt.Println("solved in", solved, "μs")
 
