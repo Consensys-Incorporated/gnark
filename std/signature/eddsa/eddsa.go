@@ -37,8 +37,9 @@ type Signature struct {
 // Verify verifies an eddsa signature using MiMC hash function
 // cf https://en.wikipedia.org/wiki/EdDSA
 //
-// The method asserts in-circuit that S < order and that the public key A is
-// not of small order (in particular, not the identity).
+// The method asserts in-circuit that S < order, that the public key A and the
+// signature commitment R are on the curve, and that A is not of small order
+// (in particular, not the identity).
 func Verify(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pubKey PublicKey, hash hash.FieldHasher) error {
 	res, err := IsValid(curve, sig, msg, pubKey, hash)
 	if err != nil {
@@ -51,6 +52,9 @@ func Verify(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pu
 // IsValid checks if the signature is valid for the given message and public
 // key. It returns 1 if the signature is valid and 0 otherwise. Signatures
 // for small-order public keys (including the identity) are considered invalid.
+//
+// The method asserts in-circuit that S < order and that the public key A and
+// the signature commitment R are on the curve.
 func IsValid(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pubKey PublicKey, hash hash.FieldHasher) (frontend.Variable, error) {
 	// compute H(R, A, M)
 	hash.Write(sig.R.X)
@@ -68,6 +72,13 @@ func IsValid(curve twistededwards.Curve, sig Signature, msg frontend.Variable, p
 	// Assert S < GroupSize (see https://datatracker.ietf.org/doc/html/rfc8032#section-3.4)
 	isLess := cmp.IsLess(curve.API(), sig.S, curve.Params().Order)
 	curve.API().AssertIsEqual(isLess, 1)
+
+	// Assert that the public key A and the commitment R are on the curve. The
+	// group formulas below use unchecked divisions which are undefined for
+	// off-curve inputs, and off-curve points would bypass the small-order
+	// check on A.
+	curve.AssertIsOnCurve(pubKey.A)
+	curve.AssertIsOnCurve(sig.R)
 
 	//[S]G-[H(R,A,M)]*A
 	_A := curve.Neg(pubKey.A)
