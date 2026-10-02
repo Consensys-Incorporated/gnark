@@ -151,8 +151,8 @@ func main() {
 					FieldPackageName:   "fr",
 					FieldPackagePath:   "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
 					FieldID:            d.CurveID,
+					FieldDescription:   "gkrcore.PrimeField(ecc." + d.CurveID + ".ScalarField())",
 					GkrPackageName:     curvePackageName,
-					CanUseFFT:          true,
 					EvaluatorQualifier: "evaluator.",
 				}
 
@@ -232,13 +232,12 @@ func main() {
 	wg.Add(1)
 	// GKR test vectors
 	go func() {
-		// generate gkr and sumcheck for small-rational
+		// generate gkr and sumcheck for rational
 		cfg := gkrConfig{
-			ElementType:         "small_rational.SmallRational",
-			FieldPackagePath:    "github.com/consensys/gnark/internal/small_rational",
-			FieldPackageName:    "small_rational",
-			GkrPackageName:      "small_rational",
-			CanUseFFT:           false,
+			ElementType:         "rational.Element",
+			FieldPackagePath:    "github.com/consensys/gnark/internal/rational",
+			FieldPackageName:    "rational",
+			GkrPackageName:      "rational",
 			NoGkrTests:          true,
 			GenerateTestVectors: true,
 		}
@@ -300,7 +299,7 @@ type templateData struct {
 func generateGkrBackend(cfg gkrConfig) error {
 	internalDir := filepath.Join("../../../internal/gkr", cfg.GkrPackageName)
 	// The prover, verifier and their tests live alongside the evaluators in internalDir for
-	// small_rational (test-vector generation), and in the public gkr/<field> package for curves.
+	// rational (test-vector generation), and in the public gkr/<field> package for curves.
 	proverDir := internalDir
 	if !cfg.GenerateTestVectors {
 		proverDir = filepath.Join("../../../gkr", cfg.GkrPackageName)
@@ -355,12 +354,19 @@ type gkrConfig struct {
 	FieldPackageName    string
 	GkrPackageName      string // the GKR package, relative to the repo root
 	FieldID             string // e.g. BLS12_377, BABYBEAR, etc.
-	CanUseFFT           bool
 	GenerateTestVectors bool
 	NoGkrTests          bool
 	// EvaluatorQualifier prefixes references to the gate evaluator types, for fields whose prover
 	// package is not the evaluators' own package. Empty when they are the same package.
 	EvaluatorQualifier string
+	// ExtensionSuffix is the suffix gnark-crypto's extensions package appends to the names of an
+	// extension's types and constants (e.g. VectorE6, BytesE6). Empty for the curves and
+	// rational.
+	ExtensionSuffix string
+	// FieldDescription is the Go expression of the field's gkrcore.Field description, e.g.
+	// "gkrcore.PrimeField(ecc.BN254.ScalarField())". Used only where gkr.test.go.tmpl is
+	// generated (NoGkrTests false), so rational leaves it empty.
+	FieldDescription string
 }
 
 func assertNoError(err error) {

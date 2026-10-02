@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,7 +21,7 @@ import (
 // The main functionality is to cache whole circuits, but this package needs to use its own gate registry, in order to avoid import cycles.
 // Cache is used in tests for the per-curve GKR packages, but they in turn provide gate degree discovery functions to the gkrgates package.
 type Cache struct {
-	field    *big.Int
+	field    gkrcore.Field
 	circuits map[string]circuits
 	gates    map[string]gkr.GateFunction
 	lock     sync.Mutex
@@ -58,7 +57,7 @@ func selectInput3Gate(_ gkr.GateAPI, in ...frontend.Variable) frontend.Variable 
 	return in[2]
 }
 
-func NewCache(field *big.Int) *Cache {
+func NewCache(field gkrcore.Field) *Cache {
 	gates := make(map[string]gkr.GateFunction, 7)
 	gates[""] = nil
 	gates["identity"] = gkrcore.Identity
