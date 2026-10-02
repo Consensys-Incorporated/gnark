@@ -219,6 +219,24 @@ func TestEddsaSmallOrderPublicKey(t *testing.T) {
 			}))
 		}
 
+		// off-curve points must be rejected: the in-circuit group formulas use
+		// unchecked divisions which are undefined for off-curve inputs. (1,1)
+		// satisfies a*x²+y² = 1+d*x²y² only if a == d, which holds for no
+		// twisted Edwards curve.
+		offCurve := twistededwards.Point{X: 1, Y: 1}
+		opts = append(opts,
+			test.WithInvalidAssignment(&eddsaCircuit{ // off-curve A
+				PublicKey: PublicKey{A: offCurve},
+				Signature: validWitness.Signature,
+				Message:   42,
+			}),
+			test.WithInvalidAssignment(&eddsaCircuit{ // off-curve R
+				PublicKey: validWitness.PublicKey,
+				Signature: Signature{R: offCurve, S: 1},
+				Message:   42,
+			}),
+		)
+
 		var circuit eddsaCircuit
 		circuit.curveID = conf.curve
 		assert.CheckCircuit(&circuit, opts...)
