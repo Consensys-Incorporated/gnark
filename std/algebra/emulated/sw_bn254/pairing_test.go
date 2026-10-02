@@ -628,6 +628,52 @@ func TestIsMillerLoopAndFinalExpCircuitTestSolve(t *testing.T) {
 	assert.NoError(err)
 }
 
+type MultiMillerLoopAndFinalExpCircuit struct {
+	Prev       GTEl
+	P1, P2, P3 G1Affine
+	Q1, Q2, Q3 G2Affine
+}
+
+func (c *MultiMillerLoopAndFinalExpCircuit) Define(api frontend.API) error {
+	pairing, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	pairing.AssertMultiMillerLoopAndFinalExpIsOne(
+		[]*G1Affine{&c.P1, &c.P2, &c.P3},
+		[]*G2Affine{&c.Q1, &c.Q2, &c.Q3},
+		&c.Prev,
+	)
+	return nil
+}
+
+func TestMultiMillerLoopAndFinalExpIsOneTestSolve(t *testing.T) {
+	assert := test.NewAssert(t)
+	p1, q1 := randomG1G2Affines()
+	p2, q2 := randomG1G2Affines()
+	var np1, np2 bn254.G1Affine
+	np1.Neg(&p1)
+	np2.Neg(&p2)
+
+	lines := bn254.PrecomputeLines(q1)
+	previous, err := bn254.MillerLoopFixedQ(
+		[]bn254.G1Affine{p1},
+		[][2][len(bn254.LoopCounter)]bn254.LineEvaluationAff{lines},
+	)
+	assert.NoError(err)
+
+	witness := MultiMillerLoopAndFinalExpCircuit{
+		Prev: NewGTEl(previous),
+		P1:   NewG1Affine(np1),
+		P2:   NewG1Affine(np2),
+		P3:   NewG1Affine(p2),
+		Q1:   NewG2Affine(q1),
+		Q2:   NewG2Affine(q2),
+		Q3:   NewG2Affine(q2),
+	}
+	assert.NoError(test.IsSolved(&MultiMillerLoopAndFinalExpCircuit{}, &witness, ecc.BN254.ScalarField()))
+}
+
 type MuxesCircuits struct {
 	InG2       []G2Affine
 	InGt       []GTEl
