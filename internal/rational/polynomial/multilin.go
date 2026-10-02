@@ -7,22 +7,22 @@ import (
 	"math/bits"
 
 	"github.com/consensys/gnark-crypto/utils"
-	"github.com/consensys/gnark/internal/small_rational"
+	"github.com/consensys/gnark/internal/rational"
 )
 
 // MultiLin tracks the values of a (dense i.e. not sparse) multilinear polynomial
 // The variables are X₁ through Xₙ where n = log(len(.))
 // .[∑ᵢ 2ⁱ⁻¹ bₙ₋ᵢ] = the polynomial evaluated at (b₁, b₂, ..., bₙ)
 // It is understood that any hypercube evaluation can be extrapolated to a multilinear polynomial
-type MultiLin []small_rational.SmallRational
+type MultiLin []rational.Element
 
 // Fold is partial evaluation function k[X₁, X₂, ..., Xₙ] → k[X₂, ..., Xₙ] by setting X₁=r
-func (m *MultiLin) Fold(r small_rational.SmallRational) {
+func (m *MultiLin) Fold(r rational.Element) {
 	mid := len(*m) / 2
 
 	bottom, top := (*m)[:mid], (*m)[mid:]
 
-	var t small_rational.SmallRational // no need to update the top part
+	var t rational.Element // no need to update the top part
 
 	// updating bookkeeping table
 	// knowing that the polynomial f ∈ (k[X₂, ..., Xₙ])[X₁] is linear, we would get f(r) = f(0) + r(f(1) - f(0))
@@ -38,14 +38,14 @@ func (m *MultiLin) Fold(r small_rational.SmallRational) {
 	*m = (*m)[:mid]
 }
 
-func (m *MultiLin) FoldParallel(r small_rational.SmallRational) utils.Task {
+func (m *MultiLin) FoldParallel(r rational.Element) utils.Task {
 	mid := len(*m) / 2
 	bottom, top := (*m)[:mid], (*m)[mid:]
 
 	*m = bottom
 
 	return func(start, end int) {
-		var t small_rational.SmallRational // no need to update the top part
+		var t rational.Element // no need to update the top part
 		for i := start; i < end; i++ {
 			// table[i] ← table[i]  + r (table[i + mid] - table[i])
 			t.Sub(&top[i], &bottom[i])
@@ -55,7 +55,7 @@ func (m *MultiLin) FoldParallel(r small_rational.SmallRational) utils.Task {
 	}
 }
 
-func (m MultiLin) Sum() small_rational.SmallRational {
+func (m MultiLin) Sum() rational.Element {
 	s := m[0]
 	for i := 1; i < len(m); i++ {
 		s.Add(&s, &m[i])
@@ -79,7 +79,7 @@ func _dump(m MultiLin, p *Pool) {
 
 // Evaluate extrapolate the value of the multilinear polynomial corresponding to m
 // on the given coordinates
-func (m MultiLin) Evaluate(coordinates []small_rational.SmallRational, p *Pool) small_rational.SmallRational {
+func (m MultiLin) Evaluate(coordinates []rational.Element, p *Pool) rational.Element {
 	// Folding is a mutating operation
 	bkCopy := _clone(m, p)
 
@@ -133,8 +133,8 @@ func (m *MultiLin) Add(left, right MultiLin) {
 //
 // In other words the polynomial evaluated here is the multilinear extrapolation of
 // one that evaluates to q' == h' for vectors q', h' of binary values
-func EvalEq(q, h []small_rational.SmallRational) small_rational.SmallRational {
-	var res, nxt, one, sum small_rational.SmallRational
+func EvalEq(q, h []rational.Element) rational.Element {
+	var res, nxt, one, sum rational.Element
 	one.SetOne()
 	for i := 0; i < len(q); i++ {
 		nxt.Mul(&q[i], &h[i]) // nxt <- qᵢ * hᵢ
@@ -153,7 +153,7 @@ func EvalEq(q, h []small_rational.SmallRational) small_rational.SmallRational {
 }
 
 // Eq sets m to the representation of the polynomial Eq(q₁, ..., qₙ, *, ..., *) × m[0]
-func (m *MultiLin) Eq(q []small_rational.SmallRational) {
+func (m *MultiLin) Eq(q []rational.Element) {
 	n := len(q)
 
 	if len(*m) != 1<<n {

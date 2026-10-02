@@ -11,35 +11,35 @@ import (
 
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
-	"github.com/consensys/gnark/internal/small_rational"
-	"github.com/consensys/gnark/internal/small_rational/polynomial"
+	"github.com/consensys/gnark/internal/rational"
+	"github.com/consensys/gnark/internal/rational/polynomial"
 )
 
 // This does not make use of parallelism and represents polynomials as lists of coefficients.
 
 // transcript specializes gkrcore's generic hash transcript to this field.
-type transcript = gkrcore.HashTranscript[small_rational.SmallRational, *small_rational.SmallRational]
+type transcript = gkrcore.HashTranscript[rational.Element, *rational.Element]
 
 // sumcheckClaims to a multi-sumcheck statement. i.e. one of the form ∑_{0≤i<2ⁿ} fⱼ(i) = cⱼ for 1 ≤ j ≤ m.
 // Later evolving into a claim of the form gⱼ = ∑_{0≤i<2ⁿ⁻ʲ} g(r₁, r₂, ..., rⱼ₋₁, Xⱼ, i...)
 type sumcheckClaims interface {
-	roundPolynomial() polynomial.Polynomial                                         // compute gⱼ polynomial for current round
-	roundFold(r small_rational.SmallRational)                                       // fold inputs and eq at challenge r
-	varsNum() int                                                                   // number of variables
-	proveFinalEval(r []small_rational.SmallRational) []small_rational.SmallRational // in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
+	roundPolynomial() polynomial.Polynomial                 // compute gⱼ polynomial for current round
+	roundFold(r rational.Element)                           // fold inputs and eq at challenge r
+	varsNum() int                                           // number of variables
+	proveFinalEval(r []rational.Element) []rational.Element // in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
 }
 
 // sumcheckLazyClaims is the sumcheckClaims data structure on the verifier side. It is "lazy" in that it has to compute fewer things.
 type sumcheckLazyClaims interface {
 	varsNum() int     // varsNum = n
 	degree(i int) int // degree of the total claim in the i'th variable
-	verifyFinalEval(r []small_rational.SmallRational, purportedValue small_rational.SmallRational, proof []small_rational.SmallRational) error
+	verifyFinalEval(r []rational.Element, purportedValue rational.Element, proof []rational.Element) error
 }
 
 // sumcheckProof of a multi-statement.
 type sumcheckProof struct {
 	partialSumPolys []polynomial.Polynomial
-	finalEvalProof  []small_rational.SmallRational //in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
+	finalEvalProof  []rational.Element //in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
 }
 
 // sumcheckProve creates a non-interactive sumcheck proof.
@@ -49,7 +49,7 @@ func sumcheckProve(claims sumcheckClaims, t *transcript) sumcheckProof {
 	varsNum := claims.varsNum()
 	proof := sumcheckProof{partialSumPolys: make([]polynomial.Polynomial, varsNum)}
 	proof.partialSumPolys[0] = claims.roundPolynomial()
-	challenges := make([]small_rational.SmallRational, varsNum)
+	challenges := make([]rational.Element, varsNum)
 
 	for j := range varsNum - 1 {
 		challenges[j] = t.Challenge(proof.partialSumPolys[j]...)
@@ -65,8 +65,8 @@ func sumcheckProve(claims sumcheckClaims, t *transcript) sumcheckProof {
 // sumcheckVerify verifies a non-interactive sumcheck proof.
 // The fold challenge is derived by the caller (verifyLevel).
 // claimedSum is the expected sum; degree is the polynomial's degree in each variable.
-func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum small_rational.SmallRational, degree int, t *transcript) error {
-	r := make([]small_rational.SmallRational, claims.varsNum())
+func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum rational.Element, degree int, t *transcript) error {
+	r := make([]rational.Element, claims.varsNum())
 
 	gJ := make(polynomial.Polynomial, degree+1)
 	gJR := claimedSum
@@ -91,7 +91,7 @@ func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum s
 // where the sum runs over all wᵢ and evaluation point xᵢ in the level.
 // Its purpose is to batch the checking of multiple wire evaluations at evaluation points.
 type zeroCheckLazyClaims struct {
-	foldingCoeff small_rational.SmallRational // the coefficient used to fold claims, conventionally 0 if there is only one claim
+	foldingCoeff rational.Element // the coefficient used to fold claims, conventionally 0 if there is only one claim
 	resources    *resources
 	levelI       int
 }
@@ -113,8 +113,8 @@ func (e *zeroCheckLazyClaims) degree(int) int {
 // The prover claims evaluations of each wire's gate inputs at r via uniqueInputEvaluations; those
 // claims are verified by lower levels' sumchecks. The verifier checks consistency by evaluating
 // gateᵥ(inputEvals...) and confirming that the full sum matches purportedValue.
-func (e *zeroCheckLazyClaims) verifyFinalEval(r []small_rational.SmallRational, purportedValue small_rational.SmallRational, uniqueInputEvaluations []small_rational.SmallRational) error {
-	e.resources.outgoingEvalPoints[e.levelI] = [][]small_rational.SmallRational{r}
+func (e *zeroCheckLazyClaims) verifyFinalEval(r []rational.Element, purportedValue rational.Element, uniqueInputEvaluations []rational.Element) error {
+	e.resources.outgoingEvalPoints[e.levelI] = [][]rational.Element{r}
 	level := e.resources.schedule[e.levelI]
 	gateInputEvals := gkrcore.ReduplicateInputs(level, e.resources.circuit, uniqueInputEvaluations)
 
@@ -132,7 +132,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []small_rational.SmallRational, 
 
 			for _, src := range group.ClaimSources {
 				eq := polynomial.EvalEq(e.resources.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], r)
-				var term small_rational.SmallRational
+				var term rational.Element
 				term.Mul(&eq, gateEval)
 				claimedEvals = append(claimedEvals, term)
 			}
@@ -175,10 +175,10 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 
 	sumSize := len(c.eqs[0]) / 2
 
-	p := make([]small_rational.SmallRational, degree)
+	p := make([]rational.Element, degree)
 	var mu sync.Mutex
 	computeAll := func(start, end int) {
-		var step small_rational.SmallRational
+		var step rational.Element
 
 		evaluators := make([]*GateEvaluator, nbWires)
 		for w := range nbWires {
@@ -190,14 +190,14 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 			}
 		}()
 
-		res := make([]small_rational.SmallRational, degree)
+		res := make([]rational.Element, degree)
 
 		// evaluations of ml, laid out as:
 		// ml[0](1, h...), ml[1](1, h...), ..., ml[len(ml)-1](1, h...),
 		// ml[0](2, h...), ml[1](2, h...), ..., ml[len(ml)-1](2, h...),
 		// ...
 		// ml[0](degree, h...), ml[1](degree, h...), ..., ml[len(ml)-1](degree, h...)
-		mlEvals := make([]small_rational.SmallRational, degree*len(ml))
+		mlEvals := make([]rational.Element, degree*len(ml))
 
 		for h := start; h < end; h++ {
 			evalAt1Index := sumSize + h
@@ -242,7 +242,7 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 
 // roundFold folds all input and eq polynomials at the verifier challenge r.
 // After this call, j ← j+1 and rⱼ = r.
-func (c *zeroCheckClaims) roundFold(r small_rational.SmallRational) {
+func (c *zeroCheckClaims) roundFold(r rational.Element) {
 	const minBlockSize = 512
 	n := len(c.eqs[0]) / 2
 	if n < minBlockSize {
@@ -267,14 +267,14 @@ func (c *zeroCheckClaims) roundFold(r small_rational.SmallRational) {
 }
 
 // proveFinalEval provides the unique input wire values wᵢ(r₁, ..., rₙ).
-func (c *zeroCheckClaims) proveFinalEval(r []small_rational.SmallRational) []small_rational.SmallRational {
+func (c *zeroCheckClaims) proveFinalEval(r []rational.Element) []rational.Element {
 	return c.zeroCheckBase.proveFinalEval(r, c.eqs)
 }
 
 // eqAcc sets m to an eq table at q and then adds it to e.
 // m <- m[0] · eq(q, -).
 // e <- e + m
-func (r *resources) eqAcc(e, m polynomial.MultiLin, q []small_rational.SmallRational) {
+func (r *resources) eqAcc(e, m polynomial.MultiLin, q []rational.Element) {
 	n := len(q)
 
 	// At the end of each iteration, m(h₁, ..., hₙ) = m[0] · eq(q₁, ..., qᵢ₊₁, h₁, ..., hᵢ₊₁)
@@ -312,7 +312,7 @@ func (r *resources) eqAcc(e, m polynomial.MultiLin, q []small_rational.SmallRati
 // zeroCheckBase holds the fields and initialization logic common to both
 // zeroCheckClaims and singleSourceZeroCheckClaims.
 type zeroCheckBase struct {
-	foldingCoeff       small_rational.SmallRational
+	foldingCoeff       rational.Element
 	levelI             int
 	resources          *resources
 	input              []polynomial.MultiLin // UniqueGateInputs order
@@ -327,9 +327,9 @@ func (c *zeroCheckBase) varsNum() int {
 // proveFinalEval records the outgoing eval point, folds the last variable,
 // collects the unique input evaluations, and releases all pooled memory.
 // extraPolys is the level-type-specific slice (eqs or suffixEq) to dump.
-func (c *zeroCheckBase) proveFinalEval(r []small_rational.SmallRational, extraPolys []polynomial.MultiLin) []small_rational.SmallRational {
-	c.resources.outgoingEvalPoints[c.levelI] = [][]small_rational.SmallRational{r}
-	evaluations := make([]small_rational.SmallRational, len(c.input))
+func (c *zeroCheckBase) proveFinalEval(r []rational.Element, extraPolys []polynomial.MultiLin) []rational.Element {
+	c.resources.outgoingEvalPoints[c.levelI] = [][]rational.Element{r}
+	evaluations := make([]rational.Element, len(c.input))
 	for i := range c.input {
 		c.input[i].Fold(r[len(r)-1])
 		evaluations[i] = c.input[i][0]
@@ -385,7 +385,7 @@ func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
 	level := r.schedule[levelI]
 	eqLength := 1 << r.nbVars
 	claims.eqs = make([]polynomial.MultiLin, len(claims.gateEvaluatorPools))
-	var alpha small_rational.SmallRational
+	var alpha rational.Element
 	alpha.SetOne()
 	levelWireI := 0
 	for _, group := range level.ClaimGroups() {
@@ -406,7 +406,7 @@ func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
 			r.memPool.Dump(newEq)
 		}
 
-		var stride small_rational.SmallRational
+		var stride rational.Element
 		stride.Set(&claims.foldingCoeff)
 		for range nbSources - 1 {
 			stride.Mul(&stride, &claims.foldingCoeff)
@@ -434,9 +434,9 @@ func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
 // verifyLevelSetup derives the folding coefficient, collects all claimed wire
 // evaluations from the proof or the initial assignment, computes the batched
 // claimed sum, and builds the lazy-claims object shared by both verifiers.
-func (r *resources) verifyLevelSetup(levelI int, proof Proof) (small_rational.SmallRational, *zeroCheckLazyClaims) {
+func (r *resources) verifyLevelSetup(levelI int, proof Proof) (rational.Element, *zeroCheckLazyClaims) {
 	level := r.schedule[levelI]
-	var foldingCoeff small_rational.SmallRational
+	var foldingCoeff rational.Element
 	if level.NbClaims() >= 2 {
 		foldingCoeff = r.transcript.Challenge()
 	}
@@ -495,10 +495,10 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 	// The second half of suffixEq is the eq segment for this round
 	eqSegment := c.suffixEq[len(c.suffixEq)/2:]
 
-	p := make([]small_rational.SmallRational, degree)
+	p := make([]rational.Element, degree)
 	var mu sync.Mutex
 	computeAll := func(start, end int) {
-		var step small_rational.SmallRational
+		var step rational.Element
 
 		evaluators := make([]*GateEvaluator, nbWires)
 		for w := range nbWires {
@@ -510,10 +510,10 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 			}
 		}()
 
-		res := make([]small_rational.SmallRational, degree)
+		res := make([]rational.Element, degree)
 
 		// Input evaluations at m=1,2,...,degree
-		inputEvals := make([]small_rational.SmallRational, degree*nbUniqueInputs)
+		inputEvals := make([]rational.Element, degree*nbUniqueInputs)
 
 		for h := start; h < end; h++ {
 			evalAt1Index := sumSize + h
@@ -532,7 +532,7 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 				for _, inputI := range c.inputIndices[nbWires-1] {
 					evaluators[nbWires-1].PushInput(inputEvals[iIndex+inputI])
 				}
-				var wireSum small_rational.SmallRational
+				var wireSum rational.Element
 				wireSum.Set(evaluators[nbWires-1].Evaluate())
 				for w := nbWires - 2; w >= 0; w-- {
 					wireSum.Mul(&wireSum, &c.foldingCoeff)
@@ -566,7 +566,7 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 
 // roundFold folds only input multilinears at the verifier challenge r.
 // The suffix eq tables are precomputed and not folded.
-func (c *singleSourceZeroCheckClaims) roundFold(r small_rational.SmallRational) {
+func (c *singleSourceZeroCheckClaims) roundFold(r rational.Element) {
 	const minBlockSize = 512
 	n := len(c.input[0]) / 2
 	if n < minBlockSize {
@@ -588,7 +588,7 @@ func (c *singleSourceZeroCheckClaims) roundFold(r small_rational.SmallRational) 
 }
 
 // proveFinalEval provides the unique input wire values at the final evaluation point.
-func (c *singleSourceZeroCheckClaims) proveFinalEval(r []small_rational.SmallRational) []small_rational.SmallRational {
+func (c *singleSourceZeroCheckClaims) proveFinalEval(r []rational.Element) []rational.Element {
 	return c.zeroCheckBase.proveFinalEval(r, []polynomial.MultiLin{c.suffixEq})
 }
 
@@ -602,7 +602,7 @@ func (c *singleSourceZeroCheckClaims) proveFinalEval(r []small_rational.SmallRat
 //
 // The first two positions are unused padding so that the buffer halves cleanly:
 // in round j the eq segment is buf[len(buf)/2:] and buf is trimmed to buf[:len(buf)/2].
-func (r *resources) buildSuffixEq(q []small_rational.SmallRational) polynomial.MultiLin {
+func (r *resources) buildSuffixEq(q []rational.Element) polynomial.MultiLin {
 	n := len(q)
 	buf := r.memPool.Make(1 << n)
 
@@ -629,7 +629,7 @@ func (r *resources) buildSuffixEq(q []small_rational.SmallRational) polynomial.M
 		srcStart := prevLen      // start of suffixEq[j+1]
 		dstStart := prevLen << 1 // start of suffixEq[j]
 
-		var oneMinusQj small_rational.SmallRational
+		var oneMinusQj rational.Element
 		oneMinusQj.SetOne()
 		oneMinusQj.Sub(&oneMinusQj, &q[j])
 
@@ -665,7 +665,7 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 	q := r.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex]
 	degree := r.circuit.ZeroCheckDegree(level)
 
-	challenges := make([]small_rational.SmallRational, r.nbVars)
+	challenges := make([]rational.Element, r.nbVars)
 	gPrime := make(polynomial.Polynomial, degree+1)
 
 	// The verifier tracks claimedSum = g'_{j-1}(r_{j-1}), the "primed" value with
@@ -686,7 +686,7 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 			return errors.New("malformed proof")
 		}
 
-		var oneMinusQj, qjTimesGPrime1 small_rational.SmallRational
+		var oneMinusQj, qjTimesGPrime1 rational.Element
 		oneMinusQj.SetOne()
 		oneMinusQj.Sub(&oneMinusQj, &q[j])
 		qjTimesGPrime1.Mul(&q[j], &partialPoly[0]) // partialPoly[0] = g'(1)

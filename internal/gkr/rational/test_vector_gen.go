@@ -18,13 +18,13 @@ import (
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
-	"github.com/consensys/gnark/internal/small_rational"
-	"github.com/consensys/gnark/internal/small_rational/polynomial"
+	"github.com/consensys/gnark/internal/rational"
+	"github.com/consensys/gnark/internal/rational/polynomial"
 )
 
 // The properties of test gates are expected to be the same across all relevant fields.
 // We can therefore use the gate testing functions for any curve rather than reimplementing
-// for small_rational.
+// for rational.
 var cache = gkrtesting.NewCache(gkrcore.PrimeField(ecc.BN254.ScalarField()))
 
 func GenerateVectors() error {
@@ -132,7 +132,7 @@ func toPrintableProof(proof Proof) (gkrtesting.PrintableProof, error) {
 	return res, nil
 }
 
-func elementToInterface(x *small_rational.SmallRational) interface{} {
+func elementToInterface(x *rational.Element) interface{} {
 	if i := x.BigInt(nil); i != nil {
 		return i
 	}
@@ -148,7 +148,7 @@ func elementSliceToInterfaceSlice(x interface{}) []interface{} {
 
 	res := make([]interface{}, X.Len())
 	for i := range res {
-		xI := X.Index(i).Interface().(small_rational.SmallRational)
+		xI := X.Index(i).Interface().(rational.Element)
 		res[i] = elementToInterface(&xI)
 	}
 	return res
@@ -172,11 +172,11 @@ func elementSliceSliceToInterfaceSliceSlice(x interface{}) [][]interface{} {
 func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 	proof := make(Proof, len(printable))
 	for i := range printable {
-		finalEvalProof := []small_rational.SmallRational(nil)
+		finalEvalProof := []rational.Element(nil)
 
 		if printable[i].FinalEvalProof != nil {
 			finalEvalSlice := reflect.ValueOf(printable[i].FinalEvalProof)
-			finalEvalProof = make([]small_rational.SmallRational, finalEvalSlice.Len())
+			finalEvalProof = make([]rational.Element, finalEvalSlice.Len())
 			for k := range finalEvalProof {
 				if _, err := setElement(&finalEvalProof[k], finalEvalSlice.Index(k).Interface()); err != nil {
 					return nil, err
@@ -271,7 +271,7 @@ func newTestCase(path string) (*TestCase, error) {
 			outI++
 		}
 		if assignmentRaw != nil {
-			var wireAssignment []small_rational.SmallRational
+			var wireAssignment []rational.Element
 			if wireAssignment, err = sliceToElementSlice(assignmentRaw); err != nil {
 				return nil, err
 			}

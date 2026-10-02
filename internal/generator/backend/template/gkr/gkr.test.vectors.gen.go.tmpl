@@ -4,8 +4,8 @@ import (
     "github.com/consensys/bavard"
     "github.com/consensys/gnark-crypto/ecc"
     "github.com/consensys/gnark/constraint"
-    "github.com/consensys/gnark/internal/small_rational"
-    "github.com/consensys/gnark/internal/small_rational/polynomial"
+    "github.com/consensys/gnark/internal/rational"
+    "github.com/consensys/gnark/internal/rational/polynomial"
     "github.com/consensys/gnark/internal/gkr/gkrtesting"
     "github.com/consensys/gnark/internal/gkr/gkrcore"
     "hash"
@@ -16,7 +16,7 @@ import (
 
 // The properties of test gates are expected to be the same across all relevant fields.
 // We can therefore use the gate testing functions for any curve rather than reimplementing
- // for small_rational.
+ // for rational.
 var cache = gkrtesting.NewCache(gkrcore.PrimeField(ecc.BN254.ScalarField()))
 
 func GenerateVectors() error {
