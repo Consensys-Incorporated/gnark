@@ -277,8 +277,12 @@ func (builder *builder[E]) MustBeLessOrEqCst(aBits []frontend.Variable, bound *b
 	for i := nbBits - 1; i >= 0; i-- {
 
 		if bound.Bit(i) == 0 {
-			// skip trivially satisfied constraints for constant zero bits
-			if c, ok := builder.constantValue(aBits[i]); ok && c.IsZero() {
+			if c, ok := builder.constantValue(aBits[i]); ok {
+				// skip trivially satisfied constraints for constant zero bits
+				if !c.IsZero() {
+					// (1 - p(i+1) - ai) * ai == 0 with ai constant
+					builder.AssertIsEqual(builder.Mul(builder.Sub(1, p[i+1], aBits[i]), aBits[i]), 0)
+				}
 				continue
 			}
 			// (1 - p(i+1) - ai) * ai == 0
