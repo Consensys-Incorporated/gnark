@@ -165,7 +165,16 @@ func (pr *Pairing) AssertFinalExponentiationIsOne(x *GTEl) {
 //
 // This function does not check that Pᵢ and Qᵢ are in the correct subgroup. See
 // AssertIsOnG1 and AssertIsOnG2. NB! This mismatches the interfaces of sw_bls12381 and
-// sw_bn254 packages where G2 membership check is performed automatically!
+// sw_bn254 packages where G2 membership check is performed automatically (when
+// the lines are computed in-circuit)!
+//
+// When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
+// and Qᵢ.P is never read: the lines are not constrained to correspond to the
+// point — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions. To assert a
+// pairing equation over untrusted G2 inputs, prefer [Pairing.PairingCheck],
+// which binds the result to the point coordinates even when precomputed lines
+// are supplied.
 func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 	f, err := pr.MillerLoop(P, Q)
 	if err != nil {
@@ -176,6 +185,11 @@ func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 
 // PairingCheck calculates the reduced pairing for a set of points and asserts if the result is One
 // ∏ᵢ e(Pᵢ, Qᵢ) =? 1
+//
+// The non-residue witness hint is computed from the point coordinates, so the
+// asserted equation binds the result to the coordinates of Qᵢ.P even when Qᵢ
+// carries precomputed lines: lines not corresponding to Qᵢ.P make the circuit
+// unsatisfiable.
 //
 // This function doesn't check that the inputs are in the correct subgroups.
 func (pr *Pairing) PairingCheck(P []*G1Affine, Q []*G2Affine) error {
@@ -415,7 +429,13 @@ var loopCounter2 = [190]int8{
 //
 // This function does not check that Pᵢ and Qᵢ are in the correct subgroup. See
 // AssertIsOnG1 and AssertIsOnG2. NB! This mismatches the interfaces of sw_bls12381 and
-// sw_bn254 packages where G2 membership check is performed automatically!
+// sw_bn254 packages where G2 membership check is performed automatically (when
+// the lines are computed in-circuit)!
+//
+// When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
+// and Qᵢ.P is never read: the lines are not constrained to correspond to the
+// point — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
 //
 // Alg.2 in https://eprint.iacr.org/2021/1359.pdf Eq. (6') in
 // https://hackmd.io/@gnark/BW6-761-changes

@@ -31,6 +31,11 @@ type g2AffP struct {
 }
 
 // G2Affine represents G2 element with optional embedded line precomputations.
+//
+// When Lines is set, [Pairing.MillerLoop] and [Pairing.Pair] use the
+// precomputed lines directly and never read P: the lines are trusted input
+// and are not constrained to correspond to P. See
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
 type G2Affine struct {
 	P     g2AffP
 	Lines *lineEvaluations
@@ -118,6 +123,11 @@ func NewG2Affine(v bn254.G2Affine) G2Affine {
 
 // NewG2AffineFixed returns witness of v with precomputations for efficient
 // pairing computation.
+//
+// When the value is used as a witness, the precomputed lines are not
+// constrained to correspond to the point coordinates — see
+// [NewG2AffineFixedPlaceholder] for the security assumptions of precomputed
+// lines.
 func NewG2AffineFixed(v bn254.G2Affine) G2Affine {
 	if !v.IsInSubGroup() {
 		// for the pairing check we check that G2 point is already in the
@@ -138,6 +148,18 @@ func NewG2AffineFixed(v bn254.G2Affine) G2Affine {
 // NewG2AffineFixedPlaceholder returns a placeholder for the circuit compilation
 // when witness will be given with line precomputations using
 // [NewG2AffineFixed].
+//
+// Security note: the placeholder allocates the point coordinates and all line
+// evaluations as witness variables. [Pairing.MillerLoop] and [Pairing.Pair]
+// consume the line evaluations directly: they neither constrain the lines to
+// correspond to the point coordinates nor check the coordinates are on the
+// curve or in the correct subgroup. The witness assignment is therefore
+// trusted — use this placeholder only when the assignment is fixed by the
+// circuit author (e.g. a hardcoded verifying key or SRS), or when the pairing
+// result is checked with [Pairing.PairingCheck], which binds the result to
+// the point coordinates. For prover-supplied G2 points used with
+// [Pairing.Pair] or [Pairing.MillerLoop], use [NewG2Affine] instead so that
+// the lines are computed in-circuit from the constrained coordinates.
 func NewG2AffineFixedPlaceholder() G2Affine {
 	var lines lineEvaluations
 	for i := 0; i < len(bn254.LoopCounter); i++ {
