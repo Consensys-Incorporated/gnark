@@ -10,6 +10,7 @@ import (
 	fr_bn "github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/secp256k1"
 	fr_secp "github.com/consensys/gnark-crypto/ecc/secp256k1/fr"
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -60,7 +61,7 @@ func TestScalarMulBaseCombSecp256k1(t *testing.T) {
 		_, _ = rnd.SetRandom()
 		return rnd.BigInt(new(big.Int))
 	}
-	for _, w := range []int{4, 5, 8} {
+	for _, w := range []int{4, 5, 6, 8} {
 		for _, s := range combTestScalars(r, 3, randFn) {
 			var S secp256k1.G1Affine
 			S.ScalarMultiplication(&g, s)
@@ -87,7 +88,7 @@ func TestScalarMulBaseCombBN254(t *testing.T) {
 		_, _ = rnd.SetRandom()
 		return rnd.BigInt(new(big.Int))
 	}
-	for _, w := range []int{4, 5, 8} {
+	for _, w := range []int{4, 5, 6, 8} {
 		for _, s := range combTestScalars(r, 3, randFn) {
 			var S bn254.G1Affine
 			S.ScalarMultiplication(&g, s)
@@ -156,36 +157,197 @@ func TestScalarMulBaseCombP256(t *testing.T) {
 	}
 }
 
-// TestScalarMulBaseCombConstraints reports the constraint counts of the comb
-// fixed-base scalar multiplication against the current ScalarMulBase.
-func TestScalarMulBaseCombConstraints(t *testing.T) {
+// TestScalarMulBaseCombOptimalWindow checks the claim behind combWindow: that
+// the cost model in combOptimalWindow picks the window width that actually
+// minimises the R1CS constraint count.
+//
+// It compiles the comb at every width in a sweep that brackets the predicted
+// optimum, takes the measured argmin, and asserts the model agrees with it. A
+// width that fails to compile fails the test rather than being skipped,
+// otherwise a width could drop out of the comparison silently and leave a
+// losing width looking optimal.
+func TestScalarMulBaseCombOptimalWindow(t *testing.T) {
 	if testing.Short() {
 		t.Skip()
 	}
 	assert := test.NewAssert(t)
-	for _, w := range []int{4, 6, 8, 10} {
-		circuit := ScalarMulBaseCombTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{w: w}
-		ccs, err := frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder, &circuit)
-		if err != nil {
-			t.Log("w =", w, "compile error:", err)
-			continue
-		}
-		assert.NoError(err)
-		t.Log("comb r1cs", "w =", w, "constraints =", ccs.GetNbConstraints())
+	sweep := []int{7, 8, 9, 10, 11, 12}
+	curves := []struct {
+		name    string
+		nbLimbs int
+		nbits   int
+		want    int // documented optimum, independently measured
+		fn      func(w int) (constraint.ConstraintSystem, error)
+	}{
+		{"secp256k1", 4, emulated.Secp256k1Fr{}.Modulus().BitLen(), 9,
+			func(w int) (constraint.ConstraintSystem, error) {
+				return frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder,
+					&ScalarMulBaseCombTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{w: w})
+			}},
+		{"BN254-G1", 4, emulated.BN254Fr{}.Modulus().BitLen(), 9,
+			func(w int) (constraint.ConstraintSystem, error) {
+				return frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder,
+					&ScalarMulBaseCombTest[emulated.BN254Fp, emulated.BN254Fr]{w: w})
+			}},
+		{"BLS12-381-G1", 6, emulated.BLS12381Fr{}.Modulus().BitLen(), 10,
+			func(w int) (constraint.ConstraintSystem, error) {
+				return frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder,
+					&ScalarMulBaseCombTest[emulated.BLS12381Fp, emulated.BLS12381Fr]{w: w})
+			}},
 	}
-	baseline := ScalarMulBaseTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{}
-	ccs, err := frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder, &baseline)
-	assert.NoError(err)
-	t.Log("baseline ScalarMulBase r1cs constraints =", ccs.GetNbConstraints())
+	for _, crv := range curves {
+		bestW, bestCount := 0, 0
+		for _, w := range sweep {
+			ccs, err := crv.fn(w)
+			assert.NoError(err, "%s w=%d must compile; a skipped width would "+
+				"silently drop out of the minimum", crv.name, w)
+			n := ccs.GetNbConstraints()
+			t.Logf("comb r1cs %s w=%d constraints=%d", crv.name, w, n)
+			if bestW == 0 || n < bestCount {
+				bestW, bestCount = w, n
+			}
+		}
 
-	// PLONKish counts
-	circuit := ScalarMulBaseCombTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{w: 8}
-	scsCcs, err := frontend.Compile(testCurve.ScalarField(), scs.NewBuilder, &circuit)
+		// the model's choice must be the measured minimum, not merely a width
+		// that happens to compile
+		got := combOptimalWindow(crv.nbLimbs, crv.nbits)
+		assert.Equal(crv.want, got,
+			"%s: combOptimalWindow should pick the documented width", crv.name)
+		assert.Equal(bestW, got,
+			"%s: combOptimalWindow picked w=%d but w=%d measured cheapest (%d constraints)",
+			crv.name, got, bestW, bestCount)
+
+		// the minimum must be strictly inside the sweep, else it is an artifact
+		// of where the sweep was cut and says nothing about optimality
+		assert.NotEqual(sweep[0], bestW,
+			"%s: minimum at the low end of the sweep; widen it", crv.name)
+		assert.NotEqual(sweep[len(sweep)-1], bestW,
+			"%s: minimum at the high end of the sweep; widen it", crv.name)
+
+	}
+}
+
+// combWindowDispatchTest reports what Curve.combWindow() returns under whichever
+// builder compiles it, so the R1CS/PLONK dispatch itself is covered rather than
+// just the model behind it.
+type combWindowDispatchTest[T, S emulated.FieldParams] struct {
+	Want frontend.Variable
+}
+
+func (c *combWindowDispatchTest[T, S]) Define(api frontend.API) error {
+	cr, err := New[T, S](api, GetCurveParams[T]())
+	if err != nil {
+		return err
+	}
+	api.AssertIsEqual(c.Want, cr.combWindow())
+	return nil
+}
+
+// TestCombWindowDispatch checks that combWindow routes to combOptimalWindow on
+// R1CS and to combPlonkWindow on PLONKish, for each curve the comb supports.
+func TestCombWindowDispatch(t *testing.T) {
+	assert := test.NewAssert(t)
+	for _, tc := range []struct {
+		name          string
+		nbLimbs, bits int
+		run           func(want int, builder frontend.NewBuilder) error
+	}{
+		{"secp256k1", 4, emulated.Secp256k1Fr{}.Modulus().BitLen(),
+			func(want int, b frontend.NewBuilder) error {
+				_, err := frontend.Compile(testCurve.ScalarField(), b,
+					&combWindowDispatchTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{Want: want})
+				return err
+			}},
+		{"BLS12-381-G1", 6, emulated.BLS12381Fr{}.Modulus().BitLen(),
+			func(want int, b frontend.NewBuilder) error {
+				_, err := frontend.Compile(testCurve.ScalarField(), b,
+					&combWindowDispatchTest[emulated.BLS12381Fp, emulated.BLS12381Fr]{Want: want})
+				return err
+			}},
+	} {
+		assert.NoError(tc.run(combOptimalWindow(tc.nbLimbs, tc.bits), r1cs.NewBuilder),
+			"%s: R1CS combWindow must be combOptimalWindow", tc.name)
+		assert.NoError(tc.run(combPlonkWindow, scs.NewBuilder),
+			"%s: PLONK combWindow must be combPlonkWindow", tc.name)
+	}
+}
+
+// TestScalarMulBaseCombPlonkWindow is the PLONKish counterpart. combPlonkWindow
+// is a single hand-tuned constant shared by every curve, so the claim to check
+// is stronger than in the R1CS case: it must be the measured SCS minimum for
+// each supported curve simultaneously, not just for the one it was tuned on.
+func TestScalarMulBaseCombPlonkWindow(t *testing.T) {
+	if testing.Short() {
+		t.Skip()
+	}
+	assert := test.NewAssert(t)
+	sweep := []int{4, 5, 6, 7, 8}
+	curves := []struct {
+		name string
+		fn   func(w int) (constraint.ConstraintSystem, error)
+	}{
+		{"secp256k1", func(w int) (constraint.ConstraintSystem, error) {
+			return frontend.Compile(testCurve.ScalarField(), scs.NewBuilder,
+				&ScalarMulBaseCombTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{w: w})
+		}},
+		{"BN254-G1", func(w int) (constraint.ConstraintSystem, error) {
+			return frontend.Compile(testCurve.ScalarField(), scs.NewBuilder,
+				&ScalarMulBaseCombTest[emulated.BN254Fp, emulated.BN254Fr]{w: w})
+		}},
+		{"BLS12-381-G1", func(w int) (constraint.ConstraintSystem, error) {
+			return frontend.Compile(testCurve.ScalarField(), scs.NewBuilder,
+				&ScalarMulBaseCombTest[emulated.BLS12381Fp, emulated.BLS12381Fr]{w: w})
+		}},
+	}
+	for _, crv := range curves {
+		bestW, bestCount := 0, 0
+		for _, w := range sweep {
+			ccs, err := crv.fn(w)
+			assert.NoError(err, "%s scs w=%d must compile", crv.name, w)
+			n := ccs.GetNbConstraints()
+			t.Logf("comb scs %s w=%d constraints=%d", crv.name, w, n)
+			if bestW == 0 || n < bestCount {
+				bestW, bestCount = w, n
+			}
+		}
+		assert.Equal(bestW, combPlonkWindow,
+			"%s: combPlonkWindow is %d but w=%d measured cheapest (%d constraints)",
+			crv.name, combPlonkWindow, bestW, bestCount)
+		assert.NotEqual(sweep[0], bestW, "%s: minimum at low end of sweep", crv.name)
+		assert.NotEqual(sweep[len(sweep)-1], bestW, "%s: minimum at high end of sweep", crv.name)
+	}
+}
+
+// TestScalarMulBaseCombBeatsBaseline records that the comb is what
+// ScalarMulBase should be using: it must not cost more than the generic
+// variable-base fallback it replaced.
+func TestScalarMulBaseCombBeatsBaseline(t *testing.T) {
+	if testing.Short() {
+		t.Skip()
+	}
+	assert := test.NewAssert(t)
+	baseline := ScalarMulBaseTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{}
+
+	r1csBase, err := frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder, &baseline)
 	assert.NoError(err)
-	t.Log("comb scs w=8 constraints =", scsCcs.GetNbConstraints())
+	r1csComb, err := frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder,
+		&ScalarMulBaseCombTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{
+			w: combOptimalWindow(4, emulated.Secp256k1Fr{}.Modulus().BitLen())})
+	assert.NoError(err)
+	t.Logf("secp256k1 r1cs: comb=%d baseline ScalarMulBase=%d",
+		r1csComb.GetNbConstraints(), r1csBase.GetNbConstraints())
+	assert.LessOrEqual(r1csComb.GetNbConstraints(), r1csBase.GetNbConstraints(),
+		"comb must not cost more than the ScalarMulBase it backs")
+
 	scsBase, err := frontend.Compile(testCurve.ScalarField(), scs.NewBuilder, &baseline)
 	assert.NoError(err)
-	t.Log("baseline ScalarMulBase scs constraints =", scsBase.GetNbConstraints())
+	scsComb, err := frontend.Compile(testCurve.ScalarField(), scs.NewBuilder,
+		&ScalarMulBaseCombTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{w: combPlonkWindow})
+	assert.NoError(err)
+	t.Logf("secp256k1 scs: comb=%d baseline ScalarMulBase=%d",
+		scsComb.GetNbConstraints(), scsBase.GetNbConstraints())
+	assert.LessOrEqual(scsComb.GetNbConstraints(), scsBase.GetNbConstraints(),
+		"comb must not cost more than the ScalarMulBase it backs")
 }
 
 type jointScalarMulBaseCompleteTest[T, S emulated.FieldParams] struct {
