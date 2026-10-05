@@ -40,6 +40,14 @@ type Signature struct {
 // The method asserts in-circuit that S < order, that the public key A and the
 // signature commitment R are on the curve, and that A is not of small order
 // (in particular, not the identity).
+//
+// The small-order check only requires [cofactor]A ≠ O, so mixed-order public
+// keys (a prime-order point plus a torsion point) are accepted. This diverges
+// from gnark-crypto's native verification, which requires full subgroup
+// membership. Consequently a single secret key corresponds to up to cofactor
+// distinct accepted public keys ([sk]G + T for torsion points T); callers
+// deriving an identity from the public key coordinates (e.g. hashing A.X,
+// A.Y) must take this into account.
 func Verify(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pubKey PublicKey, hash hash.FieldHasher) error {
 	res, err := IsValid(curve, sig, msg, pubKey, hash)
 	if err != nil {
