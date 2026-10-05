@@ -62,7 +62,9 @@ func Verify(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pu
 // for small-order public keys (including the identity) are considered invalid.
 //
 // The method asserts in-circuit that S < order and that the public key A and
-// the signature commitment R are on the curve.
+// the signature commitment R are on the curve; such inputs make the circuit
+// unsatisfiable rather than returning 0. As in Verify, mixed-order public
+// keys are accepted.
 func IsValid(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pubKey PublicKey, hash hash.FieldHasher) (frontend.Variable, error) {
 	// compute H(R, A, M)
 	hash.Write(sig.R.X)
