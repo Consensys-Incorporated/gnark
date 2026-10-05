@@ -171,6 +171,9 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.Hash) (Proof, Claims, error) {
 	nbInstances := assignment.NumInstances()
 	nbVars := assignment.NumVars()
+	if nbVars == 0 {
+		return nil, nil, errors.New("number of variables must be positive")
+	}
 	if 1<<nbVars != nbInstances {
 		return nil, nil, errors.New("number of instances must be power of 2")
 	}
@@ -259,6 +262,9 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // values returned to the caller, the output evaluations among them, are not bound into the
 // transcript.
 func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.Hash) (Claims, error) {
+	if logNbInstances == 0 {
+		return nil, errors.New("number of variables must be positive")
+	}
 	r := newResources(c, schedule, logNbInstances, hasher)
 
 	if len(proof) != len(schedule)+1 {
