@@ -7,8 +7,8 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/std/gkrapi"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 	_ "github.com/consensys/gnark/std/hash/all" // import all hash functions to register them
 	"github.com/consensys/gnark/test"
 )

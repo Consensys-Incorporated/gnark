@@ -8,14 +8,14 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/gkr"
 	gadget "github.com/consensys/gnark/internal/gkr"
-	gkrbls12377 "github.com/consensys/gnark/internal/gkr/bls12-377"
-	gkrbls12381 "github.com/consensys/gnark/internal/gkr/bls12-381"
-	gkrbn254 "github.com/consensys/gnark/internal/gkr/bn254"
-	gkrbw6761 "github.com/consensys/gnark/internal/gkr/bw6-761"
+	gkrbls12377 "github.com/consensys/gnark/internal/gkr/bls12-377/blueprints"
+	gkrbls12381 "github.com/consensys/gnark/internal/gkr/bls12-381/blueprints"
+	gkrbn254 "github.com/consensys/gnark/internal/gkr/bn254/blueprints"
+	gkrbw6761 "github.com/consensys/gnark/internal/gkr/bw6-761/blueprints"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/utils"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 	"github.com/consensys/gnark/std/hash"
 	_ "github.com/consensys/gnark/std/hash/all"
 	"github.com/consensys/gnark/std/multicommit"
@@ -56,10 +56,7 @@ func New(api frontend.API) (*API, error) {
 
 // NewInput creates a new input variable.
 func (api *API) NewInput() gkr.Variable {
-	i := len(api.circuit)
-	api.circuit = append(api.circuit, gkrcore.RawWire{})
-	api.assignments = append(api.assignments, nil)
-	return gkr.Variable(i)
+	return api.circuit.NewInput()
 }
 
 type CompileOption func(*Circuit)
@@ -86,7 +83,7 @@ func (api *API) Compile(fiatshamirHashName string, options ...CompileOption) (*C
 		return nil, err
 	}
 
-	schedule, err := gkrcore.DefaultProvingSchedule(serializableCircuit)
+	schedule, err := gkrcore.DefaultProvingSchedule(serializableCircuit, gkrcore.SNARKConsolidationMode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute proving schedule: %w", err)
 	}
@@ -102,7 +99,7 @@ func (api *API) Compile(fiatshamirHashName string, options ...CompileOption) (*C
 	res := Circuit{
 		circuit:       gadgetCircuit,
 		schedule:      schedule,
-		assignments:   make(gadget.WireAssignment, len(api.circuit)),
+		assignments:   make(gadget.WireAssignment, len(serializableCircuit)),
 		api:           api.parentApi,
 		hashName:      fiatshamirHashName,
 		statementHash: hsh.Sum(nil),
@@ -309,7 +306,13 @@ func (c *Circuit) verify(api frontend.API, circuit gkrcore.GadgetCircuit, initia
 	}
 
 	hsh.Write(initialChallenges...)
-	return gadget.Verify(api, circuit, c.schedule, c.assignments, proof, hsh)
+	logNbInstances := c.assignments[c.ins[0]].NumVars()
+	claims, err := gadget.Verify(api, circuit, c.schedule, logNbInstances, proof, hsh)
+	if err != nil {
+		return err
+	}
+	claims.Check(api, c.assignments)
+	return nil
 }
 
 // GetValue is a debugging utility returning the value of variable v at instance i.

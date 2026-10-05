@@ -7,8 +7,8 @@ import (
 
 	"github.com/consensys/gnark/frontend"
 
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/utils"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 )
 
 // GateOp represents an arithmetic operation in a compiled gate.
@@ -52,6 +52,12 @@ func IdentityBytecode() GateBytecode {
 // NbConstants returns the number of constants in the gate
 func (g *GateBytecode) NbConstants() int {
 	return len(g.Constants)
+}
+
+// EvaluatorSize returns the scratch size a gateEvaluator needs to evaluate this
+// gate on nbIn inputs: one slot per constant, per input, and per instruction.
+func (g GateBytecode) EvaluatorSize(nbIn int) int {
+	return g.NbConstants() + nbIn + len(g.Instructions)
 }
 
 // EstimateDegree returns an upper bound on the degree of the gate

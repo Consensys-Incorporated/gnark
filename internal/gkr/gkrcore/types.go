@@ -3,10 +3,12 @@ package gkrcore
 import (
 	"errors"
 	"math/big"
+	"slices"
 
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
+	"github.com/consensys/gnark/gkr"
+	"github.com/consensys/gnark/internal/utils"
 )
 
 type (
@@ -90,28 +92,19 @@ func (c Circuit[GateExecutable]) ClaimPropagationInfo(wireIndex int) (injection,
 	return
 }
 
-func (c Circuit[GateExecutable]) maxGateDegree() int {
-	res := 1
+// MemoryRequirements returns the strictly increasing vector of memory
+// allocation sizes required for proving a GKR statement on this circuit.
+func MemoryRequirements(c SerializableCircuit, nbInstances int) []int {
+	largest := IdentityBytecode().EvaluatorSize(1)
 	for i := range c {
 		if !c[i].IsInput() {
-			res = max(res, c[i].Gate.Degree)
-		}
-	}
-	return res
-}
-
-// MemoryRequirements returns an increasing vector of memory allocation sizes required for proving a GKR statement
-func (c Circuit[GateExecutable]) MemoryRequirements(nbInstances int) []int {
-	res := []int{256, nbInstances, nbInstances * (c.maxGateDegree() + 1)}
-
-	if res[0] > res[1] { // make sure it's sorted
-		res[0], res[1] = res[1], res[0]
-		if res[1] > res[2] {
-			res[1], res[2] = res[2], res[1]
+			largest = max(largest, c[i].Gate.Evaluate.EvaluatorSize(len(c[i].Inputs)))
 		}
 	}
 
-	return res
+	res := []int{nbInstances, largest}
+	slices.Sort(res)
+	return slices.Compact(res)
 }
 
 // Inputs returns the list of input wire indices.
@@ -237,4 +230,58 @@ func (c RawCircuit) Compile(mod *big.Int) (GadgetCircuit, SerializableCircuit, e
 	}
 
 	return gadget, serializable, nil
+}
+
+func varToInt(a gkr.Variable) int {
+	return int(a)
+}
+
+// NewInput creates a new input variable.
+func (c *RawCircuit) NewInput() gkr.Variable {
+	i := len(*c)
+	*c = append(*c, RawWire{})
+	return gkr.Variable(i)
+}
+
+// Gate adds the given gate with the given inputs and returns its output wire.
+func (c *RawCircuit) Gate(gate gkr.GateFunction, inputs ...gkr.Variable) gkr.Variable {
+	*c = append(*c, RawWire{
+		Gate:   gate,
+		Inputs: utils.Map(inputs, varToInt),
+	})
+	return gkr.Variable(len(*c) - 1)
+}
+
+func (c *RawCircuit) gate2PlusIn(gate gkr.GateFunction, in1, in2 gkr.Variable, in ...gkr.Variable) gkr.Variable {
+	inCombined := make([]gkr.Variable, 2+len(in))
+	inCombined[0] = in1
+	inCombined[1] = in2
+	for i := range in {
+		inCombined[i+2] = in[i]
+	}
+	return c.Gate(gate, inCombined...)
+}
+
+func (c *RawCircuit) Add(i1, i2 gkr.Variable) gkr.Variable {
+	return c.gate2PlusIn(Add2, i1, i2)
+}
+
+func (c *RawCircuit) Neg(i1 gkr.Variable) gkr.Variable {
+	return c.Gate(Neg, i1)
+}
+
+func (c *RawCircuit) Sub(i1, i2 gkr.Variable) gkr.Variable {
+	return c.gate2PlusIn(Sub2, i1, i2)
+}
+
+func (c *RawCircuit) Mul(i1, i2 gkr.Variable) gkr.Variable {
+	return c.gate2PlusIn(Mul2, i1, i2)
+}
+
+// Export explicitly designates a wire as output.
+// Wires that are not used as input to another are considered output by default.
+func (c *RawCircuit) Export(in ...gkr.Variable) {
+	for _, v := range in {
+		(*c)[v].Exported = true
+	}
 }

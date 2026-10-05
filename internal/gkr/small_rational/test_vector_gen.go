@@ -65,8 +65,12 @@ func run(absPath string) error {
 	}
 
 	var proof Proof
-	proof, err = Prove(testCase.Circuit, testCase.Schedule, testCase.FullAssignment, testCase.Hash)
+	var claims Claims
+	proof, claims, err = Prove(testCase.Circuit, testCase.Schedule, testCase.FullAssignment, testCase.Hash)
 	if err != nil {
+		return err
+	}
+	if err = claims.Check(testCase.FullAssignment); err != nil {
 		return err
 	}
 
@@ -87,8 +91,11 @@ func run(absPath string) error {
 		return err
 	}
 
-	err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, proof, testCase.Hash)
+	claims, err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment.NumVars(), proof, testCase.Hash)
 	if err != nil {
+		return err
+	}
+	if err = claims.Check(testCase.InOutAssignment); err != nil {
 		return err
 	}
 
@@ -97,7 +104,10 @@ func run(absPath string) error {
 		return err
 	}
 
-	err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, proof, newMessageCounter(2, 0))
+	claims, err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment.NumVars(), proof, newMessageCounter(2, 0))
+	if err == nil {
+		err = claims.Check(testCase.InOutAssignment)
+	}
 	if err == nil {
 		return fmt.Errorf("bad proof accepted")
 	}
@@ -231,7 +241,7 @@ func newTestCase(path string) (*TestCase, error) {
 		return nil, err
 	}
 	if schedule == nil {
-		if schedule, err = gkrcore.DefaultProvingSchedule(circuit); err != nil {
+		if schedule, err = gkrcore.DefaultProvingSchedule(circuit, gkrcore.SNARKConsolidationMode); err != nil {
 			return nil, err
 		}
 	}
