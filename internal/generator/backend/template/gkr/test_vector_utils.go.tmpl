@@ -128,7 +128,7 @@ func sliceEquals(a []{{.ElementType}}, b []{{.ElementType}}) error {
 	return nil
 }
 
-func polynomialSliceEquals(a []polynomial.Polynomial, b []polynomial.Polynomial) error {
+func polynomialSliceEquals(a []polynomial.Polynomial{{ .ExtensionSuffix }}, b []polynomial.Polynomial{{ .ExtensionSuffix }}) error {
 	if len(a) != len(b) {
 		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
 	}

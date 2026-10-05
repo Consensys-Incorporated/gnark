@@ -3,11 +3,11 @@ import (
 	"sync"
 
 	"{{ .BaseFieldPackagePath }}"
-	"{{ .BaseFieldPackagePath }}/polynomial"
 	{{- if .Mixed }}
 	"{{ .FieldPackagePath }}"
-	extPolynomial "{{ .FieldPackagePath }}/polynomial"
+	basePolynomial "{{ .BaseFieldPackagePath }}/polynomial"
 	{{- end }}
+	"{{ .FieldPackagePath }}/polynomial"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 )
 
@@ -19,11 +19,13 @@ import (
 
 {{ define "gateEvaluator" }}
 {{- $elem := .Config.BaseElementType }}
-{{- $poly := "polynomial" }}
+{{- $poly := .Config.BasePolynomial }}
+{{- $suffix := "" }}
 {{- $ge := "GateEvaluator" }}
 {{- if .Mixed }}
 {{- $elem = .Config.ElementType }}
-{{- $poly = "extPolynomial" }}
+{{- $poly = "polynomial" }}
+{{- $suffix = .Config.ExtensionSuffix }}
 {{- $ge = "GateEvaluatorMixed" }}
 {{- end }}
 // {{ $ge }} provides a high-level API for evaluating compiled gates efficiently.
@@ -36,12 +38,12 @@ type {{ $ge }} struct {
 	consts []{{ .Config.BaseElementType }} // the gate's constants in the base field, multiplied by with MulByElement
 	{{- end }}
 	nbIn int // number of inputs expected
-	pool *{{ $poly }}.Pool // pool vars was allocated from, if any
+	pool *{{ $poly }}.Pool{{ $suffix }} // pool vars was allocated from, if any
 }
 
 // New{{ $ge }} creates an evaluator for the given compiled gate.
 // The stack is preloaded with constants and ready for evaluation.
-func New{{ $ge }}(gate gkrcore.GateBytecode, nbIn int, elementPool ...*{{ $poly }}.Pool) {{ $ge }} {
+func New{{ $ge }}(gate gkrcore.GateBytecode, nbIn int, elementPool ...*{{ $poly }}.Pool{{ $suffix }}) {{ $ge }} {
 	e := {{ $ge }}{
 		gate: gate,
 		nbIn: nbIn,
@@ -179,10 +181,10 @@ type {{ $ge }}Pool struct {
 	nbIn        int
 	lock        sync.Mutex
 	available   []*{{ $ge }}
-	elementPool *{{ $poly }}.Pool
+	elementPool *{{ $poly }}.Pool{{ $suffix }}
 }
 
-func New{{ $ge }}Pool(gate gkrcore.GateBytecode, nbIn int, elementPool *{{ $poly }}.Pool) *{{ $ge }}Pool {
+func New{{ $ge }}Pool(gate gkrcore.GateBytecode, nbIn int, elementPool *{{ $poly }}.Pool{{ $suffix }}) *{{ $ge }}Pool {
 	return &{{ $ge }}Pool{
 		gate:        gate,
 		nbIn:        nbIn,

@@ -24,7 +24,7 @@ type (
 // The goal is to prove/verify evaluations of many instances of the same circuit
 
 // WireAssignment is the assignment of values to the same wire across many instances of the circuit
-type WireAssignment []polynomial.MultiLin
+type WireAssignment []polynomial.MultiLin{{ .ExtensionSuffix }}
 
 type Proof []sumcheckProof // for each layer, for each wire, a sumcheck (for each variable, a polynomial)
 
@@ -56,7 +56,7 @@ type resources struct {
 	outgoingEvalPoints [][][]{{ .ElementType }}
 	nbVars             int
 	assignment         WireAssignment
-	memPool            polynomial.Pool
+	memPool            polynomial.Pool{{ .ExtensionSuffix }}
 	workers            *utils.WorkerPool
 	circuit            Circuit
 	schedule           constraint.GkrProvingSchedule
@@ -176,7 +176,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 
 	r := newResources(c, schedule, nbVars, hasher)
 	r.assignment = assignment
-	r.memPool = polynomial.NewPool(gkrcore.MemoryRequirements(c, nbInstances)...)
+	r.memPool = polynomial.NewPool{{ .ExtensionSuffix }}(gkrcore.MemoryRequirements(c, nbInstances)...)
 	r.workers = utils.NewWorkerPool()
 	defer r.workers.Stop()
 

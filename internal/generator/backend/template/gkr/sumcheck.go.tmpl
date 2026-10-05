@@ -20,7 +20,7 @@ type transcript = gkrcore.HashTranscript[{{ .ElementType }}, *{{ .ElementType }}
 // sumcheckClaims to a multi-sumcheck statement. i.e. one of the form ∑_{0≤i<2ⁿ} fⱼ(i) = cⱼ for 1 ≤ j ≤ m.
 // Later evolving into a claim of the form gⱼ = ∑_{0≤i<2ⁿ⁻ʲ} g(r₁, r₂, ..., rⱼ₋₁, Xⱼ, i...)
 type sumcheckClaims interface {
-	roundPolynomial() polynomial.Polynomial     // compute gⱼ polynomial for current round
+	roundPolynomial() polynomial.Polynomial{{ .ExtensionSuffix }}     // compute gⱼ polynomial for current round
 	roundFold(r {{ .ElementType }})                     // fold inputs and eq at challenge r
 	varsNum() int                               // number of variables
 	proveFinalEval(r []{{ .ElementType }}) []{{ .ElementType }} // in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
@@ -35,7 +35,7 @@ type sumcheckLazyClaims interface {
 
 // sumcheckProof of a multi-statement.
 type sumcheckProof struct {
-	partialSumPolys []polynomial.Polynomial
+	partialSumPolys []polynomial.Polynomial{{ .ExtensionSuffix }}
 	finalEvalProof  []{{ .ElementType }} //in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
 }
 
@@ -44,7 +44,7 @@ type sumcheckProof struct {
 // Pattern: roundPolynomial, [roundFold, roundPolynomial]*, proveFinalEval.
 func sumcheckProve(claims sumcheckClaims, t *transcript) sumcheckProof {
 	varsNum := claims.varsNum()
-	proof := sumcheckProof{partialSumPolys: make([]polynomial.Polynomial, varsNum)}
+	proof := sumcheckProof{partialSumPolys: make([]polynomial.Polynomial{{ .ExtensionSuffix }}, varsNum)}
 	proof.partialSumPolys[0] = claims.roundPolynomial()
 	challenges := make([]{{ .ElementType }}, varsNum)
 
@@ -65,7 +65,7 @@ func sumcheckProve(claims sumcheckClaims, t *transcript) sumcheckProof {
 func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum {{ .ElementType }}, degree int, t *transcript) error {
 	r := make([]{{ .ElementType }}, claims.varsNum())
 
-	gJ := make(polynomial.Polynomial, degree+1)
+	gJ := make(polynomial.Polynomial{{ .ExtensionSuffix }}, degree+1)
 	gJR := claimedSum
 
 	for j := range claims.varsNum() {
@@ -76,7 +76,7 @@ func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum {
 		gJ[0].Sub(&gJR, &proof.partialSumPolys[j][0])
 
 		r[j] = t.Challenge(proof.partialSumPolys[j]...)
-		gJCoeffs := polynomial.InterpolateOnRange(gJ[:(degree + 1)])
+		gJCoeffs := polynomial.InterpolateOnRange{{ .ExtensionSuffix }}(gJ[:(degree + 1)])
 		gJR = gJCoeffs.Eval(&r[j])
 	}
 
@@ -115,7 +115,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []{{ .ElementType }}, purportedV
 	level := e.resources.schedule[e.levelI]
 	gateInputEvals := gkrcore.ReduplicateInputs(level, e.resources.circuit, uniqueInputEvaluations)
 
-	var claimedEvals polynomial.Polynomial
+	var claimedEvals polynomial.Polynomial{{ .ExtensionSuffix }}
 	levelWireI := 0
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
@@ -128,7 +128,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []{{ .ElementType }}, purportedV
 			gateEval := evaluator.Evaluate()
 
 			for _, src := range group.ClaimSources {
-				eq := polynomial.EvalEq(e.resources.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], r)
+				eq := polynomial.EvalEq{{ .ExtensionSuffix }}(e.resources.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], r)
 				var term {{ .ElementType }}
 				term.Mul(&eq, gateEval)
 				claimedEvals = append(claimedEvals, term)
@@ -149,14 +149,14 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []{{ .ElementType }}, purportedV
 // Each wire has its own eq table with the batching coefficients baked in.
 type zeroCheckClaims struct {
 	zeroCheckBase
-	eqs []polynomial.MultiLin // per-wire interpolation bases for evaluating wire assignments at challenge points
+	eqs []polynomial.MultiLin{{ .ExtensionSuffix }} // per-wire interpolation bases for evaluating wire assignments at challenge points
 }
 
 // roundPolynomial computes gⱼ = ∑ₕ ∑ᵥ eqs[v](Xⱼ, h...) · gateᵥ(inputs(Xⱼ, h...)).
 // The polynomial is represented by the evaluations gⱼ(1), gⱼ(2), ..., gⱼ(deg(gⱼ)).
 // The value gⱼ(0) is inferred from the equation gⱼ(0) + gⱼ(1) = gⱼ₋₁(rⱼ₋₁).
 // By convention, g₀ is a constant polynomial equal to the claimed sum.
-func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
+func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial{{ .ExtensionSuffix }} {
 	level := c.resources.schedule[c.levelI].(*constraint.GkrSumcheckLevel)
 	degree := c.resources.circuit.ZeroCheckDegree(level)
 	nbUniqueInputs := len(c.input)
@@ -166,7 +166,7 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 	// For any such f, f(m) = m·(f(1) - f(0)) + f(0), and f(0), f(1) are read directly
 	// from the bookkeeping tables. This allows stepwise evaluation at Xⱼ = 1, 2, ..., degree.
 	// Layout: [eq₀, eq₁, ..., eq_{nbWires-1}, input₀, input₁, ..., input_{nbUniqueInputs-1}]
-	ml := make([]polynomial.MultiLin, nbWires+nbUniqueInputs)
+	ml := make([]polynomial.MultiLin{{ .ExtensionSuffix }}, nbWires+nbUniqueInputs)
 	copy(ml, c.eqs)
 	copy(ml[nbWires:], c.input)
 
@@ -271,7 +271,7 @@ func (c *zeroCheckClaims) proveFinalEval(r []{{ .ElementType }}) []{{ .ElementTy
 // eqAcc sets m to an eq table at q and then adds it to e.
 // m <- m[0] · eq(q, -).
 // e <- e + m
-func (r *resources) eqAcc(e, m polynomial.MultiLin, q []{{ .ElementType }}) {
+func (r *resources) eqAcc(e, m polynomial.MultiLin{{ .ExtensionSuffix }}, q []{{ .ElementType }}) {
 	n := len(q)
 
 	// At the end of each iteration, m(h₁, ..., hₙ) = m[0] · eq(q₁, ..., qᵢ₊₁, h₁, ..., hᵢ₊₁)
@@ -312,7 +312,7 @@ type zeroCheckBase struct {
 	foldingCoeff       {{ .ElementType }}
 	levelI             int
 	resources          *resources
-	input              []polynomial.MultiLin // UniqueGateInputs order
+	input              []polynomial.MultiLin{{ .ExtensionSuffix }} // UniqueGateInputs order
 	inputIndices       [][]int               // [wireInLevel][gateInputJ] → index in input
 	gateEvaluatorPools []*{{ .EvaluatorQualifier }}{{ $gateEvaluator }}Pool
 }
@@ -324,7 +324,7 @@ func (c *zeroCheckBase) varsNum() int {
 // proveFinalEval records the outgoing eval point, folds the last variable,
 // collects the unique input evaluations, and releases all pooled memory.
 // extraPolys is the level-type-specific slice (eqs or suffixEq) to dump.
-func (c *zeroCheckBase) proveFinalEval(r []{{ .ElementType }}, extraPolys []polynomial.MultiLin) []{{ .ElementType }} {
+func (c *zeroCheckBase) proveFinalEval(r []{{ .ElementType }}, extraPolys []polynomial.MultiLin{{ .ExtensionSuffix }}) []{{ .ElementType }} {
 	c.resources.outgoingEvalPoints[c.levelI] = [][]{{ .ElementType }}{r}
 	evaluations := make([]{{ .ElementType }}, len(c.input))
 	for i := range c.input {
@@ -354,7 +354,7 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 	}
 
 	uniqueInputs, inputIndices := r.circuit.InputMapping(level)
-	c.input = make([]polynomial.MultiLin, len(uniqueInputs))
+	c.input = make([]polynomial.MultiLin{{ .ExtensionSuffix }}, len(uniqueInputs))
 	for i, inW := range uniqueInputs {
 		c.input[i] = r.memPool.Clone(r.assignment[inW])
 	}
@@ -381,19 +381,19 @@ func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
 
 	level := r.schedule[levelI]
 	eqLength := 1 << r.nbVars
-	claims.eqs = make([]polynomial.MultiLin, len(claims.gateEvaluatorPools))
+	claims.eqs = make([]polynomial.MultiLin{{ .ExtensionSuffix }}, len(claims.gateEvaluatorPools))
 	var alpha {{ .ElementType }}
 	alpha.SetOne()
 	levelWireI := 0
 	for _, group := range level.ClaimGroups() {
 		nbSources := len(group.ClaimSources)
 
-		groupEq := polynomial.MultiLin(r.memPool.Make(eqLength))
+		groupEq := polynomial.MultiLin{{ .ExtensionSuffix }}(r.memPool.Make(eqLength))
 		groupEq[0].Set(&alpha)
 		groupEq.Eq(r.outgoingEvalPoints[group.ClaimSources[0].Level][group.ClaimSources[0].OutgoingClaimIndex])
 
 		if nbSources > 1 {
-			newEq := polynomial.MultiLin(r.memPool.Make(eqLength))
+			newEq := polynomial.MultiLin{{ .ExtensionSuffix }}(r.memPool.Make(eqLength))
 			aI := alpha
 			for k := 1; k < nbSources; k++ {
 				aI.Mul(&aI, &claims.foldingCoeff)
@@ -414,7 +414,7 @@ func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
 		alpha.Mul(&alpha, &stride)
 
 		for w := 1; w < len(group.Wires); w++ {
-			claims.eqs[levelWireI] = polynomial.MultiLin(r.memPool.Make(eqLength))
+			claims.eqs[levelWireI] = polynomial.MultiLin{{ .ExtensionSuffix }}(r.memPool.Make(eqLength))
 			r.workers.Submit(eqLength, func(start, end int) {
 				for i := start; i < end; i++ {
 					claims.eqs[levelWireI][i].Mul(&claims.eqs[levelWireI-1][i], &stride)
@@ -438,7 +438,7 @@ func (r *resources) verifyLevelSetup(levelI int, proof Proof) ({{ .ElementType }
 		foldingCoeff = r.transcript.Challenge()
 	}
 
-	claimedEvals := make(polynomial.Polynomial, 0, level.NbClaims())
+	claimedEvals := make(polynomial.Polynomial{{ .ExtensionSuffix }}, 0, level.NbClaims())
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			for claimI, src := range group.ClaimSources {
@@ -474,14 +474,14 @@ func (r *resources) verifySumcheckLevel(levelI int, proof Proof) error {
 // read-only as weights in each round; only the input multilinears are folded.
 type singleSourceZeroCheckClaims struct {
 	zeroCheckBase
-	suffixEq polynomial.MultiLin // contiguous buffer; second half is the current round's eq segment
+	suffixEq polynomial.MultiLin{{ .ExtensionSuffix }} // contiguous buffer; second half is the current round's eq segment
 }
 
 // roundPolynomial computes g'_j(1), ..., g'_j(d) where d is the gate degree.
 // g'_j(m) = ∑_h suffixEq[j+1][h] · ∑_w α^w · gate_w(inputs at (m, h))
 // The wire contributions are accumulated via Horner's method in α (= foldingCoeff),
 // eliminating precomputed batchCoeffs and the multiply-by-one for wire 0.
-func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial {
+func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial{{ .ExtensionSuffix }} {
 	level := c.resources.schedule[c.levelI].(*constraint.GkrSingleSourceZeroCheckLevel)
 	degree := c.resources.circuit.ZeroCheckDegree(level)
 	nbUniqueInputs := len(c.input)
@@ -586,7 +586,7 @@ func (c *singleSourceZeroCheckClaims) roundFold(r {{ .ElementType }}) {
 
 // proveFinalEval provides the unique input wire values at the final evaluation point.
 func (c *singleSourceZeroCheckClaims) proveFinalEval(r []{{ .ElementType }}) []{{ .ElementType }} {
-	return c.zeroCheckBase.proveFinalEval(r, []polynomial.MultiLin{c.suffixEq})
+	return c.zeroCheckBase.proveFinalEval(r, []polynomial.MultiLin{{ .ExtensionSuffix }}{c.suffixEq})
 }
 
 // buildSuffixEq constructs suffix eq tables in a single contiguous buffer of length 2^N.
@@ -599,7 +599,7 @@ func (c *singleSourceZeroCheckClaims) proveFinalEval(r []{{ .ElementType }}) []{
 //
 // The first two positions are unused padding so that the buffer halves cleanly:
 // in round j the eq segment is buf[len(buf)/2:] and buf is trimmed to buf[:len(buf)/2].
-func (r *resources) buildSuffixEq(q []{{ .ElementType }}) polynomial.MultiLin {
+func (r *resources) buildSuffixEq(q []{{ .ElementType }}) polynomial.MultiLin{{ .ExtensionSuffix }} {
 	n := len(q)
 	buf := r.memPool.Make(1 << n)
 
@@ -663,7 +663,7 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 	degree := r.circuit.ZeroCheckDegree(level)
 
 	challenges := make([]{{ .ElementType }}, r.nbVars)
-	gPrime := make(polynomial.Polynomial, degree+1)
+	gPrime := make(polynomial.Polynomial{{ .ExtensionSuffix }}, degree+1)
 
 	// The verifier tracks claimedSum = g'_{j-1}(r_{j-1}), the "primed" value with
 	// the per-variable eq factors already absent. This is correct because the
@@ -693,13 +693,13 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 		copy(gPrime[1:], partialPoly)
 
 		challenges[j] = r.transcript.Challenge(partialPoly...)
-		gPrimeCoeffs := polynomial.InterpolateOnRange(gPrime[:(degree + 1)])
+		gPrimeCoeffs := polynomial.InterpolateOnRange{{ .ExtensionSuffix }}(gPrime[:(degree + 1)])
 		claimedSum = gPrimeCoeffs.Eval(&challenges[j])
 	}
 
 	// claimedSum is now Σ_w c^w · gate_w(inputs(r)), without the eq factor.
 	// verifyFinalEval expects Σ_w c^w · eq(q, r) · gate_w(inputs(r)), so multiply.
-	eqAtQR := polynomial.EvalEq(q, challenges)
+	eqAtQR := polynomial.EvalEq{{ .ExtensionSuffix }}(q, challenges)
 	claimedSum.Mul(&claimedSum, &eqAtQR)
 
 	return lazyClaims.verifyFinalEval(challenges, claimedSum, proof[levelI].finalEvalProof)

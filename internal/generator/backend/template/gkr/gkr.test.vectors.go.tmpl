@@ -16,7 +16,7 @@ func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 		}
 
 		proof[i] = sumcheckProof{
-			partialSumPolys: make([]polynomial.Polynomial, len(printable[i].PartialSumPolys)),
+			partialSumPolys: make([]polynomial.Polynomial{{ .ExtensionSuffix }}, len(printable[i].PartialSumPolys)),
 			finalEvalProof:  finalEvalProof,
 		}
 		for k := range printable[i].PartialSumPolys {

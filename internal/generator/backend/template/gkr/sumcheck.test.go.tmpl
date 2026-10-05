@@ -13,7 +13,7 @@ import (
 )
 
 func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() hash.Hash) error {
-	poly := make(polynomial.MultiLin, len(polyInt))
+	poly := make(polynomial.MultiLin{{ .ExtensionSuffix }}, len(polyInt))
 	for i, n := range polyInt {
 		poly[i].SetUint64(n)
 	}

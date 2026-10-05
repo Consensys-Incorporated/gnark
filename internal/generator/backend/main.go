@@ -382,6 +382,15 @@ type gkrConfig struct {
 // are not elements of the field itself.
 func (c gkrConfig) Mixed() bool { return c.BaseElementType != c.ElementType }
 
+// BasePolynomial is the name under which templates import the polynomial package over
+// BaseElementType: basePolynomial when the field is an extension, polynomial otherwise.
+func (c gkrConfig) BasePolynomial() string {
+	if c.Mixed() {
+		return "basePolynomial"
+	}
+	return "polynomial"
+}
+
 func assertNoError(err error) {
 	if err != nil {
 		panic(err)
