@@ -162,8 +162,14 @@ func Build(api frontend.API, table Table, queries Table) error {
 				}
 			} else {
 				leftQuotients = make([]frontend.Variable, len(table))
+				// Subtract the randomized table entries from the challenge directly
+				// the constant term terms[0] is then moved to the coefficient slot
+				terms := make([]frontend.Variable, nbRow)
 				for i := range table {
-					leftQuotients[i] = api.DivUnchecked(exps[i], api.Sub(challenge, randLinearCombination(api, rowCoeffs, table[i])))
+					for j := range table[i] {
+						terms[j] = api.Mul(rowCoeffs[j], table[i][j])
+					}
+					leftQuotients[i] = api.DivUnchecked(exps[i], api.Sub(challenge, terms[0], terms[1:]...))
 				}
 			}
 
