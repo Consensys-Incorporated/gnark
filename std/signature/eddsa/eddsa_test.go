@@ -242,3 +242,127 @@ func TestEddsaSmallOrderPublicKey(t *testing.T) {
 		assert.CheckCircuit(&circuit, opts...)
 	}
 }
+
+func TestEddsaMixedOrderPublicKey(t *testing.T) {
+	// Mixed-order public keys A' = [sk]G + T (T a torsion point) are accepted
+	// in-circuit: the small-order check only requires [cofactor]A' ≠ O, and
+	// the torsion component of the verification equation vanishes after
+	// cofactor clearing. This deliberate divergence from gnark-crypto's
+	// native verification (which requires full subgroup membership) means one
+	// secret key corresponds to up to cofactor distinct accepted public keys.
+	// This test pins the behavior: signatures crafted with the same secret
+	// key verify for both A and A'.
+	assert := test.NewAssert(t)
+
+	confs := []struct {
+		hash  hash.Hash
+		curve tedwards.ID
+	}{
+		{hash.MIMC_BN254, tedwards.BN254},
+		{hash.MIMC_BLS12_381, tedwards.BLS12_381},
+		{hash.MIMC_BLS12_381, tedwards.BLS12_381_BANDERSNATCH},
+		{hash.MIMC_BLS12_377, tedwards.BLS12_377},
+		{hash.MIMC_BW6_761, tedwards.BW6_761},
+	}
+
+	randomness := rand.New(rand.NewSource(time.Now().Unix())) //#nosec G404 -- This is a false positive
+
+	for _, conf := range confs {
+		snarkField, err := twistededwards.GetSnarkField(conf.curve)
+		assert.NoError(err)
+		snarkCurve := utils.FieldToCurve(snarkField)
+		params, err := twistededwards.GetCurveParams(conf.curve)
+		assert.NoError(err)
+
+		// secret key and its prime-order public key A = [sk]G
+		sk := new(big.Int).Rand(randomness, params.Order)
+		base := bigPoint{params.Base[0], params.Base[1]}
+		A := base.scalarMul(sk, params, snarkField)
+
+		// A' = A + T for the order-2 point T = (0, -1) is a mixed-order key:
+		// [cofactor]A' = [cofactor]A ≠ O, so it passes the small-order check.
+		minusOne := new(big.Int).Sub(snarkField, big.NewInt(1))
+		mixedA := A.add(bigPoint{big.NewInt(0), minusOne}, params, snarkField)
+
+		// craft a signature under sk for each key; both must verify
+		r := new(big.Int).Rand(randomness, params.Order)
+		R := base.scalarMul(r, params, snarkField)
+		msg := big.NewInt(42)
+
+		opts := []test.TestingOption{test.WithCurves(snarkCurve)}
+		for _, key := range []bigPoint{A, mixedA} {
+			// h = H(R, key, M), mirroring the in-circuit hash input order
+			hFunc := conf.hash.New()
+			for _, v := range []*big.Int{R.x, R.y, key.x, key.y, msg} {
+				buf := make([]byte, len(snarkField.Bytes()))
+				vb := v.Bytes()
+				copy(buf[len(buf)-len(vb):], vb)
+				_, err := hFunc.Write(buf)
+				assert.NoError(err)
+			}
+			h := new(big.Int).SetBytes(hFunc.Sum(nil))
+			S := new(big.Int).Mul(h, sk)
+			S.Add(S, r).Mod(S, params.Order)
+
+			opts = append(opts, test.WithValidAssignment(&eddsaCircuit{
+				PublicKey: PublicKey{A: twistededwards.Point{X: key.x, Y: key.y}},
+				Signature: Signature{
+					R: twistededwards.Point{X: R.x, Y: R.y},
+					S: S,
+				},
+				Message: msg,
+			}))
+		}
+
+		var circuit eddsaCircuit
+		circuit.curveID = conf.curve
+		assert.CheckCircuit(&circuit, opts...)
+	}
+}
+
+// bigPoint is an affine point on a twisted Edwards curve
+// a·x² + y² = 1 + d·x²·y² over the snark scalar field, for native test
+// arithmetic.
+type bigPoint struct {
+	x, y *big.Int
+}
+
+// add returns p + q using the twisted Edwards addition formulas.
+func (p bigPoint) add(q bigPoint, params *twistededwards.CurveParams, field *big.Int) bigPoint {
+	x1y2 := new(big.Int).Mul(p.x, q.y)
+	y1x2 := new(big.Int).Mul(p.y, q.x)
+	x1x2 := new(big.Int).Mul(p.x, q.x)
+	y1y2 := new(big.Int).Mul(p.y, q.y)
+	dxy := new(big.Int).Mul(params.D, x1x2)
+	dxy.Mul(dxy, y1y2).Mod(dxy, field)
+
+	// x = (x1y2 + y1x2) / (1 + d·x1x2y1y2)
+	num := new(big.Int).Add(x1y2, y1x2)
+	num.Mod(num, field)
+	den := new(big.Int).Add(big.NewInt(1), dxy)
+	den.Mod(den, field)
+	x := new(big.Int).ModInverse(den, field)
+	x.Mul(x, num).Mod(x, field)
+
+	// y = (y1y2 - a·x1x2) / (1 - d·x1x2y1y2)
+	num.Mul(params.A, x1x2)
+	num.Sub(y1y2, num).Mod(num, field)
+	den.Sub(big.NewInt(1), dxy).Mod(den, field)
+	y := new(big.Int).ModInverse(den, field)
+	y.Mul(y, num).Mod(y, field)
+
+	return bigPoint{x, y}
+}
+
+// scalarMul returns [s]p via double-and-add.
+func (p bigPoint) scalarMul(s *big.Int, params *twistededwards.CurveParams, field *big.Int) bigPoint {
+	res := bigPoint{big.NewInt(0), big.NewInt(1)} // identity
+	base := p
+	for i := range s.BitLen() {
+		if s.Bit(i) == 1 {
+			res = res.add(base, params, field)
+		}
+		base = base.add(base, params, field)
+	}
+	return res
+}
