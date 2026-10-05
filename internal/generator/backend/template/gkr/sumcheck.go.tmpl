@@ -1,3 +1,4 @@
+{{ $gateEvaluator := "GateEvaluator" }}{{ if .Mixed }}{{ $gateEvaluator = "GateEvaluatorMixed" }}{{ end }}
 import (
 	"errors"
 	"sync"
@@ -120,7 +121,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []{{ .ElementType }}, purportedV
 		for _, wI := range group.Wires {
 			wire := e.resources.circuit[wI]
 
-			evaluator := {{.EvaluatorQualifier}}NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
+			evaluator := {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}(wire.Gate.Evaluate, len(wire.Inputs))
 			for _, v := range gateInputEvals[levelWireI] {
 				evaluator.PushInput(v)
 			}
@@ -176,7 +177,7 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 	computeAll := func(start, end int) {
 		var step {{ .ElementType }}
 
-		evaluators := make([]*{{.EvaluatorQualifier}}GateEvaluator, nbWires)
+		evaluators := make([]*{{ .EvaluatorQualifier }}{{ $gateEvaluator }}, nbWires)
 		for w := range nbWires {
 			evaluators[w] = c.gateEvaluatorPools[w].Get()
 		}
@@ -313,7 +314,7 @@ type zeroCheckBase struct {
 	resources          *resources
 	input              []polynomial.MultiLin // UniqueGateInputs order
 	inputIndices       [][]int               // [wireInLevel][gateInputJ] → index in input
-	gateEvaluatorPools []*{{.EvaluatorQualifier}}GateEvaluatorPool
+	gateEvaluatorPools []*{{ .EvaluatorQualifier }}{{ $gateEvaluator }}Pool
 }
 
 func (c *zeroCheckBase) varsNum() int {
@@ -363,12 +364,12 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 	for _, group := range level.ClaimGroups() {
 		nbWires += len(group.Wires)
 	}
-	c.gateEvaluatorPools = make([]*{{.EvaluatorQualifier}}GateEvaluatorPool, nbWires)
+	c.gateEvaluatorPools = make([]*{{ .EvaluatorQualifier }}{{ $gateEvaluator }}Pool, nbWires)
 	levelWireI := 0
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			wire := r.circuit[wI]
-			c.gateEvaluatorPools[levelWireI] = {{.EvaluatorQualifier}}NewGateEvaluatorPool(wire.Gate.Evaluate, len(inputIndices[levelWireI]), &r.memPool)
+			c.gateEvaluatorPools[levelWireI] = {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}Pool(wire.Gate.Evaluate, len(inputIndices[levelWireI]), &r.memPool)
 			levelWireI++
 		}
 	}
@@ -496,7 +497,7 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 	computeAll := func(start, end int) {
 		var step {{ .ElementType }}
 
-		evaluators := make([]*{{.EvaluatorQualifier}}GateEvaluator, nbWires)
+		evaluators := make([]*{{ .EvaluatorQualifier }}{{ $gateEvaluator }}, nbWires)
 		for w := range nbWires {
 			evaluators[w] = c.gateEvaluatorPools[w].Get()
 		}

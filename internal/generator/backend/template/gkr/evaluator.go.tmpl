@@ -2,25 +2,47 @@ import (
 	"fmt"
 	"sync"
 
-	"{{.FieldPackagePath}}"
-	"{{.FieldPackagePath}}/polynomial"
+	"{{ .BaseFieldPackagePath }}"
+	"{{ .BaseFieldPackagePath }}/polynomial"
+	{{- if .Mixed }}
+	"{{ .FieldPackagePath }}"
+	extPolynomial "{{ .FieldPackagePath }}/polynomial"
+	{{- end }}
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 )
 
-// GateEvaluator provides a high-level API for evaluating compiled gates efficiently.
+{{ template "gateEvaluator" dict "Config" . "Mixed" false }}
+{{- if .Mixed }}
+
+{{ template "gateEvaluator" dict "Config" . "Mixed" true }}
+{{- end }}
+
+{{ define "gateEvaluator" }}
+{{- $elem := .Config.BaseElementType }}
+{{- $poly := "polynomial" }}
+{{- $ge := "GateEvaluator" }}
+{{- if .Mixed }}
+{{- $elem = .Config.ElementType }}
+{{- $poly = "extPolynomial" }}
+{{- $ge = "GateEvaluatorMixed" }}
+{{- end }}
+// {{ $ge }} provides a high-level API for evaluating compiled gates efficiently.
 // It manages the stack internally and handles input buffering, making it easy to
 // evaluate the same gate multiple times with different inputs.
-type GateEvaluator struct {
+type {{ $ge }} struct {
 	gate gkrcore.GateBytecode
-	vars []{{ .ElementType }}
+	vars []{{ $elem }}
+	{{- if .Mixed }}
+	consts []{{ .Config.BaseElementType }} // the gate's constants in the base field, multiplied by with MulByElement
+	{{- end }}
 	nbIn int // number of inputs expected
-	pool *polynomial.Pool // pool vars was allocated from, if any
+	pool *{{ $poly }}.Pool // pool vars was allocated from, if any
 }
 
-// NewGateEvaluator creates an evaluator for the given compiled gate.
+// New{{ $ge }} creates an evaluator for the given compiled gate.
 // The stack is preloaded with constants and ready for evaluation.
-func NewGateEvaluator(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polynomial.Pool) GateEvaluator {
-	e := GateEvaluator{
+func New{{ $ge }}(gate gkrcore.GateBytecode, nbIn int, elementPool ...*{{ $poly }}.Pool) {{ $ge }} {
+	e := {{ $ge }}{
 		gate: gate,
 		nbIn: nbIn,
 	}
@@ -28,18 +50,24 @@ func NewGateEvaluator(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polyn
 		e.pool = elementPool[0]
 		e.vars = e.pool.Make(gate.EvaluatorSize(nbIn))
 	} else {
-		e.vars = make([]{{ .ElementType }}, gate.EvaluatorSize(nbIn))
+		e.vars = make([]{{ $elem }}, gate.EvaluatorSize(nbIn))
 	}
 	e.vars = e.vars[:gate.NbConstants()]
 	for i, constVal := range gate.Constants {
 		e.vars[i].SetBigInt(constVal)
 	}
+	{{- if .Mixed }}
+	e.consts = make([]{{ .Config.BaseElementType }}, len(gate.Constants))
+	for i, constVal := range gate.Constants {
+		e.consts[i].SetBigInt(constVal)
+	}
+	{{- end }}
 	return e
 }
 
 // Dump returns the evaluator's memory to the pool it was allocated from, if any, and does
 // nothing otherwise. The evaluator must not be used after this.
-func (e *GateEvaluator) Dump() {
+func (e *{{ $ge }}) Dump() {
 	if e.pool != nil {
 		e.pool.Dump(e.vars)
 	}
@@ -47,7 +75,7 @@ func (e *GateEvaluator) Dump() {
 
 // PushInput adds an input to the evaluator's input buffer.
 // Inputs must be added in order, and the number of inputs must match the gate's NbInputs.
-func (e *GateEvaluator) PushInput(input {{ .ElementType }}) {
+func (e *{{ $ge }}) PushInput(input {{ $elem }}) {
 	e.vars = append(e.vars, input)
 }
 
@@ -55,7 +83,7 @@ func (e *GateEvaluator) PushInput(input {{ .ElementType }}) {
 // The stack is automatically reset after evaluation,
 // making the evaluator ready for the next evaluation.
 // NB! The result is short-lived. It will be overwritten the next time Evaluate is called.
-func (e *GateEvaluator) Evaluate(top ...{{ .ElementType }}) *{{ .ElementType }} {
+func (e *{{ $ge }}) Evaluate(top ...{{ $elem }}) *{{ $elem }} {
 	e.vars = append(e.vars, top...)
 
 	if len(e.vars) != e.nbIn+e.gate.NbConstants() {
@@ -78,10 +106,28 @@ func (e *GateEvaluator) Evaluate(top ...{{ .ElementType }}) *{{ .ElementType }} 
 				dst.Add(dst, &e.vars[inst.Inputs[j]])
 			}
 		case gkrcore.OpMul:
+			{{- if .Mixed }}
+			// Operands below NbConstants are constants, multiplied by in the base field.
+			if a, b := inst.Inputs[0], inst.Inputs[1]; b < e.gate.NbConstants() {
+				dst.MulByElement(&e.vars[a], &e.consts[b])
+			} else if a < e.gate.NbConstants() {
+				dst.MulByElement(&e.vars[b], &e.consts[a])
+			} else {
+				dst.Mul(&e.vars[a], &e.vars[b])
+			}
+			for j := 2; j < len(inst.Inputs); j++ {
+				if k := inst.Inputs[j]; k < e.gate.NbConstants() {
+					dst.MulByElement(dst, &e.consts[k])
+				} else {
+					dst.Mul(dst, &e.vars[k])
+				}
+			}
+			{{- else }}
 			dst.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Mul(dst, &e.vars[inst.Inputs[j]])
 			}
+			{{- end }}
 		case gkrcore.OpSub:
 			dst.Sub(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			for j := 2; j < len(inst.Inputs); j++ {
@@ -90,12 +136,22 @@ func (e *GateEvaluator) Evaluate(top ...{{ .ElementType }}) *{{ .ElementType }} 
 		case gkrcore.OpNeg:
 			dst.Neg(&e.vars[inst.Inputs[0]])
 		case gkrcore.OpMulAcc:
-			var prod {{ .ElementType }}
+			var prod {{ $elem }}
+			{{- if .Mixed }}
+			if b, c := inst.Inputs[1], inst.Inputs[2]; c < e.gate.NbConstants() {
+				prod.MulByElement(&e.vars[b], &e.consts[c])
+			} else if b < e.gate.NbConstants() {
+				prod.MulByElement(&e.vars[c], &e.consts[b])
+			} else {
+				prod.Mul(&e.vars[b], &e.vars[c])
+			}
+			{{- else }}
 			prod.Mul(&e.vars[inst.Inputs[1]], &e.vars[inst.Inputs[2]])
+			{{- end }}
 			dst.Add(&e.vars[inst.Inputs[0]], &prod)
 		case gkrcore.OpSumExp17:
 			// result = (x[0] + x[1] + x[2])^17
-			var sum {{ .ElementType }}
+			var sum {{ $elem }}
 			sum.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			sum.Add(&sum, &e.vars[inst.Inputs[2]])
 			dst.Mul(&sum, &sum) // x²
@@ -116,25 +172,25 @@ func (e *GateEvaluator) Evaluate(top ...{{ .ElementType }}) *{{ .ElementType }} 
 	return res
 }
 
-// GateEvaluatorPool manages a pool of gate evaluators for a specific gate type.
+// {{ $ge }}Pool manages a pool of gate evaluators for a specific gate type.
 // All evaluators share the same underlying polynomial.Pool for element slices.
-type GateEvaluatorPool struct {
+type {{ $ge }}Pool struct {
 	gate        gkrcore.GateBytecode
 	nbIn        int
 	lock        sync.Mutex
-	available   []*GateEvaluator
-	elementPool *polynomial.Pool
+	available   []*{{ $ge }}
+	elementPool *{{ $poly }}.Pool
 }
 
-func NewGateEvaluatorPool(gate gkrcore.GateBytecode, nbIn int, elementPool *polynomial.Pool) *GateEvaluatorPool {
-	return &GateEvaluatorPool{
+func New{{ $ge }}Pool(gate gkrcore.GateBytecode, nbIn int, elementPool *{{ $poly }}.Pool) *{{ $ge }}Pool {
+	return &{{ $ge }}Pool{
 		gate:        gate,
 		nbIn:        nbIn,
 		elementPool: elementPool,
 	}
 }
 
-func (gep *GateEvaluatorPool) Get() *GateEvaluator {
+func (gep *{{ $ge }}Pool) Get() *{{ $ge }} {
 	gep.lock.Lock()
 	if n := len(gep.available); n > 0 {
 		e := gep.available[n-1]
@@ -144,11 +200,11 @@ func (gep *GateEvaluatorPool) Get() *GateEvaluator {
 	}
 	gep.lock.Unlock()
 
-	e := NewGateEvaluator(gep.gate, gep.nbIn, gep.elementPool)
+	e := New{{ $ge }}(gep.gate, gep.nbIn, gep.elementPool)
 	return &e
 }
 
-func (gep *GateEvaluatorPool) Put(e *GateEvaluator) {
+func (gep *{{ $ge }}Pool) Put(e *{{ $ge }}) {
 	gep.lock.Lock()
 	gep.available = append(gep.available, e)
 	gep.lock.Unlock()
@@ -156,7 +212,7 @@ func (gep *GateEvaluatorPool) Put(e *GateEvaluator) {
 
 // DumpAll dumps all available evaluators' memory back to the pool. It is not to be used after that.
 // NB! User must ensure all evaluators have been put back in the pool to prevent memory leaks.
-func (gep *GateEvaluatorPool) DumpAll() {
+func (gep *{{ $ge }}Pool) DumpAll() {
 	gep.lock.Lock()
 	defer gep.lock.Unlock()
 	for _, e := range gep.available {
@@ -164,3 +220,4 @@ func (gep *GateEvaluatorPool) DumpAll() {
 	}
 	gep.available = nil
 }
+{{ end }}

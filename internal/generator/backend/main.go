@@ -147,13 +147,15 @@ func main() {
 				curvePackageName := strings.ToLower(d.Curve)
 
 				cfg := gkrConfig{
-					ElementType:        "fr.Element",
-					FieldPackageName:   "fr",
-					FieldPackagePath:   "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
-					FieldID:            d.CurveID,
-					FieldDescription:   "gkrcore.PrimeField(ecc." + d.CurveID + ".ScalarField())",
-					GkrPackageName:     curvePackageName,
-					EvaluatorQualifier: "evaluator.",
+					ElementType:          "fr.Element",
+					BaseElementType:      "fr.Element",
+					BaseFieldPackagePath: "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
+					FieldPackageName:     "fr",
+					FieldPackagePath:     "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
+					FieldID:              d.CurveID,
+					FieldDescription:     "gkrcore.PrimeField(ecc." + d.CurveID + ".ScalarField())",
+					GkrPackageName:       curvePackageName,
+					EvaluatorQualifier:   "evaluator.",
 				}
 
 				assertNoError(generateGkrBackend(cfg))
@@ -234,12 +236,14 @@ func main() {
 	go func() {
 		// generate gkr and sumcheck for rational
 		cfg := gkrConfig{
-			ElementType:         "rational.Element",
-			FieldPackagePath:    "github.com/consensys/gnark/internal/rational",
-			FieldPackageName:    "rational",
-			GkrPackageName:      "rational",
-			NoGkrTests:          true,
-			GenerateTestVectors: true,
+			ElementType:          "rational.Element",
+			BaseElementType:      "rational.Element",
+			BaseFieldPackagePath: "github.com/consensys/gnark/internal/rational",
+			FieldPackagePath:     "github.com/consensys/gnark/internal/rational",
+			FieldPackageName:     "rational",
+			GkrPackageName:       "rational",
+			NoGkrTests:           true,
+			GenerateTestVectors:  true,
 		}
 		assertNoError(generateGkrBackend(cfg))
 
@@ -367,7 +371,16 @@ type gkrConfig struct {
 	// "gkrcore.PrimeField(ecc.BN254.ScalarField())". Used only where gkr.test.go.tmpl is
 	// generated (NoGkrTests false), so rational leaves it empty.
 	FieldDescription string
+	// BaseElementType is the type of the prime subfield's elements, in which gate constants live.
+	// It is ElementType itself unless the field is an extension.
+	BaseElementType string
+	// BaseFieldPackagePath is the import path of BaseElementType's package.
+	BaseFieldPackagePath string
 }
+
+// Mixed reports whether the field is an extension of its prime subfield, so that gate constants
+// are not elements of the field itself.
+func (c gkrConfig) Mixed() bool { return c.BaseElementType != c.ElementType }
 
 func assertNoError(err error) {
 	if err != nil {

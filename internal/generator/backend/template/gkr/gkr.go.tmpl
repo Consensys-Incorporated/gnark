@@ -1,3 +1,4 @@
+{{ $gateEvaluator := "GateEvaluator" }}{{ if .Mixed }}{{ $gateEvaluator = "GateEvaluatorMixed" }}{{ end }}
 import (
 	"errors"
 	"fmt"
@@ -114,7 +115,7 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 
 	for levelWireI, wI := range group.Wires {
 		wire := r.circuit[wI]
-		evaluator := {{.EvaluatorQualifier}}NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
+		evaluator := {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}(wire.Gate.Evaluate, len(wire.Inputs))
 		for claimI, src := range group.ClaimSources {
 			for _, inI := range inputIndices[levelWireI] {
 				evaluator.PushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
@@ -181,7 +182,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 			const minBlockSize = 64
 			assignment[wireI] = make([]{{ .ElementType }}, nbInstances)
 			r.workers.Submit(nbInstances, func(start, end int) {
-				gateEval := {{.EvaluatorQualifier}}NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
+				gateEval := {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
 				for instanceI := start; instanceI < end; instanceI++ {
 					for _, inputWireI := range c[wireI].Inputs {
 						gateEval.PushInput(assignment[inputWireI][instanceI])
@@ -318,14 +319,14 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 
 	nbInstances := a.NumInstances()
-	evaluators := make([]{{.EvaluatorQualifier}}GateEvaluator, len(circuit))
+	evaluators := make([]{{ .EvaluatorQualifier }}{{ $gateEvaluator }}, len(circuit))
 
 	for i := range circuit {
 		if len(a[i]) != nbInstances {
 			a[i] = make([]{{ .ElementType }}, nbInstances)
 		}
 		if !circuit[i].IsInput() {
-			evaluators[i] = {{.EvaluatorQualifier}}NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
+			evaluators[i] = {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
 		}
 	}
 
