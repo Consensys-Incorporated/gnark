@@ -89,8 +89,17 @@ func NewPairing(api frontend.API) (*Pairing, error) {
 //
 //	∏ᵢ e(Pᵢ, Qᵢ).
 //
-// This function checks that the Qᵢ are in the correct subgroup, but does not
-// check Pᵢ. See AssertIsOnG1.
+// When Qᵢ does not carry precomputed lines (Qᵢ.Lines == nil), the lines are
+// computed in-circuit and Qᵢ is asserted to be on the curve and in the
+// correct subgroup. When Qᵢ carries precomputed lines, they are used directly
+// and Qᵢ.P is never read: the point is not checked and the lines are not
+// constrained to correspond to it — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
+//
+// This function does not check Pᵢ. See AssertIsOnG1. To assert a pairing
+// equation over untrusted G2 inputs, prefer [Pairing.PairingCheck], which
+// binds the result to the point coordinates even when precomputed lines are
+// supplied.
 func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 	res, err := pr.MillerLoop(P, Q)
 	if err != nil {
@@ -224,8 +233,14 @@ func (pr *Pairing) AssertFinalExponentiationIsOne(a *GTEl) {
 //
 //	∏ᵢ e(Pᵢ, Qᵢ) =? 1
 //
-// This function checks that the Qᵢ are in the correct subgroup, but does not
-// check Pᵢ. See AssertIsOnG1.
+// The non-residue witness hint is computed from the point coordinates, so the
+// asserted equation binds the result to the coordinates of Qᵢ.P even when Qᵢ
+// carries precomputed lines: lines not corresponding to Qᵢ.P make the circuit
+// unsatisfiable. When the lines are computed in-circuit (Qᵢ.Lines == nil),
+// Qᵢ is additionally asserted to be on the curve and in the correct subgroup;
+// with supplied lines no point checks are performed.
+//
+// This function doesn't check that the Pᵢ are in the correct subgroup.
 func (pr *Pairing) PairingCheck(P []*G1Affine, Q []*G2Affine) error {
 	// check input size match
 	nP := len(P)
@@ -530,8 +545,14 @@ var loopCounter = [66]int8{
 //
 //	∏ᵢ { fᵢ_{6x₀+2,Q}(P) · ℓᵢ_{[6x₀+2]Q,π(Q)}(P) · ℓᵢ_{[6x₀+2]Q+π(Q),-π²(Q)}(P) }
 //
-// This function checks that the Qᵢ are in the correct subgroup, but does not
-// check Pᵢ. See AssertIsOnG1.
+// When Qᵢ does not carry precomputed lines (Qᵢ.Lines == nil), the lines are
+// computed in-circuit and Qᵢ is asserted to be on the curve and in the
+// correct subgroup. When Qᵢ carries precomputed lines, they are used directly
+// and Qᵢ.P is never read: the point is not checked and the lines are not
+// constrained to correspond to it — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
+//
+// This function does not check Pᵢ. See AssertIsOnG1.
 func (pr *Pairing) MillerLoop(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 
 	// check input size match
