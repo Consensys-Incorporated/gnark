@@ -3,11 +3,15 @@ package sw_emulated
 import (
 	"crypto/elliptic"
 	"crypto/rand"
+	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 
+	"github.com/consensys/gnark-crypto/algebra/lattice"
 	"github.com/consensys/gnark-crypto/ecc"
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
+	fp_bls381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 	fr_bls381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	fr_bn "github.com/consensys/gnark-crypto/ecc/bn254/fr"
@@ -2708,5 +2712,437 @@ func TestScalarMulGLVAndFakeGLV_TrivialDecompositionRegression(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("malicious all-zeros Eisenstein decomposition was accepted — soundness break")
+	}
+}
+
+// TestBLS12381CofactorClearingConstant pins the arithmetic facts that make the
+// 64-bit constant c = |x-1| sound and complete in place of the 126-bit full
+// cofactor h = (x-1)^2/3:
+//
+//   - c divides h,
+//   - gcd(c, r) = 1, so [c] is a bijection on G1 (completeness),
+//   - [c]E(Fp) = G1, so a torsion-tainted point has no preimage (soundness).
+func TestBLS12381CofactorClearingConstant(t *testing.T) {
+	assert := test.NewAssert(t)
+	c := GetBLS12381Params().CofactorClearing
+	assert.NotNil(c, "BLS12-381 G1 must have a clearing constant")
+
+	xm1 := new(big.Int).SetUint64(0xd201000000010001)
+	assert.Equal(0, c.Cmp(xm1), "clearing constant must be |x-1|")
+	assert.Equal(64, c.BitLen())
+
+	h := new(big.Int).Mul(xm1, xm1)
+	h.Div(h, big.NewInt(3))
+	assert.Equal(0, new(big.Int).Mod(h, c).Sign(), "c must divide h")
+
+	// The shape that makes c the torsion exponent: with n = (x-1)/3, the
+	// cofactor is h = 3n² and the constant is c = 3n, where 3 does NOT divide
+	// n. The n-part of the torsion is Z_n x Z_n (rank 2, by 2021/1359 Cor. 1
+	// the full n-torsion is rational) and the leftover factor 3 is cyclic, so
+	// the exponent is lcm(n, 3n) = 3n = c. The single factor of 3 in h is
+	// therefore expected and is not a counterexample to the rank-2 claim, which
+	// is made about n only.
+	three := big.NewInt(3)
+	n := new(big.Int).Div(xm1, three)
+	assert.Equal(0, new(big.Int).Mod(xm1, three).Sign(), "3 must divide x-1")
+	assert.Equal(0, h.Cmp(new(big.Int).Mul(three, new(big.Int).Mul(n, n))),
+		"h must equal 3n^2")
+	assert.Equal(0, c.Cmp(new(big.Int).Mul(three, n)), "c must equal 3n")
+	assert.NotEqual(0, new(big.Int).Mod(n, three).Sign(),
+		"3 must not divide n, else the 3-part would not be cyclic")
+	// n is squarefree-coprime-to-3 and factors as the odd primes of h
+	assert.Equal(0, n.Cmp(new(big.Int).Mul(
+		big.NewInt(11*10177), big.NewInt(859267*52437899))),
+		"n must be 11*10177*859267*52437899")
+	// exponent lcm(n, 3n) = 3n = c
+	lcm := new(big.Int).Div(new(big.Int).Mul(n, new(big.Int).Mul(three, n)),
+		new(big.Int).GCD(nil, nil, n, new(big.Int).Mul(three, n)))
+	assert.Equal(0, lcm.Cmp(c), "torsion exponent lcm(n, 3n) must equal c")
+
+	assert.Equal(0, new(big.Int).GCD(nil, nil, c, fr_bls381.Modulus()).Cmp(big.NewInt(1)),
+		"gcd(c, r) must be 1 for [c] to be invertible on G1")
+
+	for i := 0; i < 64; i++ {
+		p := randomBLS12381CurvePoint()
+		var j, cj bls12381.G1Jac
+		j.FromAffine(&p)
+		cj.ScalarMultiplication(&j, c)
+		var cp bls12381.G1Affine
+		cp.FromJacobian(&cj)
+		assert.True(cp.IsInSubGroup(), "[c]P must land in G1")
+	}
+}
+
+// randomBLS12381CurvePoint returns a uniformly random point of E(Fp), which is
+// almost never in G1 (the cofactor is ~2^126).
+//
+// Both roots are returned with equal probability: taking only the canonical
+// Sqrt would sample one point out of each {P, -P} pair, which is harmless for a
+// subgroup test (G1 is closed under negation) but would quietly stop being
+// uniform for any other use.
+//
+// Deliberately random, unlike sw_bls12381's deterministic curvePointAtX: the
+// callers here are statistical, asserting [c]P lands in G1 over many P.
+func randomBLS12381CurvePoint() bls12381.G1Affine {
+	var four fp_bls381.Element
+	four.SetUint64(4)
+	for {
+		var x, y2 fp_bls381.Element
+		x.SetRandom()
+		y2.Square(&x).Mul(&y2, &x).Add(&y2, &four)
+		if y2.Legendre() != 1 {
+			continue
+		}
+		var y fp_bls381.Element
+		y.Sqrt(&y2)
+		if b, err := rand.Int(rand.Reader, big.NewInt(2)); err == nil && b.Sign() != 0 {
+			y.Neg(&y)
+		}
+		p := bls12381.G1Affine{X: x, Y: y}
+		if p.IsOnCurve() {
+			return p
+		}
+	}
+}
+
+type AssertIsInSubgroupTest[T, S emulated.FieldParams] struct {
+	P AffinePoint[T]
+}
+
+func (c *AssertIsInSubgroupTest[T, S]) Define(api frontend.API) error {
+	cr, err := New[T, S](api, GetCurveParams[T]())
+	if err != nil {
+		return err
+	}
+	cr.AssertIsOnCurve(&c.P)
+	cr.AssertIsInSubgroup(&c.P)
+	return nil
+}
+
+// TestAssertIsInSubgroupBW6761FailsExplicitly is a regression test for the exported
+// [Curve.AssertIsInSubgroup] silently accepting off-subgroup points on a curve
+// that has a cofactor but no clearing constant.
+//
+// BW6-761 G1 has a nontrivial cofactor and GetBW6761Params leaves
+// CofactorClearing nil, because every internal caller routes around the binding
+// via PreferClassicGLV. Exporting the method made that nil reachable from
+// outside, where "no constant" would have meant "assert nothing": a circuit
+// doing AssertIsOnCurve + AssertIsInSubgroup on the point below used to solve.
+// It must now fail loudly instead.
+func TestAssertIsInSubgroupBW6761FailsExplicitly(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	// (2, y) is on y² = x³ - 1 over Fp but outside the prime-order subgroup.
+	P := bw6761OffSubgroupPoint(t)
+	assert.True(P.IsOnCurve(), "witness point must be on the curve")
+	assert.False(P.IsInSubGroup(), "witness point must be outside G1")
+
+	circuit := AssertIsInSubgroupTest[emulated.BW6761Fp, emulated.BW6761Fr]{}
+	witness := AssertIsInSubgroupTest[emulated.BW6761Fp, emulated.BW6761Fr]{
+		P: AffinePoint[emulated.BW6761Fp]{
+			X: emulated.ValueOf[emulated.BW6761Fp](P.X),
+			Y: emulated.ValueOf[emulated.BW6761Fp](P.Y),
+		},
+	}
+
+	err := solveCatchingPanic(&circuit, &witness)
+	if err == nil {
+		t.Fatal("AssertIsInSubgroup accepted an on-curve, off-subgroup BW6-761 point")
+	}
+	// and it must fail for the stated reason, not as an incidental unsatisfied
+	// constraint that a future refactor could make satisfiable again.
+	if !strings.Contains(err.Error(), "no subgroup membership check") {
+		t.Fatalf("expected an explicit unsupported-curve failure, got: %v", err)
+	}
+}
+
+// TestAssertIsInSubgroupPrimeOrder checks the other side of the guard: on a
+// genuinely prime-order curve the no-op is correct and must stay a no-op.
+func TestAssertIsInSubgroupPrimeOrder(t *testing.T) {
+	assert := test.NewAssert(t)
+	assert.True(GetSecp256k1Params().PrimeOrder)
+	assert.Nil(GetSecp256k1Params().CofactorClearing)
+
+	_, g := secp256k1.Generators()
+	circuit := AssertIsInSubgroupTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{}
+	witness := AssertIsInSubgroupTest[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{
+		P: AffinePoint[emulated.Secp256k1Fp]{
+			X: emulated.ValueOf[emulated.Secp256k1Fp](g.X),
+			Y: emulated.ValueOf[emulated.Secp256k1Fp](g.Y),
+		},
+	}
+	assert.NoError(solveCatchingPanic(&circuit, &witness),
+		"prime-order curve must accept an in-subgroup point")
+}
+
+// TestAssertIsInSubgroupBLS12381 checks that the curve that does carry a
+// clearing constant still accepts in-subgroup points and rejects off-subgroup
+// ones, i.e. the guard did not disturb the working path.
+func TestAssertIsInSubgroupBLS12381(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	circuit := AssertIsInSubgroupTest[emulated.BLS12381Fp, emulated.BLS12381Fr]{}
+	mk := func(P bls12381.G1Affine) *AssertIsInSubgroupTest[emulated.BLS12381Fp, emulated.BLS12381Fr] {
+		return &AssertIsInSubgroupTest[emulated.BLS12381Fp, emulated.BLS12381Fr]{
+			P: AffinePoint[emulated.BLS12381Fp]{
+				X: emulated.ValueOf[emulated.BLS12381Fp](P.X),
+				Y: emulated.ValueOf[emulated.BLS12381Fp](P.Y),
+			},
+		}
+	}
+
+	_, _, g, _ := bls12381.Generators()
+	assert.NoError(solveCatchingPanic(&circuit, mk(g)), "in-subgroup point must be accepted")
+
+	for {
+		P := randomBLS12381CurvePoint()
+		if P.IsInSubGroup() {
+			continue // astronomically unlikely, but keep the test exact
+		}
+		assert.Error(solveCatchingPanic(&circuit, mk(P)), "off-subgroup point must be rejected")
+		return
+	}
+}
+
+// TestCofactorCurvesDeclareAMembershipCheck locks the fail-closed invariant in
+// place for every curve this package supports: a curve may skip the subgroup
+// binding only by declaring PrimeOrder, and a curve that declares PrimeOrder
+// must not also carry a clearing constant.
+func TestCofactorCurvesDeclareAMembershipCheck(t *testing.T) {
+	assert := test.NewAssert(t)
+	for _, tc := range []struct {
+		name   string
+		params CurveParams
+	}{
+		{"secp256k1", GetSecp256k1Params()},
+		{"bn254", GetBN254Params()},
+		{"bls12-381", GetBLS12381Params()},
+		{"p256", GetP256Params()},
+		{"p384", GetP384Params()},
+		{"bw6-761", GetBW6761Params()},
+		{"stark-curve", GetStarkCurveParams()},
+	} {
+		if tc.params.PrimeOrder {
+			assert.Nil(tc.params.CofactorClearing,
+				"%s: a prime-order curve needs no clearing constant", tc.name)
+		}
+	}
+
+	// BW6-761 is the one curve that is neither prime-order nor equipped with a
+	// clearing constant; if that ever changes, the panic above should go away.
+	bw6 := GetBW6761Params()
+	assert.False(bw6.PrimeOrder, "BW6-761 G1 has a nontrivial cofactor")
+	assert.Nil(bw6.CofactorClearing)
+}
+
+// solveCatchingPanic runs test.IsSolved and reports a panic raised during
+// circuit definition as an error. test.IsSolved already recovers panics into
+// its error, but it does so only for the solver; recovering here keeps the
+// helper honest if that ever changes.
+func solveCatchingPanic(circuit, witness frontend.Circuit) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return test.IsSolved(circuit, witness, testCurve.ScalarField())
+}
+
+// bw6761OffSubgroupPoint returns a small on-curve BW6-761 G1 point that is not
+// in the prime-order subgroup. y² = x³ - 1 at x = 2.
+func bw6761OffSubgroupPoint(t *testing.T) bw6761.G1Affine {
+	t.Helper()
+	var x, y2 fp_bw6761.Element
+	x.SetUint64(2)
+	y2.Square(&x).Mul(&y2, &x).Sub(&y2, new(fp_bw6761.Element).SetOne())
+	if y2.Legendre() != 1 {
+		t.Fatal("x = 2 should be on the curve")
+	}
+	var y fp_bw6761.Element
+	y.Sqrt(&y2)
+	return bw6761.G1Affine{X: x, Y: y}
+}
+
+// TestSubScalarBound pins the facts that make the fake-GLV subscalar bound
+// nbits = (BitLen+3)/4 + 1 correct, i.e. that rationalReconstructExt's four
+// outputs always fit in that many bits.
+//
+// The bound rests on two things, and the test checks both:
+//
+//  1. gnark-crypto's LLL runs at δ = 99/100, so the first reduced vector of the
+//     rank-4 lattice L = {(x,y,z,t) : x+λy ≡ k(z+λt) mod r}, det L = r, obeys
+//     ‖b₁‖ ≤ (1/(δ−1/4))^(3/4)·r^(1/4) = 1.2534·r^(1/4) < 2·r^(1/4).
+//  2. the hint returns the minimum-infinity-norm row with (z,t) ≠ (0,0), and b₁
+//     always qualifies, because a vector with (z,t) = (0,0) lies in the 2D GLV
+//     sublattice whose minimum is ≈ √r — far above ‖b₁‖ ≈ r^(1/4).
+//
+// Fact 2 is the one that an existence bound alone would not give, and it is
+// what makes the selected row bounded rather than merely some short vector.
+func TestSubScalarBound(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	for _, tc := range []struct {
+		name   string
+		r      *big.Int
+		lambda *big.Int
+	}{
+		{"secp256k1", fr_secp.Modulus(), GetSecp256k1Params().Eigenvalue},
+		{"BN254", fr_bn.Modulus(), GetBN254Params().Eigenvalue},
+		{"BLS12-381", fr_bls381.Modulus(), GetBLS12381Params().Eigenvalue},
+	} {
+		nbits := (tc.r.BitLen()+3)/4 + 1
+		rc := lattice.NewReconstructor(tc.r).SetLambda(tc.lambda)
+
+		// (2) the denominator condition never forces a longer row: the 2D
+		// sublattice {(x,y) : x+λy ≡ 0 mod r} has minimum ≈ √r, so no vector
+		// anywhere near 2^nbits can have a zero denominator.
+		min2D := shortest2DSublattice(tc.r, tc.lambda)
+		assert.Greater(min2D.BitLen(), nbits+32,
+			"%s: 2D sublattice minimum (2^%d) must dwarf the subscalar bound (2^%d), "+
+				"else b1 could be skipped for a zero denominator",
+			tc.name, min2D.BitLen(), nbits)
+
+		// (1) every output of the hint fits in nbits, over deterministic
+		// scalars chosen to include the extremes of the range and values that
+		// previously sat at the 64/65-bit boundary.
+		scalars := []*big.Int{
+			big.NewInt(0), big.NewInt(1), big.NewInt(2), big.NewInt(3),
+			new(big.Int).Sub(tc.r, big.NewInt(1)),
+			new(big.Int).Sub(tc.r, big.NewInt(2)),
+			new(big.Int).Rsh(tc.r, 1),
+			new(big.Int).Lsh(big.NewInt(1), 64),
+			new(big.Int).Lsh(big.NewInt(1), 128),
+			new(big.Int).Lsh(big.NewInt(1), 192),
+			new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 128), big.NewInt(1)),
+			new(big.Int).Set(tc.lambda),
+			new(big.Int).Sub(tc.r, tc.lambda),
+		}
+		// plus a deterministic pseudo-random spread (fixed multiplier, no RNG,
+		// so a failure is reproducible)
+		x := new(big.Int).SetUint64(0x9e3779b97f4a7c15)
+		for i := 0; i < 256; i++ {
+			x.Mul(x, big.NewInt(6364136223846793005))
+			x.Add(x, big.NewInt(1442695040888963407))
+			x.Mod(x, tc.r)
+			scalars = append(scalars, new(big.Int).Set(x))
+		}
+
+		maxBits := 0
+		for _, s := range scalars {
+			k := new(big.Int).Neg(s)
+			k.Mod(k, tc.r)
+			res := rc.RationalReconstructExt(k)
+			for j, v := range res {
+				a := new(big.Int).Abs(v)
+				assert.LessOrEqual(a.BitLen(), nbits,
+					"%s: output %d for s=%s is %d bits, over the %d-bit range check",
+					tc.name, j, s.String(), a.BitLen(), nbits)
+				if a.BitLen() > maxBits {
+					maxBits = a.BitLen()
+				}
+			}
+			// the relation the circuit then checks must actually hold
+			u1, u2, v1, v2 := res[0], res[1], res[2], res[3]
+			lhs := new(big.Int).Add(u1, new(big.Int).Mul(tc.lambda, u2))
+			den := new(big.Int).Add(v1, new(big.Int).Mul(tc.lambda, v2))
+			lhs.Add(lhs, new(big.Int).Mul(s, den))
+			lhs.Mod(lhs, tc.r)
+			assert.Equal(0, lhs.Sign(),
+				"%s: (u1+λu2) + s(v1+λv2) must vanish mod r for s=%s", tc.name, s)
+			assert.False(v1.Sign() == 0 && v2.Sign() == 0,
+				"%s: denominator must be nonzero for s=%s", tc.name, s)
+		}
+		t.Logf("%s: nbits=%d, max observed subscalar = %d bits", tc.name, nbits, maxBits)
+	}
+}
+
+// shortest2DSublattice returns the shortest vector (Euclidean) of
+// {(x,y) ∈ Z² : x + λy ≡ 0 mod r} by Gauss reduction. This is the set the
+// hint's nonzero-denominator condition excludes; its minimum being ≈ √r is what
+// guarantees the condition never rejects the short vector LLL found.
+func shortest2DSublattice(r, lambda *big.Int) *big.Int {
+	norm := func(v [2]*big.Int) *big.Int {
+		x := new(big.Int).Mul(v[0], v[0])
+		y := new(big.Int).Mul(v[1], v[1])
+		return x.Add(x, y)
+	}
+	a := [2]*big.Int{new(big.Int).Set(r), big.NewInt(0)}
+	l := new(big.Int).Mod(lambda, r)
+	b := [2]*big.Int{new(big.Int).Neg(l), big.NewInt(1)}
+	for {
+		if norm(a).Cmp(norm(b)) > 0 {
+			a, b = b, a
+		}
+		dot := new(big.Int).Add(new(big.Int).Mul(a[0], b[0]), new(big.Int).Mul(a[1], b[1]))
+		na := norm(a)
+		mu := new(big.Int).Mul(dot, big.NewInt(2))
+		mu.Add(mu, na)
+		mu.Div(mu, new(big.Int).Mul(na, big.NewInt(2)))
+		if mu.Sign() == 0 {
+			break
+		}
+		b[0].Sub(b[0], new(big.Int).Mul(mu, a[0]))
+		b[1].Sub(b[1], new(big.Int).Mul(mu, a[1]))
+	}
+	if norm(a).Cmp(norm(b)) > 0 {
+		a = b
+	}
+	return new(big.Int).Sqrt(norm(a))
+}
+
+// mulByConstantCircuit exposes mulByConstant with no further constraints on its
+// output, so the only thing that can make it unsatisfiable is a guard inside.
+type mulByConstantCircuit struct {
+	P AffinePoint[emulated.BLS12381Fp]
+}
+
+func (c *mulByConstantCircuit) Define(api frontend.API) error {
+	cr, err := New[emulated.BLS12381Fp, emulated.BLS12381Fr](api, GetBLS12381Params())
+	if err != nil {
+		return err
+	}
+	cr.mulByConstant(&c.P, GetBLS12381Params().CofactorClearing)
+	return nil
+}
+
+// TestMulByConstantRejectsInfinity pins the guard that lets mulByConstant use
+// the incomplete group law.
+//
+// mulByConstant pins each slope with λ·den − num ≡ 0, which leaves λ
+// unconstrained exactly when den ≡ num ≡ 0. For the tangent on a = 0 that is
+// 2y ≡ 0 and 3x² ≡ 0, i.e. the point (0,0) — not on the curve, but accepted by
+// AssertIsOnCurve as the infinity encoding, so a malicious cofactor-preimage
+// hint can supply it. A free λ there makes the ladder output unconstrained and
+// lets it wander off the curve, since intermediates are not re-checked.
+//
+// The circuit above constrains nothing but the guard, so this distinguishes
+// "guard present" from "guard absent": with the guard the (0,0) witness is
+// unsatisfiable, without it the honest tangent hint returns λ = 0, the ladder
+// returns (0,0), and the circuit solves.
+//
+// Note this tests the guard, not an end-to-end forgery: mounting one also
+// requires replacing the tangent hint, since the honest hint yields λ = 0 at
+// (0,0) and the resulting (0,0) output then fails the [c]S == R equality on its
+// own.
+func TestMulByConstantRejectsInfinity(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	// a genuine curve point must still go through
+	_, _, g, _ := bls12381.Generators()
+	good := mulByConstantCircuit{P: AffinePoint[emulated.BLS12381Fp]{
+		X: emulated.ValueOf[emulated.BLS12381Fp](g.X),
+		Y: emulated.ValueOf[emulated.BLS12381Fp](g.Y),
+	}}
+	assert.NoError(test.IsSolved(&mulByConstantCircuit{}, &good, testCurve.ScalarField()),
+		"an honest curve point must still be accepted")
+
+	// the (0,0) infinity encoding must not
+	bad := mulByConstantCircuit{P: AffinePoint[emulated.BLS12381Fp]{
+		X: emulated.ValueOf[emulated.BLS12381Fp](0),
+		Y: emulated.ValueOf[emulated.BLS12381Fp](0),
+	}}
+	if err := test.IsSolved(&mulByConstantCircuit{}, &bad, testCurve.ScalarField()); err == nil {
+		t.Fatal("mulByConstant accepted the (0,0) infinity encoding: the tangent " +
+			"slope is unconstrained there, so the incomplete ladder is unsound")
 	}
 }
