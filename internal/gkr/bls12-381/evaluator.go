@@ -98,8 +98,8 @@ func (e *GateEvaluator) Evaluate(top ...fr.Element) *fr.Element {
 			dst.Neg(&e.vars[inst.Inputs[0]])
 		case gkrcore.OpMulAcc:
 			var prod fr.Element
-			prod.Mul(&e.vars[inst.Inputs[1]], &e.vars[inst.Inputs[2]])
-			dst.Add(&e.vars[inst.Inputs[0]], &prod)
+			prod.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
+			dst.Add(&prod, &e.vars[inst.Inputs[2]])
 		case gkrcore.OpSumExp17:
 			// result = (x[0] + x[1] + x[2])^17
 			var sum fr.Element
