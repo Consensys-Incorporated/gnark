@@ -11,6 +11,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr/polynomial"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
+	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
 
 	"math/bits"
@@ -51,7 +52,7 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() hash
 		return err
 	}
 
-	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], toElement(1))
+	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], gkrtesting.ToElement[fr.Element](1))
 	lazyClaim = singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
 	t = gkrcore.NewHashTranscript[fr.Element](hashGenerator())
 	if sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t) == nil {

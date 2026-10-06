@@ -13,12 +13,6 @@ import (
 	"github.com/consensys/gnark/internal/rational"
 )
 
-func toElement(i int64) *rational.Element {
-	var res rational.Element
-	res.SetInt64(i)
-	return &res
-}
-
 // hashFromDescription returns the hash a test vector names. The only type is "const": a
 // messageCounter with step 0, so every challenge equals the given value regardless of what was
 // bound to the transcript. Test vectors therefore pin down the GKR and sumcheck arithmetic only.

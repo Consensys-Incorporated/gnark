@@ -62,7 +62,7 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 		return fmt.Errorf("proof rejected: %v", err)
 	}
 
-	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], toElement(1))
+	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], gkrtesting.ToElement[rational.Element](1))
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}

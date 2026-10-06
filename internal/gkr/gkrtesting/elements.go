@@ -9,10 +9,18 @@ import (
 type testElement[E any] interface {
 	*E
 	SetBigInt(*big.Int) *E
+	SetInt64(int64) *E
 	Inverse(*E) *E
 	Mul(*E, *E) *E
 	Equal(*E) bool
 	String() string
+}
+
+// ToElement returns i as an element.
+func ToElement[E any, PE testElement[E]](i int64) *E {
+	var res E
+	PE(&res).SetInt64(i)
+	return &res
 }
 
 // SetElement parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
