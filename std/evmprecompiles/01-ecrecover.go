@@ -99,8 +99,13 @@ func ECRecover(api frontend.API, msg emulated.Element[emulated.Secp256k1Fr],
 	// in case of failure due to no QNR, negate Ry so that exists a square root
 	Ry = fpField.Select(isQNRFailure, fpField.Sub(fpField.Modulus(), Ry), Ry)
 	Ry = fpField.Sqrt(Ry) // Ry = sqrt(x^3 + 7)
-	// ensure the oddity of Ry is same as vbits[0], otherwise negate Ry
-	Rybits := fpField.ToBits(Ry)
+	// ensure the oddity of Ry matches v, otherwise negate Ry. The oddity must
+	// be taken from the canonical representation: Sqrt does not enforce that
+	// the root is less than the modulus, only that it fits the limb width. For
+	// roots y < 2^32+977 the prover could return y+p, which has the opposite
+	// parity (p is odd) and would flip the selection below, making the circuit
+	// recover a different public key than the EVM for the same (msg, v, r, s).
+	Rybits := fpField.ToBitsCanonical(Ry)
 	Ry = fpField.Select(api.Xor(v, Rybits[0]), fpField.Sub(fpField.Modulus(), Ry), Ry)
 
 	R := sw_emulated.AffinePoint[emulated.Secp256k1Fp]{
