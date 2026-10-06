@@ -81,6 +81,13 @@ func (e *{{ $ge }}) PushInput(input {{ $elem }}) {
 	e.vars = append(e.vars, input)
 }
 
+{{- if .Mixed }}
+// isInputConstant returns whether the instruction's inputI-th input is one of the gate's constants.
+func (e *{{ $ge }}) isInputConstant(inst *gkrcore.GateInstruction, inputI int) bool {
+	return int(inst.Inputs[inputI]) < e.gate.NbConstants()
+}
+
+{{ end -}}
 // Evaluate adds top to the top of the stack, executes the gate on it and returns the result.
 // The stack is automatically reset after evaluation,
 // making the evaluator ready for the next evaluation.
@@ -103,35 +110,41 @@ func (e *{{ $ge }}) Evaluate(top ...{{ $elem }}) *{{ $elem }} {
 		// Use switch instead of function pointer for better inlining
 		switch inst.Op {
 		case gkrcore.OpAdd:
+			{{- if .Mixed }}
+			if e.isInputConstant(inst, 0) {
+				dst.AddElement(&e.vars[inst.Inputs[1]], &e.consts[inst.Inputs[0]])
+			} else {
+				dst.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
+			}
+			{{- else }}
 			dst.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
+			{{- end }}
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Add(dst, &e.vars[inst.Inputs[j]])
 			}
 		case gkrcore.OpMul:
 			{{- if .Mixed }}
-			// Operands below NbConstants are constants, multiplied by in the base field.
-			if a, b := inst.Inputs[0], inst.Inputs[1]; b < e.gate.NbConstants() {
-				dst.MulByElement(&e.vars[a], &e.consts[b])
-			} else if a < e.gate.NbConstants() {
-				dst.MulByElement(&e.vars[b], &e.consts[a])
+			if e.isInputConstant(inst, 0) {
+				dst.MulByElement(&e.vars[inst.Inputs[1]], &e.consts[inst.Inputs[0]])
 			} else {
-				dst.Mul(&e.vars[a], &e.vars[b])
-			}
-			for j := 2; j < len(inst.Inputs); j++ {
-				if k := inst.Inputs[j]; k < e.gate.NbConstants() {
-					dst.MulByElement(dst, &e.consts[k])
-				} else {
-					dst.Mul(dst, &e.vars[k])
-				}
+				dst.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			}
 			{{- else }}
 			dst.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
+			{{- end }}
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Mul(dst, &e.vars[inst.Inputs[j]])
 			}
-			{{- end }}
 		case gkrcore.OpSub:
+			{{- if .Mixed }}
+			if e.isInputConstant(inst, 0) {
+				dst.SubFromElement(&e.consts[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
+			} else {
+				dst.Sub(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
+			}
+			{{- else }}
 			dst.Sub(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
+			{{- end }}
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Sub(dst, &e.vars[inst.Inputs[j]])
 			}
@@ -140,21 +153,27 @@ func (e *{{ $ge }}) Evaluate(top ...{{ $elem }}) *{{ $elem }} {
 		case gkrcore.OpMulAcc:
 			var prod {{ $elem }}
 			{{- if .Mixed }}
-			if b, c := inst.Inputs[1], inst.Inputs[2]; c < e.gate.NbConstants() {
-				prod.MulByElement(&e.vars[b], &e.consts[c])
-			} else if b < e.gate.NbConstants() {
-				prod.MulByElement(&e.vars[c], &e.consts[b])
+			if e.isInputConstant(inst, 0) {
+				prod.MulByElement(&e.vars[inst.Inputs[1]], &e.consts[inst.Inputs[0]])
 			} else {
-				prod.Mul(&e.vars[b], &e.vars[c])
+				prod.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			}
 			{{- else }}
-			prod.Mul(&e.vars[inst.Inputs[1]], &e.vars[inst.Inputs[2]])
+			prod.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			{{- end }}
-			dst.Add(&e.vars[inst.Inputs[0]], &prod)
+			dst.Add(&prod, &e.vars[inst.Inputs[2]])
 		case gkrcore.OpSumExp17:
 			// result = (x[0] + x[1] + x[2])^17
 			var sum {{ $elem }}
+			{{- if .Mixed }}
+			if e.isInputConstant(inst, 0) {
+				sum.AddElement(&e.vars[inst.Inputs[1]], &e.consts[inst.Inputs[0]])
+			} else {
+				sum.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
+			}
+			{{- else }}
 			sum.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
+			{{- end }}
 			sum.Add(&sum, &e.vars[inst.Inputs[2]])
 			dst.Mul(&sum, &sum) // x²
 			dst.Mul(dst, dst)   // x⁴

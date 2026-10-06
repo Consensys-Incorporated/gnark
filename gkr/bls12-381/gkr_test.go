@@ -20,12 +20,13 @@ import (
 	gcHash "github.com/consensys/gnark-crypto/hash"
 	_ "github.com/consensys/gnark-crypto/hash/all" // registers the hash benchmarkGkrMiMC uses
 	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
 )
 
-var cache = gkrtesting.NewCache(gkrcore.PrimeField(ecc.BLS12_381.ScalarField()))
+var cache = gkrtesting.NewCache(gkr.PrimeField(ecc.BLS12_381.ScalarField()))
 
 func TestNoGateTwoInstances(t *testing.T) {
 	// Testing a single instance is not possible because the sumcheck implementation doesn't cover the trivial 0-variate case

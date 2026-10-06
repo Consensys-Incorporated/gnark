@@ -226,6 +226,18 @@ func main() {
 	}
 
 	wg.Add(1)
+	// GKR over KoalaBear's E6
+	go func() {
+		defer wg.Done()
+		assertNoError(generateGkrBackend(gkrConfig{
+			FieldPackagePath: "github.com/consensys/gnark-crypto/field/koalabear/extensions",
+			ExtensionSuffix:  "E6",
+			GkrPackageName:   "koalabear",
+			Description:      "gkr.KoalaBearE6()",
+		}))
+	}()
+
+	wg.Add(1)
 	// GKR test vectors
 	go func() {
 		// generate gkr and sumcheck for rational
@@ -329,7 +341,7 @@ func generateGkrBackend(cfg gkrConfig) error {
 		return err
 	}
 
-	if !cfg.GenerateTestVectors {
+	if !cfg.GenerateTestVectors && !cfg.Mixed() {
 		// The blueprints call the prover, which imports the evaluators; putting them in the
 		// evaluators' package would close an import cycle, so they get their own package.
 		blueprintEntry := bavard.Entry{File: filepath.Join(internalDir, "blueprints", "blueprint.go"), Templates: []string{"blueprint.go.tmpl"}}
@@ -350,7 +362,7 @@ type gkrConfig struct {
 	ExtensionSuffix string
 	// GkrPackageName is the directory of the generated packages, relative to the GKR roots.
 	GkrPackageName string
-	// Description is the Go expression of the field's gkrcore.Field description. Empty for the
+	// Description is the Go expression of the field's gkr.Field description. Empty for the
 	// curves, whose description is derived from FieldID.
 	Description string
 	// GenerateTestVectors is set for the configuration whose package also generates the test
@@ -412,13 +424,13 @@ func (c gkrConfig) EvaluatorQualifier() string {
 	return "evaluator."
 }
 
-// FieldDescription is the Go expression of the field's gkrcore.Field description, used where
+// FieldDescription is the Go expression of the field's gkr.Field description, used where
 // gkr.test.go.tmpl is generated.
 func (c gkrConfig) FieldDescription() string {
 	if c.Description != "" {
 		return c.Description
 	}
-	return "gkrcore.PrimeField(ecc." + c.FieldID() + ".ScalarField())"
+	return "gkr.PrimeField(ecc." + c.FieldID() + ".ScalarField())"
 }
 
 func assertNoError(err error) {
