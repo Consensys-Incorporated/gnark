@@ -118,15 +118,23 @@ func (r *resources) proveSkipLevel(levelI int) sumcheckProof {
 
 	uniqueInputs := r.circuit.UniqueGateInputs(level)
 	evals := make([]{{ .ElementType }}, len(uniqueInputs)*len(outPoints))
-	for uiI, inW := range uniqueInputs {
-		for k, point := range outPoints {
+	// One block of evaluations per worker, each block reusing one scratch table.
+	blockSize := (len(evals) + r.workers.NbWorkers() - 1) / r.workers.NbWorkers()
+	r.workers.Submit(len(evals), func(start, end int) {
+		var scratch polynomial.MultiLin{{ .ExtensionSuffix }}
+		for i := start; i < end; i++ {
+			uiI, k := i/len(outPoints), i%len(outPoints)
 			{{- if .Mixed }}
-			evals[level.FinalEvalProofIndex(uiI, k)] = r.evaluateBase(r.assignment[inW], point)
+			evals[level.FinalEvalProofIndex(uiI, k)] = scratch.EvaluateBase(r.assignment[uniqueInputs[uiI]], outPoints[k])
 			{{- else }}
-			evals[level.FinalEvalProofIndex(uiI, k)] = r.assignment[inW].Evaluate(point, &r.memPool)
+			scratch = append(scratch[:0], r.assignment[uniqueInputs[uiI]]...)
+			for _, coordinate := range outPoints[k] {
+				scratch.Fold(coordinate)
+			}
+			evals[level.FinalEvalProofIndex(uiI, k)] = scratch[0]
 			{{- end }}
 		}
-	}
+	}, max(blockSize, 1)).Wait()
 	return sumcheckProof{finalEvalProof: evals}
 }
 
