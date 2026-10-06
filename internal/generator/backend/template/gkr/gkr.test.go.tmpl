@@ -13,6 +13,9 @@ import (
 	_ "github.com/consensys/gnark-crypto/hash/all" // registers the hash benchmarkGkrMiMC uses
 	"{{ .FieldPackagePath }}"
 	"{{ .FieldPackagePath }}/polynomial"
+	{{- if .Mixed }}
+	"{{ .BaseFieldPackagePath }}"
+	{{- end }}
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
@@ -24,7 +27,7 @@ var cache = gkrtesting.NewCache({{ .FieldDescription }})
 
 func TestNoGateTwoInstances(t *testing.T) {
 	// Testing a single instance is not possible because the sumcheck implementation doesn't cover the trivial 0-variate case
-	testNoGate(t, []{{ .ElementType }}{four, three})
+	testNoGate(t, []{{ .BaseElementType }}{four, three})
 }
 
 func TestNoGate(t *testing.T) {
@@ -129,7 +132,7 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 			if len(target) == 0 {
 				continue
 			}
-			target[0].Add(&target[0], &one)
+			target[0].Add(&target[0], &{{ if .Mixed }}oneExt{{ else }}one{{ end }})
 			claims, err := Verify(c, schedule, logNbInstances, proof, newMessageCounter(1, 1))
 			if levelI < len(schedule) || !c.IsInput(c.Outputs()[0]) || consolidated[c.Outputs()[0]] {
 				assert.Error(t, err, "tampered proof accepted at level %d", levelI)
@@ -137,14 +140,21 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 				assert.NoError(t, err, "level %d: Verify should accept a tampered claim it cannot cross-check", levelI)
 				assert.Error(t, claims.Check(assignment), "level %d: tampered output claim accepted", levelI)
 			}
-			target[0].Sub(&target[0], &one)
+			target[0].Sub(&target[0], &{{ if .Mixed }}oneExt{{ else }}one{{ end }})
 		}
 	}
 }
 
-var one, two, three, four, five, six {{ .ElementType }}
+var one, two, three, four, five, six {{ .BaseElementType }}
+{{- if .Mixed }}
+
+var oneExt {{ .ElementType }}
+{{- end }}
 
 func init() {
+	{{- if .Mixed }}
+	oneExt.SetOne()
+	{{- end }}
 	one.SetOne()
 	two.Double(&one)
 	three.Add(&two, &one)
@@ -175,8 +185,8 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 	maxSize := 1 << gkrtesting.GetLogMaxInstances(t)
 
 	for i := range ins {
-		insAssignment[i] = make([]{{ .ElementType }}, maxSize)
-		{{ .FieldPackageName }}.Vector{{ .ExtensionSuffix }}(insAssignment[i]).MustSetRandom()
+		insAssignment[i] = make([]{{ .BaseElementType }}, maxSize)
+		{{ .BaseFieldPackageName }}.Vector(insAssignment[i]).MustSetRandom()
 	}
 
 	fullAssignment := make(WireAssignment, len(circuit))
@@ -193,7 +203,7 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 	}
 }
 
-func testNoGate(t *testing.T, inputAssignments ...[]{{ .ElementType }}) {
+func testNoGate(t *testing.T, inputAssignments ...[]{{ .BaseElementType }}) {
 	_, c := cache.Compile(t, gkrtesting.NoGateCircuit())
 
 	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
@@ -281,10 +291,10 @@ func benchmarkGkrMiMC(b *testing.B, nbInstances, mimcDepth int) {
 	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	assert.NoError(b, err)
 
-	in0 := make([]{{ .ElementType }}, nbInstances)
-	in1 := make([]{{ .ElementType }}, nbInstances)
-	{{ .FieldPackageName }}.Vector{{ .ExtensionSuffix }}(in0).MustSetRandom()
-	{{ .FieldPackageName }}.Vector{{ .ExtensionSuffix }}(in1).MustSetRandom()
+	in0 := make([]{{ .BaseElementType }}, nbInstances)
+	in1 := make([]{{ .BaseElementType }}, nbInstances)
+	{{ .BaseFieldPackageName }}.Vector(in0).MustSetRandom()
+	{{ .BaseFieldPackageName }}.Vector(in1).MustSetRandom()
 
 	fmt.Println("evaluating circuit")
 	start := time.Now().UnixMicro()

@@ -10,6 +10,7 @@ import (
 	"hash"
 	"math/big"
 
+	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions/polynomial"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
@@ -125,6 +126,55 @@ func sliceToElementSlice[T any](slice []T) ([]extensions.E6, error) {
 }
 
 func sliceEquals(a []extensions.E6, b []extensions.E6) error {
+	if len(a) != len(b) {
+		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
+	}
+	for i := range a {
+		if !a[i].Equal(&b[i]) {
+			return fmt.Errorf("at index %d: %s ≠ %s", i, a[i].String(), b[i].String())
+		}
+	}
+	return nil
+}
+
+// setBaseElement parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
+// then sets z to its numerator divided by its denominator, via SetBigInt, Inverse and Mul.
+func setBaseElement(z *koalabear.Element, value interface{}) (*koalabear.Element, error) {
+	var r big.Rat
+	switch v := value.(type) {
+	case string:
+		if _, ok := r.SetString(v); !ok {
+			return nil, fmt.Errorf("cannot parse %q", v)
+		}
+	case float64:
+		asInt := int64(v)
+		if float64(asInt) != v {
+			return nil, fmt.Errorf("cannot currently parse float")
+		}
+		r.SetFloat64(v)
+	default:
+		return nil, fmt.Errorf("cannot parse value of type %T", value)
+	}
+
+	var denom koalabear.Element
+	z.SetBigInt(r.Num())
+	denom.SetBigInt(r.Denom())
+	denom.Inverse(&denom)
+	z.Mul(z, &denom)
+	return z, nil
+}
+
+func sliceToBaseElementSlice[T any](slice []T) ([]koalabear.Element, error) {
+	elementSlice := make([]koalabear.Element, len(slice))
+	for i, v := range slice {
+		if _, err := setBaseElement(&elementSlice[i], v); err != nil {
+			return nil, err
+		}
+	}
+	return elementSlice, nil
+}
+
+func baseSliceEquals(a []koalabear.Element, b []koalabear.Element) error {
 	if len(a) != len(b) {
 		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
 	}

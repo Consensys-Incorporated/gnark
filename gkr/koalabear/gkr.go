@@ -11,8 +11,10 @@ import (
 	"hash"
 	"iter"
 
+	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions/polynomial"
+	basePolynomial "github.com/consensys/gnark-crypto/field/koalabear/polynomial"
 	"github.com/consensys/gnark-crypto/utils"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
@@ -28,7 +30,7 @@ type (
 // The goal is to prove/verify evaluations of many instances of the same circuit
 
 // WireAssignment is the assignment of values to the same wire across many instances of the circuit
-type WireAssignment []polynomial.MultiLinE6
+type WireAssignment []basePolynomial.MultiLin
 
 type Proof []sumcheckProof // for each layer, for each wire, a sumcheck (for each variable, a polynomial)
 
@@ -42,9 +44,10 @@ type Claims map[int][]EvaluationClaim
 
 // Check asserts that every claim in c holds against assignment.
 func (c Claims) Check(assignment WireAssignment) error {
+	var scratch polynomial.MultiLinE6
 	for wI, wireClaims := range c {
 		for _, claim := range wireClaims {
-			eval := assignment[wI].Evaluate(claim.EvaluationPoint, nil)
+			eval := scratch.EvaluateBase(assignment[wI], claim.EvaluationPoint)
 			if !eval.Equal(&claim.Evaluation) {
 				return fmt.Errorf("wire %d: claimed evaluation %v, computed %v", wI, &claim.Evaluation, &eval)
 			}
@@ -68,6 +71,15 @@ type resources struct {
 	claimValueIndices  [][]int // claimValueIndices[wI][claimI]: index of w's claimI-th claimed value in its source level's finalEvalProof
 	claims             Claims
 	consolidated       []bool // the wires of schedule[0], indexed by wire
+}
+
+// evaluateBase returns the evaluation of the multilinear extension of the base field column col at
+// point.
+func (r *resources) evaluateBase(col basePolynomial.MultiLin, point []extensions.E6) extensions.E6 {
+	buf := polynomial.MultiLinE6(r.memPool.Make(len(col) / 2))
+	eval := buf.EvaluateBase(col, point)
+	r.memPool.Dump(buf)
+	return eval
 }
 
 // identityGate is the identity gate LevelCircuit and ConsolidationView use to build level 0's
@@ -101,7 +113,7 @@ func (r *resources) proveSkipLevel(levelI int) sumcheckProof {
 	evals := make([]extensions.E6, len(uniqueInputs)*len(outPoints))
 	for uiI, inW := range uniqueInputs {
 		for k, point := range outPoints {
-			evals[level.FinalEvalProofIndex(uiI, k)] = r.assignment[inW].Evaluate(point, &r.memPool)
+			evals[level.FinalEvalProofIndex(uiI, k)] = r.evaluateBase(r.assignment[inW], point)
 		}
 	}
 	return sumcheckProof{finalEvalProof: evals}
@@ -187,9 +199,9 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	for wireI := range c {
 		if len(assignment[wireI]) == 0 {
 			const minBlockSize = 64
-			assignment[wireI] = make([]extensions.E6, nbInstances)
+			assignment[wireI] = make([]koalabear.Element, nbInstances)
 			r.workers.Submit(nbInstances, func(start, end int) {
-				gateEval := evaluator.NewGateEvaluatorMixed(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
+				gateEval := evaluator.NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs))
 				for instanceI := start; instanceI < end; instanceI++ {
 					for _, inputWireI := range c[wireI].Inputs {
 						gateEval.PushInput(assignment[inputWireI][instanceI])
@@ -213,7 +225,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	outputs := c.Outputs()
 	outputEvals := make([]extensions.E6, len(outputs))
 	for i, w := range outputs {
-		outputEvals[i] = r.assignment[w].Evaluate(firstChallenge, &r.memPool)
+		outputEvals[i] = r.evaluateBase(r.assignment[w], firstChallenge)
 	}
 	proof[len(schedule)] = sumcheckProof{finalEvalProof: outputEvals}
 	var boundOutputEvals []extensions.E6
@@ -329,14 +341,14 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 
 	nbInstances := a.NumInstances()
-	evaluators := make([]evaluator.GateEvaluatorMixed, len(circuit))
+	evaluators := make([]evaluator.GateEvaluator, len(circuit))
 
 	for i := range circuit {
 		if len(a[i]) != nbInstances {
-			a[i] = make([]extensions.E6, nbInstances)
+			a[i] = make([]koalabear.Element, nbInstances)
 		}
 		if !circuit[i].IsInput() {
-			evaluators[i] = evaluator.NewGateEvaluatorMixed(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
+			evaluators[i] = evaluator.NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
 		}
 	}
 

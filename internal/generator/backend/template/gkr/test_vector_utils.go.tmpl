@@ -4,6 +4,9 @@ import (
 	"math/big"
 	"{{.FieldPackagePath}}"
 	"{{.FieldPackagePath}}/polynomial"
+	{{- if .Mixed }}
+	"{{ .BaseFieldPackagePath }}"
+	{{- end }}
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 )
 
@@ -79,9 +82,36 @@ func newMessageCounterGenerator(startState, step int) func() hash.Hash {
 	}
 }
 
-// setElement parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
+{{ template "elementHelpers" dict "Config" . "Base" false }}
+{{- if .Mixed }}
+
+{{ template "elementHelpers" dict "Config" . "Base" true }}
+{{- end }}
+
+func polynomialSliceEquals(a []polynomial.Polynomial{{ .ExtensionSuffix }}, b []polynomial.Polynomial{{ .ExtensionSuffix }}) error {
+	if len(a) != len(b) {
+		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
+	}
+	for i := range a {
+		if err := sliceEquals(a[i],b[i]); err != nil {
+			return fmt.Errorf("at index %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+{{ define "elementHelpers" }}
+{{- $elem := .Config.ElementType }}
+{{- $name := "Element" }}
+{{- $equals := "sliceEquals" }}
+{{- if .Base }}
+{{- $elem = .Config.BaseElementType }}
+{{- $name = "BaseElement" }}
+{{- $equals = "baseSliceEquals" }}
+{{- end }}
+// set{{ $name }} parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
 // then sets z to its numerator divided by its denominator, via SetBigInt, Inverse and Mul.
-func setElement(z *{{.ElementType}}, value interface{}) (*{{.ElementType}}, error) {
+func set{{ $name }}(z *{{ $elem }}, value interface{}) (*{{ $elem }}, error) {
 	var r big.Rat
 	switch v := value.(type) {
 	case string:
@@ -98,7 +128,7 @@ func setElement(z *{{.ElementType}}, value interface{}) (*{{.ElementType}}, erro
 		return nil, fmt.Errorf("cannot parse value of type %T", value)
 	}
 
-	var denom {{.ElementType}}
+	var denom {{ $elem }}
 	z.SetBigInt(r.Num())
 	denom.SetBigInt(r.Denom())
 	denom.Inverse(&denom)
@@ -106,17 +136,17 @@ func setElement(z *{{.ElementType}}, value interface{}) (*{{.ElementType}}, erro
 	return z, nil
 }
 
-func sliceToElementSlice[T any](slice []T) ([]{{.ElementType}}, error) {
-	elementSlice := make([]{{.ElementType}}, len(slice))
+func sliceTo{{ $name }}Slice[T any](slice []T) ([]{{ $elem }}, error) {
+	elementSlice := make([]{{ $elem }}, len(slice))
 	for i, v := range slice {
-		if _, err := setElement(&elementSlice[i], v); err != nil {
+		if _, err := set{{ $name }}(&elementSlice[i], v); err != nil {
 			return nil, err
 		}
 	}
 	return elementSlice, nil
 }
 
-func sliceEquals(a []{{.ElementType}}, b []{{.ElementType}}) error {
+func {{ $equals }}(a []{{ $elem }}, b []{{ $elem }}) error {
 	if len(a) != len(b) {
 		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
 	}
@@ -127,15 +157,4 @@ func sliceEquals(a []{{.ElementType}}, b []{{.ElementType}}) error {
 	}
 	return nil
 }
-
-func polynomialSliceEquals(a []polynomial.Polynomial{{ .ExtensionSuffix }}, b []polynomial.Polynomial{{ .ExtensionSuffix }}) error {
-	if len(a) != len(b) {
-		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
-	}
-	for i := range a {
-		if err := sliceEquals(a[i],b[i]); err != nil {
-			return fmt.Errorf("at index %d: %w", i, err)
-		}
-	}
-	return nil
-}
+{{ end }}

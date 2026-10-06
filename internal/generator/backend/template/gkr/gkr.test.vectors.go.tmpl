@@ -1,4 +1,10 @@
 {{ define "gkrTestVectors" }}
+{{- $sliceToBase := "sliceToElementSlice" }}
+{{- $baseEquals := "sliceEquals" }}
+{{- if .Mixed }}
+{{- $sliceToBase = "sliceToBaseElementSlice" }}
+{{- $baseEquals = "baseSliceEquals" }}
+{{- end }}
 
 func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 	proof := make(Proof, len(printable))
@@ -103,8 +109,8 @@ func newTestCase(path string) (*TestCase, error) {
 			outI++
 		}
 		if assignmentRaw != nil {
-			var wireAssignment []{{ .ElementType }}
-			if wireAssignment, err = sliceToElementSlice(assignmentRaw); err != nil {
+			var wireAssignment []{{ .BaseElementType }}
+			if wireAssignment, err = {{ $sliceToBase }}(assignmentRaw); err != nil {
 				return nil, err
 			}
 
@@ -117,7 +123,7 @@ func newTestCase(path string) (*TestCase, error) {
 
 	for i := range circuit {
 		if outputSet[i] {
-			if err = sliceEquals(inOutAssignment[i], fullAssignment[i]); err != nil {
+			if err = {{ $baseEquals }}(inOutAssignment[i], fullAssignment[i]); err != nil {
 				return nil, fmt.Errorf("assignment mismatch: %v", err)
 			}
 		}

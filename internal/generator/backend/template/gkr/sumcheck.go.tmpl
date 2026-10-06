@@ -356,7 +356,15 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 	uniqueInputs, inputIndices := r.circuit.InputMapping(level)
 	c.input = make([]polynomial.MultiLin{{ .ExtensionSuffix }}, len(uniqueInputs))
 	for i, inW := range uniqueInputs {
+		{{- if .Mixed }}
+		column := r.assignment[inW]
+		c.input[i] = polynomial.MultiLin{{ .ExtensionSuffix }}(r.memPool.Make(len(column)))
+		for j := range column {
+			c.input[i][j].SetElement(&column[j])
+		}
+		{{- else }}
 		c.input[i] = r.memPool.Clone(r.assignment[inW])
+		{{- end }}
 	}
 	c.inputIndices = inputIndices
 

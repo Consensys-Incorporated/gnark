@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions/polynomial"
 	gcHash "github.com/consensys/gnark-crypto/hash"
@@ -29,7 +30,7 @@ var cache = gkrtesting.NewCache(gkr.KoalaBearE6())
 
 func TestNoGateTwoInstances(t *testing.T) {
 	// Testing a single instance is not possible because the sumcheck implementation doesn't cover the trivial 0-variate case
-	testNoGate(t, []extensions.E6{four, three})
+	testNoGate(t, []koalabear.Element{four, three})
 }
 
 func TestNoGate(t *testing.T) {
@@ -134,7 +135,7 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 			if len(target) == 0 {
 				continue
 			}
-			target[0].Add(&target[0], &one)
+			target[0].Add(&target[0], &oneExt)
 			claims, err := Verify(c, schedule, logNbInstances, proof, newMessageCounter(1, 1))
 			if levelI < len(schedule) || !c.IsInput(c.Outputs()[0]) || consolidated[c.Outputs()[0]] {
 				assert.Error(t, err, "tampered proof accepted at level %d", levelI)
@@ -142,14 +143,17 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 				assert.NoError(t, err, "level %d: Verify should accept a tampered claim it cannot cross-check", levelI)
 				assert.Error(t, claims.Check(assignment), "level %d: tampered output claim accepted", levelI)
 			}
-			target[0].Sub(&target[0], &one)
+			target[0].Sub(&target[0], &oneExt)
 		}
 	}
 }
 
-var one, two, three, four, five, six extensions.E6
+var one, two, three, four, five, six koalabear.Element
+
+var oneExt extensions.E6
 
 func init() {
+	oneExt.SetOne()
 	one.SetOne()
 	two.Double(&one)
 	three.Add(&two, &one)
@@ -180,8 +184,8 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 	maxSize := 1 << gkrtesting.GetLogMaxInstances(t)
 
 	for i := range ins {
-		insAssignment[i] = make([]extensions.E6, maxSize)
-		extensions.VectorE6(insAssignment[i]).MustSetRandom()
+		insAssignment[i] = make([]koalabear.Element, maxSize)
+		koalabear.Vector(insAssignment[i]).MustSetRandom()
 	}
 
 	fullAssignment := make(WireAssignment, len(circuit))
@@ -198,7 +202,7 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 	}
 }
 
-func testNoGate(t *testing.T, inputAssignments ...[]extensions.E6) {
+func testNoGate(t *testing.T, inputAssignments ...[]koalabear.Element) {
 	_, c := cache.Compile(t, gkrtesting.NoGateCircuit())
 
 	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
@@ -286,10 +290,10 @@ func benchmarkGkrMiMC(b *testing.B, nbInstances, mimcDepth int) {
 	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	assert.NoError(b, err)
 
-	in0 := make([]extensions.E6, nbInstances)
-	in1 := make([]extensions.E6, nbInstances)
-	extensions.VectorE6(in0).MustSetRandom()
-	extensions.VectorE6(in1).MustSetRandom()
+	in0 := make([]koalabear.Element, nbInstances)
+	in1 := make([]koalabear.Element, nbInstances)
+	koalabear.Vector(in0).MustSetRandom()
+	koalabear.Vector(in1).MustSetRandom()
 
 	fmt.Println("evaluating circuit")
 	start := time.Now().UnixMicro()
@@ -545,8 +549,8 @@ func newTestCase(path string) (*TestCase, error) {
 			outI++
 		}
 		if assignmentRaw != nil {
-			var wireAssignment []extensions.E6
-			if wireAssignment, err = sliceToElementSlice(assignmentRaw); err != nil {
+			var wireAssignment []koalabear.Element
+			if wireAssignment, err = sliceToBaseElementSlice(assignmentRaw); err != nil {
 				return nil, err
 			}
 
@@ -559,7 +563,7 @@ func newTestCase(path string) (*TestCase, error) {
 
 	for i := range circuit {
 		if outputSet[i] {
-			if err = sliceEquals(inOutAssignment[i], fullAssignment[i]); err != nil {
+			if err = baseSliceEquals(inOutAssignment[i], fullAssignment[i]); err != nil {
 				return nil, fmt.Errorf("assignment mismatch: %v", err)
 			}
 		}

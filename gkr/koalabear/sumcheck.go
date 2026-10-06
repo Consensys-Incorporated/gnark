@@ -360,7 +360,11 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 	uniqueInputs, inputIndices := r.circuit.InputMapping(level)
 	c.input = make([]polynomial.MultiLinE6, len(uniqueInputs))
 	for i, inW := range uniqueInputs {
-		c.input[i] = r.memPool.Clone(r.assignment[inW])
+		column := r.assignment[inW]
+		c.input[i] = polynomial.MultiLinE6(r.memPool.Make(len(column)))
+		for j := range column {
+			c.input[i][j].SetElement(&column[j])
+		}
 	}
 	c.inputIndices = inputIndices
 
