@@ -1,5 +1,6 @@
 {{ $gateEvaluator := "GateEvaluator" }}{{ if .Mixed }}{{ $gateEvaluator = "GateEvaluatorMixed" }}{{ end }}
 import (
+	"github.com/consensys/gnark/gkr"
 	"errors"
 	"sync"
 
@@ -117,7 +118,7 @@ func (e *zeroCheckLazyClaims) degree(int) int {
 func (e *zeroCheckLazyClaims) verifyFinalEval(r []{{ .ElementType }}, purportedValue {{ .ElementType }}, uniqueInputEvaluations []{{ .ElementType }}) error {
 	e.resources.outgoingEvalPoints[e.levelI] = [][]{{ .ElementType }}{r}
 	level := e.resources.schedule[e.levelI]
-	gateInputEvals := gkrcore.ReduplicateInputs(level, e.resources.circuit, uniqueInputEvaluations)
+	gateInputEvals := gkr.ReduplicateInputs(level, e.resources.circuit, uniqueInputEvaluations)
 
 	var claimedEvals polynomial.Polynomial{{ .ExtensionSuffix }}
 	levelWireI := 0

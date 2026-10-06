@@ -547,7 +547,7 @@ func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 }
 
 type TestCase struct {
-	Circuit         gkrcore.SerializableCircuit
+	Circuit         gkr.SerializableCircuit
 	Hash            hash.Hash
 	Proof           Proof
 	FullAssignment  WireAssignment

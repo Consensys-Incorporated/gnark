@@ -27,9 +27,9 @@ type InitialChallengeGetter func() []frontend.Variable
 
 // Circuit represents a GKR circuit.
 type Circuit struct {
-	circuit     gkrcore.GadgetCircuit
+	circuit     gkr.GadgetCircuit
 	schedule    constraint.GkrProvingSchedule
-	gates       []gkrcore.GateBytecode
+	gates       []gkr.GateBytecode
 	assignments gadget.WireAssignment
 	ins         []gkr.Variable
 	outs        []gkr.Variable
@@ -265,7 +265,7 @@ func (c *Circuit) finalize(api frontend.API) error {
 	return nil
 }
 
-func (c *Circuit) verify(api frontend.API, circuit gkrcore.GadgetCircuit, initialChallenges []frontend.Variable) error {
+func (c *Circuit) verify(api frontend.API, circuit gkr.GadgetCircuit, initialChallenges []frontend.Variable) error {
 
 	compiler := api.Compiler()
 

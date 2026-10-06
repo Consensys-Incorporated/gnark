@@ -9,6 +9,8 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/consensys/gnark/gkr"
+
 	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark-crypto/field/mamabear/extensions"
 	"github.com/consensys/gnark-crypto/field/mamabear/extensions/polynomial"
@@ -119,7 +121,7 @@ func (e *zeroCheckLazyClaims) degree(int) int {
 func (e *zeroCheckLazyClaims) verifyFinalEval(r []extensions.E3, purportedValue extensions.E3, uniqueInputEvaluations []extensions.E3) error {
 	e.resources.outgoingEvalPoints[e.levelI] = [][]extensions.E3{r}
 	level := e.resources.schedule[e.levelI]
-	gateInputEvals := gkrcore.ReduplicateInputs(level, e.resources.circuit, uniqueInputEvaluations)
+	gateInputEvals := gkr.ReduplicateInputs(level, e.resources.circuit, uniqueInputEvaluations)
 
 	var claimedEvals polynomial.PolynomialE3
 	levelWireI := 0

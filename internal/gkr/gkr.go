@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/consensys/gnark/gkr"
+
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
@@ -15,8 +17,8 @@ import (
 
 // Type aliases for gadget circuit types
 type (
-	Wire    = gkrcore.GadgetWire
-	Circuit = gkrcore.GadgetCircuit
+	Wire    = gkr.GadgetWire
+	Circuit = gkr.GadgetCircuit
 )
 
 // WireAssignment is an assignment of values to the same wire across many instances of the circuit
@@ -47,7 +49,7 @@ type Proof []sumcheckProof // for each schedule level, a sumcheck proof
 
 // EvaluationClaim is an assertion that a wire's multilinear extension evaluates to Evaluation at
 // EvaluationPoint.
-type EvaluationClaim = gkrcore.EvaluationClaim[frontend.Variable]
+type EvaluationClaim = gkr.EvaluationClaim[frontend.Variable]
 
 // Claims are the evaluation claims on circuit inputs and outputs that Verify returns, by wire.
 type Claims map[int][]EvaluationClaim
@@ -78,8 +80,8 @@ type resources struct {
 
 // identityGate is the identity gate LevelCircuit and ConsolidationView use to build level 0's view
 // of the circuit.
-func identityGate() gkrcore.GadgetGate {
-	return gkrcore.GadgetGate{Evaluate: gkrcore.Identity, NbIn: 1, Degree: 1}
+func identityGate() gkr.GadgetGate {
+	return gkr.GadgetGate{Evaluate: gkrcore.Identity, NbIn: 1, Degree: 1}
 }
 
 // zeroCheckLazyClaims is a lazy claim for sumcheck (verifier side).
@@ -110,7 +112,7 @@ func (e *zeroCheckLazyClaims) degree(int) int {
 func (e *zeroCheckLazyClaims) verifyFinalEval(api frontend.API, r []frontend.Variable, purportedValue frontend.Variable, uniqueInputEvaluations []frontend.Variable) error {
 	e.r.outgoingEvalPoints[e.levelI] = [][]frontend.Variable{r}
 	level := e.r.schedule[e.levelI]
-	perWireInputEvals := gkrcore.ReduplicateInputs(level, e.r.circuit, uniqueInputEvaluations)
+	perWireInputEvals := gkr.ReduplicateInputs(level, e.r.circuit, uniqueInputEvaluations)
 
 	var terms []frontend.Variable
 	levelWireI := 0
@@ -139,7 +141,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(api frontend.API, r []frontend.Var
 // and records outgoing eval points.
 func (r *resources) verifySkipLevel(levelI int, proof Proof) {
 	level := r.schedule[levelI].(*constraint.GkrSkipLevel)
-	gkrcore.CollectOutgoingEvalPoints(level, levelI, r.outgoingEvalPoints)
+	gkr.CollectOutgoingEvalPoints(level, levelI, r.outgoingEvalPoints)
 
 	finalEval := proof[levelI].FinalEvalProof
 	_, inputIndices := r.circuit.InputMapping(level)
@@ -261,7 +263,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 	}
 	bind, include := r.levelPredicates(levelI)
 	constraint.BindGkrFinalEvalProof(r.t, proof[levelI].FinalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
-	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].FinalEvalProof, r.outgoingEvalPoints[levelI], include)
+	gkr.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].FinalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return nil
 }
 
@@ -327,7 +329,7 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 		}
 	}
 	r.t.Bind(boundOutputEvals...)
-	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.FinalEvalProof, func(wI int) bool { return !r.consolidated[wI] })
+	gkr.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.FinalEvalProof, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
 		if err := r.verifyLevel(levelI, proof); err != nil {
@@ -367,7 +369,7 @@ func (r *variablesReader) hasNextN(n int) bool {
 
 func DeserializeProof(circuit Circuit, schedule constraint.GkrProvingSchedule, serializedProof []frontend.Variable) (Proof, error) {
 	proof := make(Proof, len(schedule)+1)
-	logNbInstances, err := gkrcore.ComputeLogNbInstances(circuit, schedule, len(serializedProof), identityGate())
+	logNbInstances, err := gkr.ComputeLogNbInstances(circuit, schedule, len(serializedProof), identityGate())
 	if err != nil {
 		return nil, err
 	}

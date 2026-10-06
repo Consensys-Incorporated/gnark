@@ -28,8 +28,8 @@ type Cache struct {
 }
 
 type circuits struct {
-	serializable gkrcore.SerializableCircuit
-	gadget       gkrcore.GadgetCircuit
+	serializable gkr.SerializableCircuit
+	gadget       gkr.GadgetCircuit
 }
 
 // ConstantPositionsGate is a gate of two inputs, x and y, with a constant in every position the
@@ -93,13 +93,13 @@ type JSONWire struct {
 type JSONCircuit []JSONWire
 
 // Compile compiles a RawCircuit into a SerializableCircuit.
-func (c *Cache) Compile(t require.TestingT, circuit gkrcore.RawCircuit) (gkrcore.GadgetCircuit, gkrcore.SerializableCircuit) {
+func (c *Cache) Compile(t require.TestingT, circuit gkrcore.RawCircuit) (gkr.GadgetCircuit, gkr.SerializableCircuit) {
 	gadget, serializable, err := circuit.Compile(c.field)
 	require.NoError(t, err)
 	return gadget, serializable
 }
 
-func (c *Cache) GetCircuit(path string) (gkrcore.SerializableCircuit, gkrcore.GadgetCircuit) {
+func (c *Cache) GetCircuit(path string) (gkr.SerializableCircuit, gkr.GadgetCircuit) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 

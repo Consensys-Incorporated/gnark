@@ -8,7 +8,7 @@ import (
 )
 
 // Circuit is a circuit compiled by API.Compile, ready to prove and verify with gkr/<curve>.
-type Circuit = gkrcore.SerializableCircuit
+type Circuit = gkr.SerializableCircuit
 
 // PrimeField describes F_p itself.
 var PrimeField = gkr.PrimeField

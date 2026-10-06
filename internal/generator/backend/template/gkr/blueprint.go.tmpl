@@ -1,4 +1,5 @@
 import (
+	"github.com/consensys/gnark/gkr"
 	"fmt"
 	"math/bits"
 	"reflect"
@@ -30,7 +31,7 @@ type circuitEvaluator struct {
 // BlueprintSolve is a {{.FieldID}}-specific blueprint for solving GKR circuit instances.
 type BlueprintSolve struct {
 	// Circuit structure (serialized)
-	Circuit     gkrcore.SerializableCircuit
+	Circuit     gkr.SerializableCircuit
 	NbInstances uint32
 
 	// Not serialized - recreated lazily at solve time
@@ -430,7 +431,7 @@ func (b *BlueprintGetAssignment) UpdateInstructionTree(inst constraint.Instructi
 }
 
 // NewBlueprints creates and registers all GKR blueprints for {{.FieldID}}
-func NewBlueprints(circuit gkrcore.SerializableCircuit, schedule constraint.GkrProvingSchedule, hashName string, compiler constraint.CustomizableSystem) gkrcore.Blueprints {
+func NewBlueprints(circuit gkr.SerializableCircuit, schedule constraint.GkrProvingSchedule, hashName string, compiler constraint.CustomizableSystem) gkrcore.Blueprints {
 	// Create and register solve blueprint
 	solve := &BlueprintSolve{Circuit: circuit}
 	solveID := compiler.AddBlueprint(solve)
