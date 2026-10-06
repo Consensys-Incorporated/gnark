@@ -81,7 +81,7 @@ func (e *{{ $ge }}) PushInput(input {{ $elem }}) {
 	e.vars = append(e.vars, input)
 }
 
-{{- if .Mixed }}
+{{ if .Mixed -}}
 // isInputConstant returns whether the instruction's inputI-th input is one of the gate's constants.
 func (e *{{ $ge }}) isInputConstant(inst *gkrcore.GateInstruction, inputI int) bool {
 	return int(inst.Inputs[inputI]) < e.gate.NbConstants()
