@@ -238,6 +238,17 @@ func main() {
 	}()
 
 	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		assertNoError(generateGkrBackend(gkrConfig{
+			FieldPackagePath: "github.com/consensys/gnark-crypto/field/mamabear/extensions",
+			ExtensionSuffix:  "E3",
+			GkrPackageName:   "mamabear",
+			Description:      "gkr.MamaBearE3()",
+		}))
+	}()
+
+	wg.Add(1)
 	// GKR test vectors
 	go func() {
 		// generate gkr and sumcheck for rational
@@ -346,6 +357,17 @@ func generateGkrBackend(cfg gkrConfig) error {
 		// evaluators' package would close an import cycle, so they get their own package.
 		blueprintEntry := bavard.Entry{File: filepath.Join(internalDir, "blueprints", "blueprint.go"), Templates: []string{"blueprint.go.tmpl"}}
 		if err := bgen.Generate(cfg, "blueprints", "./template/gkr/", blueprintEntry); err != nil {
+			return err
+		}
+	}
+
+	if cfg.Mixed() {
+		poseidon2Dir := filepath.Join("../../../gkr/permutation/gkr-poseidon2", cfg.GkrPackageName)
+		poseidon2Entries := []bavard.Entry{
+			{File: filepath.Join(poseidon2Dir, "gkr-poseidon2.go"), Templates: []string{"gkr-poseidon2.go.tmpl"}},
+			{File: filepath.Join(poseidon2Dir, "gkr-poseidon2_test.go"), Templates: []string{"gkr-poseidon2.test.go.tmpl"}},
+		}
+		if err := bgen.Generate(cfg, "gkr_poseidon2", "./template/gkr/", poseidon2Entries...); err != nil {
 			return err
 		}
 	}
