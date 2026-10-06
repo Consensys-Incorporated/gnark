@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -21,9 +22,11 @@ import (
 	_ "github.com/consensys/gnark-crypto/hash/all" // registers the hash benchmarkGkrMiMC uses
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/gkr"
+	"github.com/consensys/gnark/gkr/gkrapi"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var cache = gkrtesting.NewCache(gkr.PrimeField(ecc.BLS12_377.ScalarField()))
@@ -71,6 +74,56 @@ func TestMimc(t *testing.T) {
 
 func TestPoseidon2(t *testing.T) {
 	test(t, gkrtesting.Poseidon2Circuit(4, 2))
+}
+
+// TestEndToEndPoseidon2 compiles a circuit with gkrapi, then proves and verifies it with Poseidon2,
+// the proof being rebuilt by DeserializeProof from the elements of its Flatten, and checks that
+// tampering with the proof is rejected.
+func TestEndToEndPoseidon2(t *testing.T) {
+	const nbInstances = 16
+
+	api := gkrapi.New()
+	x := api.NewInput()
+	y := api.NewInput()
+	api.Export(api.Gate(gkrtesting.ConstantPositionsGate, x, y))
+	circuit, schedule, err := api.Compile(gkr.PrimeField(ecc.BLS12_377.ScalarField()), gkrapi.ConsolidateAll)
+	require.NoError(t, err)
+
+	assignment := make(WireAssignment, len(circuit))
+	for _, w := range []gkr.Variable{x, y} {
+		assignment[w] = make([]fr.Element, nbInstances)
+		fr.Vector(assignment[w]).MustSetRandom()
+	}
+	// The output column is left nil: Prove computes it.
+
+	proof, proverClaims, err := Prove(circuit, schedule, assignment, gcHash.POSEIDON2_BLS12_377.New())
+	require.NoError(t, err)
+
+	var flattened []fr.Element
+	for _, element := range proof.Flatten() {
+		flattened = append(flattened, *element)
+	}
+
+	verify := func(serialized []fr.Element) (Claims, error) {
+		deserialized, err := DeserializeProof(circuit, schedule, serialized)
+		if err != nil {
+			return nil, err
+		}
+		claims, err := Verify(circuit, schedule, assignment.NumVars(), deserialized, gcHash.POSEIDON2_BLS12_377.New())
+		if err != nil {
+			return nil, err
+		}
+		return claims, claims.Check(assignment)
+	}
+
+	verifierClaims, err := verify(flattened)
+	require.NoError(t, err)
+	assert.Equal(t, proverClaims, verifierClaims)
+
+	tampered := slices.Clone(flattened)
+	tampered[0].Add(&tampered[0], &one)
+	_, err = verify(tampered)
+	assert.Error(t, err, "tampered proof accepted")
 }
 
 // proveAndVerify proves assignment against schedule and verifies the proof rebuilt by

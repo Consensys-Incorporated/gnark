@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -21,9 +22,11 @@ import (
 	_ "github.com/consensys/gnark-crypto/hash/all" // registers the hash benchmarkGkrMiMC uses
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/gkr"
+	"github.com/consensys/gnark/gkr/gkrapi"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var cache = gkrtesting.NewCache(gkr.KoalaBearE6())
@@ -71,6 +74,64 @@ func TestMimc(t *testing.T) {
 
 func TestPoseidon2(t *testing.T) {
 	test(t, gkrtesting.Poseidon2Circuit(4, 2))
+}
+
+// TestEndToEndPoseidon2 compiles a circuit with gkrapi, then proves and verifies it with Poseidon2,
+// the proof being rebuilt by DeserializeProof from the elements of its Flatten, and checks that
+// tampering with the proof is rejected.
+func TestEndToEndPoseidon2(t *testing.T) {
+	const nbInstances = 16
+
+	api := gkrapi.New()
+	x := api.NewInput()
+	y := api.NewInput()
+	api.Export(api.Gate(gkrtesting.ConstantPositionsGate, x, y))
+	circuit, schedule, err := api.Compile(gkr.KoalaBearE6(), gkrapi.ConsolidateAll)
+	require.NoError(t, err)
+
+	assignment := make(WireAssignment, len(circuit))
+	for _, w := range []gkr.Variable{x, y} {
+		assignment[w] = make([]koalabear.Element, nbInstances)
+		koalabear.Vector(assignment[w]).MustSetRandom()
+	}
+	// The output column is left nil: Prove computes it.
+
+	proof, proverClaims, err := Prove(circuit, schedule, assignment, gcHash.POSEIDON2_KOALABEAR.New())
+	require.NoError(t, err)
+
+	var flattened []extensions.E6
+	for _, element := range proof.Flatten() {
+		flattened = append(flattened, *element)
+	}
+
+	verify := func(serialized []extensions.E6) (Claims, error) {
+		deserialized, err := DeserializeProof(circuit, schedule, serialized)
+		if err != nil {
+			return nil, err
+		}
+		claims, err := Verify(circuit, schedule, assignment.NumVars(), deserialized, gcHash.POSEIDON2_KOALABEAR.New())
+		if err != nil {
+			return nil, err
+		}
+		return claims, claims.Check(assignment)
+	}
+
+	verifierClaims, err := verify(flattened)
+	require.NoError(t, err)
+	assert.Equal(t, proverClaims, verifierClaims)
+
+	outsideBaseField := false
+	for _, wireClaims := range verifierClaims {
+		for _, claim := range wireClaims {
+			outsideBaseField = outsideBaseField || claim.Evaluation.BigInt(nil) == nil
+		}
+	}
+	assert.True(t, outsideBaseField, "no claim is outside the base field: the challenges are not extension elements")
+
+	tampered := slices.Clone(flattened)
+	tampered[0].Add(&tampered[0], &oneExt)
+	_, err = verify(tampered)
+	assert.Error(t, err, "tampered proof accepted")
 }
 
 // proveAndVerify proves assignment against schedule and verifies the proof rebuilt by
