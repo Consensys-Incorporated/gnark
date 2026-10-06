@@ -337,7 +337,7 @@ func generateGkrBackend(cfg gkrConfig) error {
 		}...)
 	}
 
-	if err := bgen.Generate(cfg, "gkr", "./template/gkr/", entries...); err != nil {
+	if err := bgen.Generate(cfg, cfg.PackageName(), "./template/gkr/", entries...); err != nil {
 		return err
 	}
 
@@ -410,7 +410,15 @@ func (c gkrConfig) BasePolynomial() string {
 	return "polynomial"
 }
 
-// FieldID is the name of the field's ecc.ID constant, e.g. BLS12_377.
+// PackageName is the name of the generated packages: "gkr" followed by GkrPackageName with its
+// hyphens removed, e.g. gkrbls12377. The name gkr alone clashes with github.com/consensys/gnark/gkr,
+// and GkrPackageName alone with gnark-crypto's packages of the same name.
+func (c gkrConfig) PackageName() string {
+	return "gkr" + strings.ReplaceAll(c.GkrPackageName, "-", "")
+}
+
+// FieldID names the field in gnark-crypto's identifiers: the ecc.ID of a curve, and the hash
+// registered for the field, as in POSEIDON2_KOALABEAR. For example BLS12_377.
 func (c gkrConfig) FieldID() string {
 	return strings.ToUpper(strings.ReplaceAll(c.GkrPackageName, "-", "_"))
 }

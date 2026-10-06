@@ -185,11 +185,11 @@ func (gc *gateCompiler) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) f
 	operands := append([]frontend.Variable{i1, i2}, in...)
 	minuend, minuendIsConst := constantValue(operands[0])
 
-	sum := new(big.Int) // of the constant subtrahends
+	subtrahends := new(big.Int)
 	nbKept := 1
 	for _, v := range operands[1:] {
 		if c, ok := constantValue(v); ok {
-			sum.Add(sum, c)
+			subtrahends.Add(subtrahends, c)
 		} else {
 			operands[nbKept] = v
 			nbKept++
@@ -199,13 +199,13 @@ func (gc *gateCompiler) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) f
 	operands = operands[:nbKept]
 
 	if minuendIsConst {
-		diff := minuend.Sub(minuend, sum)
+		diff := minuend.Sub(minuend, subtrahends)
 		if nbKept == 1 {
 			return diff
 		}
 		operands[0] = diff
 	} else if hasConst {
-		operands = append(operands, sum)
+		operands = append(operands, subtrahends)
 	}
 	return gc.addInstruction(OpSub, operands...)
 }

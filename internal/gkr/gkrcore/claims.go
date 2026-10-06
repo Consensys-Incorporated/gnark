@@ -1,13 +1,13 @@
 package gkrcore
 
-import "github.com/consensys/gnark/constraint"
+import (
+	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/gkr"
+)
 
 // EvaluationClaim is an assertion that a wire's multilinear extension evaluates to Evaluation at
-// EvaluationPoint. EvaluationPoint may be aliased across claims; callers must not modify it.
-type EvaluationClaim[F any] struct {
-	EvaluationPoint []F
-	Evaluation      F
-}
+// EvaluationPoint. See gkr.EvaluationClaim.
+type EvaluationClaim[F any] = gkr.EvaluationClaim[F]
 
 // AppendOutputClaims appends (point, evals[i]) to claims[w] for every output wire w of c that
 // include selects, in c.Outputs() order.
