@@ -124,7 +124,7 @@ func (e *GateEvaluator) Evaluate(top ...fr.Element) *fr.Element {
 }
 
 // GateEvaluatorPool manages a pool of gate evaluators for a specific gate type.
-// All evaluators share the same underlying polynomial.Pool for element slices.
+// The evaluators allocate their element slices from the polynomial.Pool the pool was given, if any.
 type GateEvaluatorPool struct {
 	gate        gkrcore.GateBytecode
 	nbIn        int

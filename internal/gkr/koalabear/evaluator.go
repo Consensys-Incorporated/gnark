@@ -126,7 +126,7 @@ func (e *GateEvaluator) Evaluate(top ...koalabear.Element) *koalabear.Element {
 }
 
 // GateEvaluatorPool manages a pool of gate evaluators for a specific gate type.
-// All evaluators share the same underlying polynomial.Pool for element slices.
+// The evaluators allocate their element slices from the polynomial.Pool the pool was given, if any.
 type GateEvaluatorPool struct {
 	gate        gkrcore.GateBytecode
 	nbIn        int
@@ -180,7 +180,7 @@ func (gep *GateEvaluatorPool) DumpAll() {
 type GateEvaluatorMixed struct {
 	gate   gkrcore.GateBytecode
 	vars   []extensions.E6
-	consts []koalabear.Element // the gate's constants in the base field, multiplied by with MulByElement
+	consts []koalabear.Element // the gate's constants in the base field, for the extension's methods taking a base field element
 	nbIn   int                 // number of inputs expected
 	pool   *polynomial.PoolE6  // pool vars was allocated from, if any
 }
@@ -314,7 +314,7 @@ func (e *GateEvaluatorMixed) Evaluate(top ...extensions.E6) *extensions.E6 {
 }
 
 // GateEvaluatorMixedPool manages a pool of gate evaluators for a specific gate type.
-// All evaluators share the same underlying polynomial.Pool for element slices.
+// The evaluators allocate their element slices from the polynomial.Pool the pool was given, if any.
 type GateEvaluatorMixedPool struct {
 	gate        gkrcore.GateBytecode
 	nbIn        int

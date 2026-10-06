@@ -35,7 +35,7 @@ type {{ $ge }} struct {
 	gate gkrcore.GateBytecode
 	vars []{{ $elem }}
 	{{- if .Mixed }}
-	consts []{{ .Config.BaseElementType }} // the gate's constants in the base field, multiplied by with MulByElement
+	consts []{{ .Config.BaseElementType }} // the gate's constants in the base field, for the extension's methods taking a base field element
 	{{- end }}
 	nbIn int // number of inputs expected
 	pool *{{ $poly }}.Pool{{ $suffix }} // pool vars was allocated from, if any
@@ -194,7 +194,7 @@ func (e *{{ $ge }}) Evaluate(top ...{{ $elem }}) *{{ $elem }} {
 }
 
 // {{ $ge }}Pool manages a pool of gate evaluators for a specific gate type.
-// All evaluators share the same underlying polynomial.Pool for element slices.
+// The evaluators allocate their element slices from the polynomial.Pool the pool was given, if any.
 type {{ $ge }}Pool struct {
 	gate        gkrcore.GateBytecode
 	nbIn        int
