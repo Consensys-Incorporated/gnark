@@ -9,8 +9,10 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions/polynomial"
+	basePolynomial "github.com/consensys/gnark-crypto/field/koalabear/polynomial"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	evaluator "github.com/consensys/gnark/internal/gkr/koalabear"
@@ -178,57 +180,116 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.PolynomialE6 {
 
 	p := make([]extensions.E6, degree)
 	var mu sync.Mutex
-	computeAll := func(start, end int) {
-		var step extensions.E6
+	var computeAll func(start, end int)
+	if c.baseInput != nil {
+		computeAll = func(start, end int) {
+			var eqStep extensions.E6
+			var step koalabear.Element
 
-		evaluators := make([]*evaluator.GateEvaluatorMixed, nbWires)
-		for w := range nbWires {
-			evaluators[w] = c.gateEvaluatorPools[w].Get()
-		}
-		defer func() {
+			evaluators := make([]*evaluator.GateEvaluator, nbWires)
 			for w := range nbWires {
-				c.gateEvaluatorPools[w].Put(evaluators[w])
+				evaluators[w] = c.baseGateEvaluatorPools[w].Get()
 			}
-		}()
-
-		res := make([]extensions.E6, degree)
-
-		// evaluations of ml, laid out as:
-		// ml[0](1, h...), ml[1](1, h...), ..., ml[len(ml)-1](1, h...),
-		// ml[0](2, h...), ml[1](2, h...), ..., ml[len(ml)-1](2, h...),
-		// ...
-		// ml[0](degree, h...), ml[1](degree, h...), ..., ml[len(ml)-1](degree, h...)
-		mlEvals := make([]extensions.E6, degree*len(ml))
-
-		for h := start; h < end; h++ {
-			evalAt1Index := sumSize + h
-			for k := range ml {
-				mlEvals[k].Set(&ml[k][evalAt1Index]) // evaluation at Xⱼ = 1, taken directly from the table
-				step.Sub(&mlEvals[k], &ml[k][h])     // step = ml[k](1) - ml[k](0)
-				for d := 1; d < degree; d++ {
-					mlEvals[d*len(ml)+k].Add(&mlEvals[(d-1)*len(ml)+k], &step)
-				}
-			}
-
-			eIndex := 0 // start of the current row's eq evaluations
-			nextEIndex := len(ml)
-			for d := range degree {
+			defer func() {
 				for w := range nbWires {
-					for _, inputI := range c.inputIndices[w] {
-						evaluators[w].PushInput(mlEvals[eIndex+nbWires+inputI])
-					}
-					summand := evaluators[w].Evaluate()
-					summand.Mul(summand, &mlEvals[eIndex+w])
-					res[d].Add(&res[d], summand) // collect contributions into the sum from start to end
+					c.baseGateEvaluatorPools[w].Put(evaluators[w])
 				}
-				eIndex, nextEIndex = nextEIndex, nextEIndex+len(ml)
+			}()
+
+			res := make([]extensions.E6, degree)
+			var term extensions.E6
+
+			// Evaluations of the eq tables and of the base field input tables at Xⱼ = 1, 2, ..., degree,
+			// row by row: eqEvals[d*nbWires+w] and inputEvals[d*nbUniqueInputs+k] are at Xⱼ = d+1.
+			eqEvals := make([]extensions.E6, degree*nbWires)
+			inputEvals := make([]koalabear.Element, degree*nbUniqueInputs)
+
+			for h := start; h < end; h++ {
+				evalAt1Index := sumSize + h
+				for k := range nbWires {
+					eqEvals[k].Set(&c.eqs[k][evalAt1Index])
+					eqStep.Sub(&eqEvals[k], &c.eqs[k][h])
+					for d := 1; d < degree; d++ {
+						eqEvals[d*nbWires+k].Add(&eqEvals[(d-1)*nbWires+k], &eqStep)
+					}
+				}
+				for k := range nbUniqueInputs {
+					inputEvals[k].Set(&c.baseInput[k][evalAt1Index])
+					step.Sub(&inputEvals[k], &c.baseInput[k][h])
+					for d := 1; d < degree; d++ {
+						inputEvals[d*nbUniqueInputs+k].Add(&inputEvals[(d-1)*nbUniqueInputs+k], &step)
+					}
+				}
+
+				for d := range degree {
+					for w := range nbWires {
+						for _, inputI := range c.inputIndices[w] {
+							evaluators[w].PushInput(inputEvals[d*nbUniqueInputs+inputI])
+						}
+						term.MulByElement(&eqEvals[d*nbWires+w], evaluators[w].Evaluate())
+						res[d].Add(&res[d], &term)
+					}
+				}
 			}
+			mu.Lock()
+			for i := range p {
+				p[i].Add(&p[i], &res[i])
+			}
+			mu.Unlock()
 		}
-		mu.Lock()
-		for i := range p {
-			p[i].Add(&p[i], &res[i]) // collect into the complete sum
+	} else {
+		computeAll = func(start, end int) {
+			var step extensions.E6
+
+			evaluators := make([]*evaluator.GateEvaluatorMixed, nbWires)
+			for w := range nbWires {
+				evaluators[w] = c.gateEvaluatorPools[w].Get()
+			}
+			defer func() {
+				for w := range nbWires {
+					c.gateEvaluatorPools[w].Put(evaluators[w])
+				}
+			}()
+
+			res := make([]extensions.E6, degree)
+
+			// evaluations of ml, laid out as:
+			// ml[0](1, h...), ml[1](1, h...), ..., ml[len(ml)-1](1, h...),
+			// ml[0](2, h...), ml[1](2, h...), ..., ml[len(ml)-1](2, h...),
+			// ...
+			// ml[0](degree, h...), ml[1](degree, h...), ..., ml[len(ml)-1](degree, h...)
+			mlEvals := make([]extensions.E6, degree*len(ml))
+
+			for h := start; h < end; h++ {
+				evalAt1Index := sumSize + h
+				for k := range ml {
+					mlEvals[k].Set(&ml[k][evalAt1Index]) // evaluation at Xⱼ = 1, taken directly from the table
+					step.Sub(&mlEvals[k], &ml[k][h])     // step = ml[k](1) - ml[k](0)
+					for d := 1; d < degree; d++ {
+						mlEvals[d*len(ml)+k].Add(&mlEvals[(d-1)*len(ml)+k], &step)
+					}
+				}
+
+				eIndex := 0 // start of the current row's eq evaluations
+				nextEIndex := len(ml)
+				for d := range degree {
+					for w := range nbWires {
+						for _, inputI := range c.inputIndices[w] {
+							evaluators[w].PushInput(mlEvals[eIndex+nbWires+inputI])
+						}
+						summand := evaluators[w].Evaluate()
+						summand.Mul(summand, &mlEvals[eIndex+w])
+						res[d].Add(&res[d], summand) // collect contributions into the sum from start to end
+					}
+					eIndex, nextEIndex = nextEIndex, nextEIndex+len(ml)
+				}
+			}
+			mu.Lock()
+			for i := range p {
+				p[i].Add(&p[i], &res[i]) // collect into the complete sum
+			}
+			mu.Unlock()
 		}
-		mu.Unlock()
 	}
 
 	const minBlockSize = 64
@@ -248,7 +309,7 @@ func (c *zeroCheckClaims) roundFold(r extensions.E6) {
 	n := len(c.eqs[0]) / 2
 	if n < minBlockSize {
 		for i := range c.input {
-			c.input[i].Fold(r)
+			c.foldInput(i, &r)
 		}
 		for i := range c.eqs {
 			c.eqs[i].Fold(r)
@@ -256,7 +317,7 @@ func (c *zeroCheckClaims) roundFold(r extensions.E6) {
 	} else {
 		wgs := make([]*sync.WaitGroup, len(c.input)+len(c.eqs))
 		for i := range c.input {
-			wgs[i] = c.resources.workers.Submit(n, c.input[i].FoldParallel(r), minBlockSize)
+			wgs[i] = c.resources.workers.Submit(n, c.foldInputParallel(i, &r), minBlockSize)
 		}
 		for i := range c.eqs {
 			wgs[len(c.input)+i] = c.resources.workers.Submit(n, c.eqs[i].FoldParallel(r), minBlockSize)
@@ -265,6 +326,7 @@ func (c *zeroCheckClaims) roundFold(r extensions.E6) {
 			wg.Wait()
 		}
 	}
+	c.baseInput = nil
 }
 
 // proveFinalEval provides the unique input wire values wᵢ(r₁, ..., rₙ).
@@ -313,16 +375,48 @@ func (r *resources) eqAcc(e, m polynomial.MultiLinE6, q []extensions.E6) {
 // zeroCheckBase holds the fields and initialization logic common to both
 // zeroCheckClaims and singleSourceZeroCheckClaims.
 type zeroCheckBase struct {
-	foldingCoeff       extensions.E6
-	levelI             int
-	resources          *resources
-	input              []polynomial.MultiLinE6 // UniqueGateInputs order
-	inputIndices       [][]int                 // [wireInLevel][gateInputJ] → index in input
-	gateEvaluatorPools []*evaluator.GateEvaluatorMixedPool
+	foldingCoeff           extensions.E6
+	levelI                 int
+	resources              *resources
+	input                  []polynomial.MultiLinE6 // UniqueGateInputs order
+	inputIndices           [][]int                 // [wireInLevel][gateInputJ] → index in input
+	gateEvaluatorPools     []*evaluator.GateEvaluatorMixedPool
+	baseInput              []basePolynomial.MultiLin // the assignment's columns in UniqueGateInputs order, while the first round runs on them
+	baseGateEvaluatorPools []*evaluator.GateEvaluatorPool
 }
 
 func (c *zeroCheckBase) varsNum() int {
 	return c.resources.nbVars
+}
+
+// tableLen returns the length of the input tables, which are the base field columns until the
+// first fold.
+func (c *zeroCheckBase) tableLen() int {
+	if c.baseInput != nil {
+		return len(c.baseInput[0])
+	}
+	return len(c.input[0])
+}
+
+// foldInput folds input[i] at r. Until the first fold, it sets input[i] to a buffer from the pool
+// holding the fold of the base field column baseInput[i].
+func (c *zeroCheckBase) foldInput(i int, r *extensions.E6) {
+	if c.baseInput == nil {
+		c.input[i].Fold(*r)
+		return
+	}
+	c.input[i] = polynomial.MultiLinE6(c.resources.memPool.Make(len(c.baseInput[i]) / 2))
+	c.input[i].FoldFromBase(c.baseInput[i], r)
+}
+
+// foldInputParallel is the parallel version of foldInput. *r must not change until the returned
+// task has completed.
+func (c *zeroCheckBase) foldInputParallel(i int, r *extensions.E6) func(start, end int) {
+	if c.baseInput == nil {
+		return c.input[i].FoldParallel(*r)
+	}
+	c.input[i] = polynomial.MultiLinE6(c.resources.memPool.Make(len(c.baseInput[i]) / 2))
+	return c.input[i].FoldFromBaseParallel(c.baseInput[i], r)
 }
 
 // proveFinalEval records the outgoing eval point, folds the last variable,
@@ -332,7 +426,7 @@ func (c *zeroCheckBase) proveFinalEval(r []extensions.E6, extraPolys []polynomia
 	c.resources.outgoingEvalPoints[c.levelI] = [][]extensions.E6{r}
 	evaluations := make([]extensions.E6, len(c.input))
 	for i := range c.input {
-		c.input[i].Fold(r[len(r)-1])
+		c.foldInput(i, &r[len(r)-1])
 		evaluations[i] = c.input[i][0]
 	}
 	for i := range c.input {
@@ -342,6 +436,9 @@ func (c *zeroCheckBase) proveFinalEval(r []extensions.E6, extraPolys []polynomia
 		c.resources.memPool.Dump(extraPolys[i])
 	}
 	for _, pool := range c.gateEvaluatorPools {
+		pool.DumpAll()
+	}
+	for _, pool := range c.baseGateEvaluatorPools {
 		pool.DumpAll()
 	}
 	return evaluations
@@ -359,12 +456,9 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 
 	uniqueInputs, inputIndices := r.circuit.InputMapping(level)
 	c.input = make([]polynomial.MultiLinE6, len(uniqueInputs))
+	c.baseInput = make([]basePolynomial.MultiLin, len(uniqueInputs))
 	for i, inW := range uniqueInputs {
-		column := r.assignment[inW]
-		c.input[i] = polynomial.MultiLinE6(r.memPool.Make(len(column)))
-		for j := range column {
-			c.input[i][j].SetElement(&column[j])
-		}
+		c.baseInput[i] = r.assignment[inW]
 	}
 	c.inputIndices = inputIndices
 
@@ -373,11 +467,13 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 		nbWires += len(group.Wires)
 	}
 	c.gateEvaluatorPools = make([]*evaluator.GateEvaluatorMixedPool, nbWires)
+	c.baseGateEvaluatorPools = make([]*evaluator.GateEvaluatorPool, nbWires)
 	levelWireI := 0
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			wire := r.circuit[wI]
 			c.gateEvaluatorPools[levelWireI] = evaluator.NewGateEvaluatorMixedPool(wire.Gate.Evaluate, len(inputIndices[levelWireI]), &r.memPool)
+			c.baseGateEvaluatorPools[levelWireI] = evaluator.NewGateEvaluatorPool(wire.Gate.Evaluate, len(inputIndices[levelWireI]))
 			levelWireI++
 		}
 	}
@@ -495,68 +591,128 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.PolynomialE6 
 	nbUniqueInputs := len(c.input)
 	nbWires := len(c.gateEvaluatorPools)
 
-	sumSize := len(c.input[0]) / 2
+	sumSize := c.tableLen() / 2
 
 	// The second half of suffixEq is the eq segment for this round
 	eqSegment := c.suffixEq[len(c.suffixEq)/2:]
 
 	p := make([]extensions.E6, degree)
 	var mu sync.Mutex
-	computeAll := func(start, end int) {
-		var step extensions.E6
+	var computeAll func(start, end int)
+	if c.baseInput != nil {
+		computeAll = func(start, end int) {
+			var step koalabear.Element
 
-		evaluators := make([]*evaluator.GateEvaluatorMixed, nbWires)
-		for w := range nbWires {
-			evaluators[w] = c.gateEvaluatorPools[w].Get()
-		}
-		defer func() {
+			evaluators := make([]*evaluator.GateEvaluator, nbWires)
 			for w := range nbWires {
-				c.gateEvaluatorPools[w].Put(evaluators[w])
+				evaluators[w] = c.baseGateEvaluatorPools[w].Get()
 			}
-		}()
-
-		res := make([]extensions.E6, degree)
-
-		// Input evaluations at m=1,2,...,degree
-		inputEvals := make([]extensions.E6, degree*nbUniqueInputs)
-
-		for h := start; h < end; h++ {
-			evalAt1Index := sumSize + h
-			for k := range nbUniqueInputs {
-				inputEvals[k].Set(&c.input[k][evalAt1Index])
-				step.Sub(&inputEvals[k], &c.input[k][h])
-				for d := 1; d < degree; d++ {
-					inputEvals[d*nbUniqueInputs+k].Add(&inputEvals[(d-1)*nbUniqueInputs+k], &step)
+			defer func() {
+				for w := range nbWires {
+					c.baseGateEvaluatorPools[w].Put(evaluators[w])
 				}
-			}
+			}()
 
-			iIndex := 0
-			nextIIndex := nbUniqueInputs
-			for d := range degree {
-				// Horner accumulation: gate_0 + α·(gate_1 + α·(... + α·gate_{W-1}))
-				for _, inputI := range c.inputIndices[nbWires-1] {
-					evaluators[nbWires-1].PushInput(inputEvals[iIndex+inputI])
-				}
-				var wireSum extensions.E6
-				wireSum.Set(evaluators[nbWires-1].Evaluate())
-				for w := nbWires - 2; w >= 0; w-- {
-					wireSum.Mul(&wireSum, &c.foldingCoeff)
-					for _, inputI := range c.inputIndices[w] {
-						evaluators[w].PushInput(inputEvals[iIndex+inputI])
+			res := make([]extensions.E6, degree)
+
+			// Base field input evaluations at m=1,2,...,degree
+			inputEvals := make([]koalabear.Element, degree*nbUniqueInputs)
+
+			for h := start; h < end; h++ {
+				evalAt1Index := sumSize + h
+				for k := range nbUniqueInputs {
+					inputEvals[k].Set(&c.baseInput[k][evalAt1Index])
+					step.Sub(&inputEvals[k], &c.baseInput[k][h])
+					for d := 1; d < degree; d++ {
+						inputEvals[d*nbUniqueInputs+k].Add(&inputEvals[(d-1)*nbUniqueInputs+k], &step)
 					}
-					wireSum.Add(&wireSum, evaluators[w].Evaluate())
 				}
 
-				wireSum.Mul(&wireSum, &eqSegment[h])
-				res[d].Add(&res[d], &wireSum)
-				iIndex, nextIIndex = nextIIndex, nextIIndex+nbUniqueInputs
+				iIndex := 0
+				nextIIndex := nbUniqueInputs
+				for d := range degree {
+					// Horner accumulation: gate_0 + α·(gate_1 + α·(... + α·gate_{W-1}))
+					for _, inputI := range c.inputIndices[nbWires-1] {
+						evaluators[nbWires-1].PushInput(inputEvals[iIndex+inputI])
+					}
+					var wireSum extensions.E6
+					wireSum.SetElement(evaluators[nbWires-1].Evaluate())
+					for w := nbWires - 2; w >= 0; w-- {
+						wireSum.Mul(&wireSum, &c.foldingCoeff)
+						for _, inputI := range c.inputIndices[w] {
+							evaluators[w].PushInput(inputEvals[iIndex+inputI])
+						}
+						wireSum.AddElement(&wireSum, evaluators[w].Evaluate())
+					}
+
+					wireSum.Mul(&wireSum, &eqSegment[h])
+					res[d].Add(&res[d], &wireSum)
+					iIndex, nextIIndex = nextIIndex, nextIIndex+nbUniqueInputs
+				}
 			}
+			mu.Lock()
+			for i := range p {
+				p[i].Add(&p[i], &res[i])
+			}
+			mu.Unlock()
 		}
-		mu.Lock()
-		for i := range p {
-			p[i].Add(&p[i], &res[i])
+	} else {
+		computeAll = func(start, end int) {
+			var step extensions.E6
+
+			evaluators := make([]*evaluator.GateEvaluatorMixed, nbWires)
+			for w := range nbWires {
+				evaluators[w] = c.gateEvaluatorPools[w].Get()
+			}
+			defer func() {
+				for w := range nbWires {
+					c.gateEvaluatorPools[w].Put(evaluators[w])
+				}
+			}()
+
+			res := make([]extensions.E6, degree)
+
+			// Input evaluations at m=1,2,...,degree
+			inputEvals := make([]extensions.E6, degree*nbUniqueInputs)
+
+			for h := start; h < end; h++ {
+				evalAt1Index := sumSize + h
+				for k := range nbUniqueInputs {
+					inputEvals[k].Set(&c.input[k][evalAt1Index])
+					step.Sub(&inputEvals[k], &c.input[k][h])
+					for d := 1; d < degree; d++ {
+						inputEvals[d*nbUniqueInputs+k].Add(&inputEvals[(d-1)*nbUniqueInputs+k], &step)
+					}
+				}
+
+				iIndex := 0
+				nextIIndex := nbUniqueInputs
+				for d := range degree {
+					// Horner accumulation: gate_0 + α·(gate_1 + α·(... + α·gate_{W-1}))
+					for _, inputI := range c.inputIndices[nbWires-1] {
+						evaluators[nbWires-1].PushInput(inputEvals[iIndex+inputI])
+					}
+					var wireSum extensions.E6
+					wireSum.Set(evaluators[nbWires-1].Evaluate())
+					for w := nbWires - 2; w >= 0; w-- {
+						wireSum.Mul(&wireSum, &c.foldingCoeff)
+						for _, inputI := range c.inputIndices[w] {
+							evaluators[w].PushInput(inputEvals[iIndex+inputI])
+						}
+						wireSum.Add(&wireSum, evaluators[w].Evaluate())
+					}
+
+					wireSum.Mul(&wireSum, &eqSegment[h])
+					res[d].Add(&res[d], &wireSum)
+					iIndex, nextIIndex = nextIIndex, nextIIndex+nbUniqueInputs
+				}
+			}
+			mu.Lock()
+			for i := range p {
+				p[i].Add(&p[i], &res[i])
+			}
+			mu.Unlock()
 		}
-		mu.Unlock()
 	}
 
 	const minBlockSize = 64
@@ -573,20 +729,21 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.PolynomialE6 
 // The suffix eq tables are precomputed and not folded.
 func (c *singleSourceZeroCheckClaims) roundFold(r extensions.E6) {
 	const minBlockSize = 512
-	n := len(c.input[0]) / 2
+	n := c.tableLen() / 2
 	if n < minBlockSize {
 		for i := range c.input {
-			c.input[i].Fold(r)
+			c.foldInput(i, &r)
 		}
 	} else {
 		wgs := make([]*sync.WaitGroup, len(c.input))
 		for i := range c.input {
-			wgs[i] = c.resources.workers.Submit(n, c.input[i].FoldParallel(r), minBlockSize)
+			wgs[i] = c.resources.workers.Submit(n, c.foldInputParallel(i, &r), minBlockSize)
 		}
 		for _, wg := range wgs {
 			wg.Wait()
 		}
 	}
+	c.baseInput = nil
 	if len(c.suffixEq) > 2 {
 		c.suffixEq = c.suffixEq[:len(c.suffixEq)/2]
 	}

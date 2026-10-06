@@ -200,10 +200,10 @@ type {{ $ge }}Pool struct {
 	nbIn        int
 	lock        sync.Mutex
 	available   []*{{ $ge }}
-	elementPool *{{ $poly }}.Pool{{ $suffix }}
+	elementPool []*{{ $poly }}.Pool{{ $suffix }}
 }
 
-func New{{ $ge }}Pool(gate gkrcore.GateBytecode, nbIn int, elementPool *{{ $poly }}.Pool{{ $suffix }}) *{{ $ge }}Pool {
+func New{{ $ge }}Pool(gate gkrcore.GateBytecode, nbIn int, elementPool ...*{{ $poly }}.Pool{{ $suffix }}) *{{ $ge }}Pool {
 	return &{{ $ge }}Pool{
 		gate:        gate,
 		nbIn:        nbIn,
@@ -221,7 +221,7 @@ func (gep *{{ $ge }}Pool) Get() *{{ $ge }} {
 	}
 	gep.lock.Unlock()
 
-	e := New{{ $ge }}(gep.gate, gep.nbIn, gep.elementPool)
+	e := New{{ $ge }}(gep.gate, gep.nbIn, gep.elementPool...)
 	return &e
 }
 

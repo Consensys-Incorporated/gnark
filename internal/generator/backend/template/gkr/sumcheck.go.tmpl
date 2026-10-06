@@ -5,6 +5,10 @@ import (
 
 	"{{.FieldPackagePath}}"
 	"{{.FieldPackagePath}}/polynomial"
+	{{- if .Mixed }}
+	"{{ .BaseFieldPackagePath }}"
+	basePolynomial "{{ .BaseFieldPackagePath }}/polynomial"
+	{{- end }}
 	"github.com/consensys/gnark/constraint"
 	{{- if .EvaluatorQualifier }}
 	evaluator "github.com/consensys/gnark/internal/gkr/{{.GkrPackageName}}"
@@ -174,58 +178,16 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial{{ .ExtensionSu
 
 	p := make([]{{ .ElementType }}, degree)
 	var mu sync.Mutex
-	computeAll := func(start, end int) {
-		var step {{ .ElementType }}
-
-		evaluators := make([]*{{ .EvaluatorQualifier }}{{ $gateEvaluator }}, nbWires)
-		for w := range nbWires {
-			evaluators[w] = c.gateEvaluatorPools[w].Get()
-		}
-		defer func() {
-			for w := range nbWires {
-				c.gateEvaluatorPools[w].Put(evaluators[w])
-			}
-		}()
-
-		res := make([]{{ .ElementType }}, degree)
-
-		// evaluations of ml, laid out as:
-		// ml[0](1, h...), ml[1](1, h...), ..., ml[len(ml)-1](1, h...),
-		// ml[0](2, h...), ml[1](2, h...), ..., ml[len(ml)-1](2, h...),
-		// ...
-		// ml[0](degree, h...), ml[1](degree, h...), ..., ml[len(ml)-1](degree, h...)
-		mlEvals := make([]{{ .ElementType }}, degree*len(ml))
-
-		for h := start; h < end; h++ {
-			evalAt1Index := sumSize + h
-			for k := range ml {
-				mlEvals[k].Set(&ml[k][evalAt1Index]) // evaluation at Xⱼ = 1, taken directly from the table
-				step.Sub(&mlEvals[k], &ml[k][h])     // step = ml[k](1) - ml[k](0)
-				for d := 1; d < degree; d++ {
-					mlEvals[d*len(ml)+k].Add(&mlEvals[(d-1)*len(ml)+k], &step)
-				}
-			}
-
-			eIndex := 0 // start of the current row's eq evaluations
-			nextEIndex := len(ml)
-			for d := range degree {
-				for w := range nbWires {
-					for _, inputI := range c.inputIndices[w] {
-						evaluators[w].PushInput(mlEvals[eIndex+nbWires+inputI])
-					}
-					summand := evaluators[w].Evaluate()
-					summand.Mul(summand, &mlEvals[eIndex+w])
-					res[d].Add(&res[d], summand) // collect contributions into the sum from start to end
-				}
-				eIndex, nextEIndex = nextEIndex, nextEIndex+len(ml)
-			}
-		}
-		mu.Lock()
-		for i := range p {
-			p[i].Add(&p[i], &res[i]) // collect into the complete sum
-		}
-		mu.Unlock()
+	{{- if .Mixed }}
+	var computeAll func(start, end int)
+	if c.baseInput != nil {
+		computeAll = {{ template "zeroCheckBlock" dict "Config" . "Base" true }}
+	} else {
+		computeAll = {{ template "zeroCheckBlock" dict "Config" . "Base" false }}
 	}
+	{{- else }}
+	computeAll := {{ template "zeroCheckBlock" dict "Config" . "Base" false }}
+	{{- end }}
 
 	const minBlockSize = 64
 	if sumSize < minBlockSize {
@@ -244,7 +206,11 @@ func (c *zeroCheckClaims) roundFold(r {{ .ElementType }}) {
 	n := len(c.eqs[0]) / 2
 	if n < minBlockSize {
 		for i := range c.input {
+			{{- if .Mixed }}
+			c.foldInput(i, &r)
+			{{- else }}
 			c.input[i].Fold(r)
+			{{- end }}
 		}
 		for i := range c.eqs {
 			c.eqs[i].Fold(r)
@@ -252,7 +218,11 @@ func (c *zeroCheckClaims) roundFold(r {{ .ElementType }}) {
 	} else {
 		wgs := make([]*sync.WaitGroup, len(c.input)+len(c.eqs))
 		for i := range c.input {
+			{{- if .Mixed }}
+			wgs[i] = c.resources.workers.Submit(n, c.foldInputParallel(i, &r), minBlockSize)
+			{{- else }}
 			wgs[i] = c.resources.workers.Submit(n, c.input[i].FoldParallel(r), minBlockSize)
+			{{- end }}
 		}
 		for i := range c.eqs {
 			wgs[len(c.input)+i] = c.resources.workers.Submit(n, c.eqs[i].FoldParallel(r), minBlockSize)
@@ -261,6 +231,9 @@ func (c *zeroCheckClaims) roundFold(r {{ .ElementType }}) {
 			wg.Wait()
 		}
 	}
+	{{- if .Mixed }}
+	c.baseInput = nil
+	{{- end }}
 }
 
 // proveFinalEval provides the unique input wire values wᵢ(r₁, ..., rₙ).
@@ -315,12 +288,48 @@ type zeroCheckBase struct {
 	input              []polynomial.MultiLin{{ .ExtensionSuffix }} // UniqueGateInputs order
 	inputIndices       [][]int               // [wireInLevel][gateInputJ] → index in input
 	gateEvaluatorPools []*{{ .EvaluatorQualifier }}{{ $gateEvaluator }}Pool
+	{{- if .Mixed }}
+	baseInput              []basePolynomial.MultiLin // the assignment's columns in UniqueGateInputs order, while the first round runs on them
+	baseGateEvaluatorPools []*{{ .EvaluatorQualifier }}GateEvaluatorPool
+	{{- end }}
 }
 
 func (c *zeroCheckBase) varsNum() int {
 	return c.resources.nbVars
 }
 
+{{ if .Mixed -}}
+// tableLen returns the length of the input tables, which are the base field columns until the
+// first fold.
+func (c *zeroCheckBase) tableLen() int {
+	if c.baseInput != nil {
+		return len(c.baseInput[0])
+	}
+	return len(c.input[0])
+}
+
+// foldInput folds input[i] at r. Until the first fold, it sets input[i] to a buffer from the pool
+// holding the fold of the base field column baseInput[i].
+func (c *zeroCheckBase) foldInput(i int, r *{{ .ElementType }}) {
+	if c.baseInput == nil {
+		c.input[i].Fold(*r)
+		return
+	}
+	c.input[i] = polynomial.MultiLin{{ .ExtensionSuffix }}(c.resources.memPool.Make(len(c.baseInput[i]) / 2))
+	c.input[i].FoldFromBase(c.baseInput[i], r)
+}
+
+// foldInputParallel is the parallel version of foldInput. *r must not change until the returned
+// task has completed.
+func (c *zeroCheckBase) foldInputParallel(i int, r *{{ .ElementType }}) func(start, end int) {
+	if c.baseInput == nil {
+		return c.input[i].FoldParallel(*r)
+	}
+	c.input[i] = polynomial.MultiLin{{ .ExtensionSuffix }}(c.resources.memPool.Make(len(c.baseInput[i]) / 2))
+	return c.input[i].FoldFromBaseParallel(c.baseInput[i], r)
+}
+
+{{ end -}}
 // proveFinalEval records the outgoing eval point, folds the last variable,
 // collects the unique input evaluations, and releases all pooled memory.
 // extraPolys is the level-type-specific slice (eqs or suffixEq) to dump.
@@ -328,7 +337,11 @@ func (c *zeroCheckBase) proveFinalEval(r []{{ .ElementType }}, extraPolys []poly
 	c.resources.outgoingEvalPoints[c.levelI] = [][]{{ .ElementType }}{r}
 	evaluations := make([]{{ .ElementType }}, len(c.input))
 	for i := range c.input {
+		{{- if .Mixed }}
+		c.foldInput(i, &r[len(r)-1])
+		{{- else }}
 		c.input[i].Fold(r[len(r)-1])
+		{{- end }}
 		evaluations[i] = c.input[i][0]
 	}
 	for i := range c.input {
@@ -340,6 +353,11 @@ func (c *zeroCheckBase) proveFinalEval(r []{{ .ElementType }}, extraPolys []poly
 	for _, pool := range c.gateEvaluatorPools {
 		pool.DumpAll()
 	}
+	{{- if .Mixed }}
+	for _, pool := range c.baseGateEvaluatorPools {
+		pool.DumpAll()
+	}
+	{{- end }}
 	return evaluations
 }
 
@@ -355,13 +373,12 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 
 	uniqueInputs, inputIndices := r.circuit.InputMapping(level)
 	c.input = make([]polynomial.MultiLin{{ .ExtensionSuffix }}, len(uniqueInputs))
+	{{- if .Mixed }}
+	c.baseInput = make([]basePolynomial.MultiLin, len(uniqueInputs))
+	{{- end }}
 	for i, inW := range uniqueInputs {
 		{{- if .Mixed }}
-		column := r.assignment[inW]
-		c.input[i] = polynomial.MultiLin{{ .ExtensionSuffix }}(r.memPool.Make(len(column)))
-		for j := range column {
-			c.input[i][j].SetElement(&column[j])
-		}
+		c.baseInput[i] = r.assignment[inW]
 		{{- else }}
 		c.input[i] = r.memPool.Clone(r.assignment[inW])
 		{{- end }}
@@ -373,11 +390,17 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 		nbWires += len(group.Wires)
 	}
 	c.gateEvaluatorPools = make([]*{{ .EvaluatorQualifier }}{{ $gateEvaluator }}Pool, nbWires)
+	{{- if .Mixed }}
+	c.baseGateEvaluatorPools = make([]*{{ .EvaluatorQualifier }}GateEvaluatorPool, nbWires)
+	{{- end }}
 	levelWireI := 0
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			wire := r.circuit[wI]
 			c.gateEvaluatorPools[levelWireI] = {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}Pool(wire.Gate.Evaluate, len(inputIndices[levelWireI]), &r.memPool)
+			{{- if .Mixed }}
+			c.baseGateEvaluatorPools[levelWireI] = {{ .EvaluatorQualifier }}NewGateEvaluatorPool(wire.Gate.Evaluate, len(inputIndices[levelWireI]))
+			{{- end }}
 			levelWireI++
 		}
 	}
@@ -495,69 +518,27 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial{{ 
 	nbUniqueInputs := len(c.input)
 	nbWires := len(c.gateEvaluatorPools)
 
+	{{ if .Mixed -}}
+	sumSize := c.tableLen() / 2
+	{{- else -}}
 	sumSize := len(c.input[0]) / 2
+	{{- end }}
 
 	// The second half of suffixEq is the eq segment for this round
 	eqSegment := c.suffixEq[len(c.suffixEq)/2:]
 
 	p := make([]{{ .ElementType }}, degree)
 	var mu sync.Mutex
-	computeAll := func(start, end int) {
-		var step {{ .ElementType }}
-
-		evaluators := make([]*{{ .EvaluatorQualifier }}{{ $gateEvaluator }}, nbWires)
-		for w := range nbWires {
-			evaluators[w] = c.gateEvaluatorPools[w].Get()
-		}
-		defer func() {
-			for w := range nbWires {
-				c.gateEvaluatorPools[w].Put(evaluators[w])
-			}
-		}()
-
-		res := make([]{{ .ElementType }}, degree)
-
-		// Input evaluations at m=1,2,...,degree
-		inputEvals := make([]{{ .ElementType }}, degree*nbUniqueInputs)
-
-		for h := start; h < end; h++ {
-			evalAt1Index := sumSize + h
-			for k := range nbUniqueInputs {
-				inputEvals[k].Set(&c.input[k][evalAt1Index])
-				step.Sub(&inputEvals[k], &c.input[k][h])
-				for d := 1; d < degree; d++ {
-					inputEvals[d*nbUniqueInputs+k].Add(&inputEvals[(d-1)*nbUniqueInputs+k], &step)
-				}
-			}
-
-			iIndex := 0
-			nextIIndex := nbUniqueInputs
-			for d := range degree {
-				// Horner accumulation: gate_0 + α·(gate_1 + α·(... + α·gate_{W-1}))
-				for _, inputI := range c.inputIndices[nbWires-1] {
-					evaluators[nbWires-1].PushInput(inputEvals[iIndex+inputI])
-				}
-				var wireSum {{ .ElementType }}
-				wireSum.Set(evaluators[nbWires-1].Evaluate())
-				for w := nbWires - 2; w >= 0; w-- {
-					wireSum.Mul(&wireSum, &c.foldingCoeff)
-					for _, inputI := range c.inputIndices[w] {
-						evaluators[w].PushInput(inputEvals[iIndex+inputI])
-					}
-					wireSum.Add(&wireSum, evaluators[w].Evaluate())
-				}
-
-				wireSum.Mul(&wireSum, &eqSegment[h])
-				res[d].Add(&res[d], &wireSum)
-				iIndex, nextIIndex = nextIIndex, nextIIndex+nbUniqueInputs
-			}
-		}
-		mu.Lock()
-		for i := range p {
-			p[i].Add(&p[i], &res[i])
-		}
-		mu.Unlock()
+	{{- if .Mixed }}
+	var computeAll func(start, end int)
+	if c.baseInput != nil {
+		computeAll = {{ template "singleSourceZeroCheckBlock" dict "Config" . "Base" true }}
+	} else {
+		computeAll = {{ template "singleSourceZeroCheckBlock" dict "Config" . "Base" false }}
 	}
+	{{- else }}
+	computeAll := {{ template "singleSourceZeroCheckBlock" dict "Config" . "Base" false }}
+	{{- end }}
 
 	const minBlockSize = 64
 	if sumSize < minBlockSize {
@@ -573,20 +554,35 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial{{ 
 // The suffix eq tables are precomputed and not folded.
 func (c *singleSourceZeroCheckClaims) roundFold(r {{ .ElementType }}) {
 	const minBlockSize = 512
+	{{- if .Mixed }}
+	n := c.tableLen() / 2
+	{{- else }}
 	n := len(c.input[0]) / 2
+	{{- end }}
 	if n < minBlockSize {
 		for i := range c.input {
+			{{- if .Mixed }}
+			c.foldInput(i, &r)
+			{{- else }}
 			c.input[i].Fold(r)
+			{{- end }}
 		}
 	} else {
 		wgs := make([]*sync.WaitGroup, len(c.input))
 		for i := range c.input {
+			{{- if .Mixed }}
+			wgs[i] = c.resources.workers.Submit(n, c.foldInputParallel(i, &r), minBlockSize)
+			{{- else }}
 			wgs[i] = c.resources.workers.Submit(n, c.input[i].FoldParallel(r), minBlockSize)
+			{{- end }}
 		}
 		for _, wg := range wgs {
 			wg.Wait()
 		}
 	}
+	{{- if .Mixed }}
+	c.baseInput = nil
+	{{- end }}
 	if len(c.suffixEq) > 2 {
 		c.suffixEq = c.suffixEq[:len(c.suffixEq)/2]
 	}
@@ -712,3 +708,238 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 
 	return lazyClaims.verifyFinalEval(challenges, claimedSum, proof[levelI].finalEvalProof)
 }
+
+{{ define "zeroCheckBlock" -}}
+{{- $ge := "GateEvaluator" }}{{ if .Config.Mixed }}{{ $ge = "GateEvaluatorMixed" }}{{ end }}
+{{- if .Base -}}
+func(start, end int) {
+		var eqStep {{ .Config.ElementType }}
+		var step {{ .Config.BaseElementType }}
+
+		evaluators := make([]*{{ .Config.EvaluatorQualifier }}GateEvaluator, nbWires)
+		for w := range nbWires {
+			evaluators[w] = c.baseGateEvaluatorPools[w].Get()
+		}
+		defer func() {
+			for w := range nbWires {
+				c.baseGateEvaluatorPools[w].Put(evaluators[w])
+			}
+		}()
+
+		res := make([]{{ .Config.ElementType }}, degree)
+		var term {{ .Config.ElementType }}
+
+		// Evaluations of the eq tables and of the base field input tables at Xⱼ = 1, 2, ..., degree,
+		// row by row: eqEvals[d*nbWires+w] and inputEvals[d*nbUniqueInputs+k] are at Xⱼ = d+1.
+		eqEvals := make([]{{ .Config.ElementType }}, degree*nbWires)
+		inputEvals := make([]{{ .Config.BaseElementType }}, degree*nbUniqueInputs)
+
+		for h := start; h < end; h++ {
+			evalAt1Index := sumSize + h
+			for k := range nbWires {
+				eqEvals[k].Set(&c.eqs[k][evalAt1Index])
+				eqStep.Sub(&eqEvals[k], &c.eqs[k][h])
+				for d := 1; d < degree; d++ {
+					eqEvals[d*nbWires+k].Add(&eqEvals[(d-1)*nbWires+k], &eqStep)
+				}
+			}
+			for k := range nbUniqueInputs {
+				inputEvals[k].Set(&c.baseInput[k][evalAt1Index])
+				step.Sub(&inputEvals[k], &c.baseInput[k][h])
+				for d := 1; d < degree; d++ {
+					inputEvals[d*nbUniqueInputs+k].Add(&inputEvals[(d-1)*nbUniqueInputs+k], &step)
+				}
+			}
+
+			for d := range degree {
+				for w := range nbWires {
+					for _, inputI := range c.inputIndices[w] {
+						evaluators[w].PushInput(inputEvals[d*nbUniqueInputs+inputI])
+					}
+					term.MulByElement(&eqEvals[d*nbWires+w], evaluators[w].Evaluate())
+					res[d].Add(&res[d], &term)
+				}
+			}
+		}
+		mu.Lock()
+		for i := range p {
+			p[i].Add(&p[i], &res[i])
+		}
+		mu.Unlock()
+	}
+{{- else -}}
+func(start, end int) {
+		var step {{ .Config.ElementType }}
+
+		evaluators := make([]*{{ .Config.EvaluatorQualifier }}{{ $ge }}, nbWires)
+		for w := range nbWires {
+			evaluators[w] = c.gateEvaluatorPools[w].Get()
+		}
+		defer func() {
+			for w := range nbWires {
+				c.gateEvaluatorPools[w].Put(evaluators[w])
+			}
+		}()
+
+		res := make([]{{ .Config.ElementType }}, degree)
+
+		// evaluations of ml, laid out as:
+		// ml[0](1, h...), ml[1](1, h...), ..., ml[len(ml)-1](1, h...),
+		// ml[0](2, h...), ml[1](2, h...), ..., ml[len(ml)-1](2, h...),
+		// ...
+		// ml[0](degree, h...), ml[1](degree, h...), ..., ml[len(ml)-1](degree, h...)
+		mlEvals := make([]{{ .Config.ElementType }}, degree*len(ml))
+
+		for h := start; h < end; h++ {
+			evalAt1Index := sumSize + h
+			for k := range ml {
+				mlEvals[k].Set(&ml[k][evalAt1Index]) // evaluation at Xⱼ = 1, taken directly from the table
+				step.Sub(&mlEvals[k], &ml[k][h])     // step = ml[k](1) - ml[k](0)
+				for d := 1; d < degree; d++ {
+					mlEvals[d*len(ml)+k].Add(&mlEvals[(d-1)*len(ml)+k], &step)
+				}
+			}
+
+			eIndex := 0 // start of the current row's eq evaluations
+			nextEIndex := len(ml)
+			for d := range degree {
+				for w := range nbWires {
+					for _, inputI := range c.inputIndices[w] {
+						evaluators[w].PushInput(mlEvals[eIndex+nbWires+inputI])
+					}
+					summand := evaluators[w].Evaluate()
+					summand.Mul(summand, &mlEvals[eIndex+w])
+					res[d].Add(&res[d], summand) // collect contributions into the sum from start to end
+				}
+				eIndex, nextEIndex = nextEIndex, nextEIndex+len(ml)
+			}
+		}
+		mu.Lock()
+		for i := range p {
+			p[i].Add(&p[i], &res[i]) // collect into the complete sum
+		}
+		mu.Unlock()
+	}
+
+{{- end }}
+{{- end }}
+
+{{ define "singleSourceZeroCheckBlock" -}}
+{{- $ge := "GateEvaluator" }}{{ if .Config.Mixed }}{{ $ge = "GateEvaluatorMixed" }}{{ end }}
+{{- if .Base -}}
+func(start, end int) {
+		var step {{ .Config.BaseElementType }}
+
+		evaluators := make([]*{{ .Config.EvaluatorQualifier }}GateEvaluator, nbWires)
+		for w := range nbWires {
+			evaluators[w] = c.baseGateEvaluatorPools[w].Get()
+		}
+		defer func() {
+			for w := range nbWires {
+				c.baseGateEvaluatorPools[w].Put(evaluators[w])
+			}
+		}()
+
+		res := make([]{{ .Config.ElementType }}, degree)
+
+		// Base field input evaluations at m=1,2,...,degree
+		inputEvals := make([]{{ .Config.BaseElementType }}, degree*nbUniqueInputs)
+
+		for h := start; h < end; h++ {
+			evalAt1Index := sumSize + h
+			for k := range nbUniqueInputs {
+				inputEvals[k].Set(&c.baseInput[k][evalAt1Index])
+				step.Sub(&inputEvals[k], &c.baseInput[k][h])
+				for d := 1; d < degree; d++ {
+					inputEvals[d*nbUniqueInputs+k].Add(&inputEvals[(d-1)*nbUniqueInputs+k], &step)
+				}
+			}
+
+			iIndex := 0
+			nextIIndex := nbUniqueInputs
+			for d := range degree {
+				// Horner accumulation: gate_0 + α·(gate_1 + α·(... + α·gate_{W-1}))
+				for _, inputI := range c.inputIndices[nbWires-1] {
+					evaluators[nbWires-1].PushInput(inputEvals[iIndex+inputI])
+				}
+				var wireSum {{ .Config.ElementType }}
+				wireSum.SetElement(evaluators[nbWires-1].Evaluate())
+				for w := nbWires - 2; w >= 0; w-- {
+					wireSum.Mul(&wireSum, &c.foldingCoeff)
+					for _, inputI := range c.inputIndices[w] {
+						evaluators[w].PushInput(inputEvals[iIndex+inputI])
+					}
+					wireSum.AddElement(&wireSum, evaluators[w].Evaluate())
+				}
+
+				wireSum.Mul(&wireSum, &eqSegment[h])
+				res[d].Add(&res[d], &wireSum)
+				iIndex, nextIIndex = nextIIndex, nextIIndex+nbUniqueInputs
+			}
+		}
+		mu.Lock()
+		for i := range p {
+			p[i].Add(&p[i], &res[i])
+		}
+		mu.Unlock()
+	}
+{{- else -}}
+func(start, end int) {
+		var step {{ .Config.ElementType }}
+
+		evaluators := make([]*{{ .Config.EvaluatorQualifier }}{{ $ge }}, nbWires)
+		for w := range nbWires {
+			evaluators[w] = c.gateEvaluatorPools[w].Get()
+		}
+		defer func() {
+			for w := range nbWires {
+				c.gateEvaluatorPools[w].Put(evaluators[w])
+			}
+		}()
+
+		res := make([]{{ .Config.ElementType }}, degree)
+
+		// Input evaluations at m=1,2,...,degree
+		inputEvals := make([]{{ .Config.ElementType }}, degree*nbUniqueInputs)
+
+		for h := start; h < end; h++ {
+			evalAt1Index := sumSize + h
+			for k := range nbUniqueInputs {
+				inputEvals[k].Set(&c.input[k][evalAt1Index])
+				step.Sub(&inputEvals[k], &c.input[k][h])
+				for d := 1; d < degree; d++ {
+					inputEvals[d*nbUniqueInputs+k].Add(&inputEvals[(d-1)*nbUniqueInputs+k], &step)
+				}
+			}
+
+			iIndex := 0
+			nextIIndex := nbUniqueInputs
+			for d := range degree {
+				// Horner accumulation: gate_0 + α·(gate_1 + α·(... + α·gate_{W-1}))
+				for _, inputI := range c.inputIndices[nbWires-1] {
+					evaluators[nbWires-1].PushInput(inputEvals[iIndex+inputI])
+				}
+				var wireSum {{ .Config.ElementType }}
+				wireSum.Set(evaluators[nbWires-1].Evaluate())
+				for w := nbWires - 2; w >= 0; w-- {
+					wireSum.Mul(&wireSum, &c.foldingCoeff)
+					for _, inputI := range c.inputIndices[w] {
+						evaluators[w].PushInput(inputEvals[iIndex+inputI])
+					}
+					wireSum.Add(&wireSum, evaluators[w].Evaluate())
+				}
+
+				wireSum.Mul(&wireSum, &eqSegment[h])
+				res[d].Add(&res[d], &wireSum)
+				iIndex, nextIIndex = nextIIndex, nextIIndex+nbUniqueInputs
+			}
+		}
+		mu.Lock()
+		for i := range p {
+			p[i].Add(&p[i], &res[i])
+		}
+		mu.Unlock()
+	}
+
+{{- end }}
+{{- end }}

@@ -132,10 +132,10 @@ type GateEvaluatorPool struct {
 	nbIn        int
 	lock        sync.Mutex
 	available   []*GateEvaluator
-	elementPool *basePolynomial.Pool
+	elementPool []*basePolynomial.Pool
 }
 
-func NewGateEvaluatorPool(gate gkrcore.GateBytecode, nbIn int, elementPool *basePolynomial.Pool) *GateEvaluatorPool {
+func NewGateEvaluatorPool(gate gkrcore.GateBytecode, nbIn int, elementPool ...*basePolynomial.Pool) *GateEvaluatorPool {
 	return &GateEvaluatorPool{
 		gate:        gate,
 		nbIn:        nbIn,
@@ -153,7 +153,7 @@ func (gep *GateEvaluatorPool) Get() *GateEvaluator {
 	}
 	gep.lock.Unlock()
 
-	e := NewGateEvaluator(gep.gate, gep.nbIn, gep.elementPool)
+	e := NewGateEvaluator(gep.gate, gep.nbIn, gep.elementPool...)
 	return &e
 }
 
@@ -320,10 +320,10 @@ type GateEvaluatorMixedPool struct {
 	nbIn        int
 	lock        sync.Mutex
 	available   []*GateEvaluatorMixed
-	elementPool *polynomial.PoolE6
+	elementPool []*polynomial.PoolE6
 }
 
-func NewGateEvaluatorMixedPool(gate gkrcore.GateBytecode, nbIn int, elementPool *polynomial.PoolE6) *GateEvaluatorMixedPool {
+func NewGateEvaluatorMixedPool(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polynomial.PoolE6) *GateEvaluatorMixedPool {
 	return &GateEvaluatorMixedPool{
 		gate:        gate,
 		nbIn:        nbIn,
@@ -341,7 +341,7 @@ func (gep *GateEvaluatorMixedPool) Get() *GateEvaluatorMixed {
 	}
 	gep.lock.Unlock()
 
-	e := NewGateEvaluatorMixed(gep.gate, gep.nbIn, gep.elementPool)
+	e := NewGateEvaluatorMixed(gep.gate, gep.nbIn, gep.elementPool...)
 	return &e
 }
 

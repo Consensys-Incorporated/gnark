@@ -130,10 +130,10 @@ type GateEvaluatorPool struct {
 	nbIn        int
 	lock        sync.Mutex
 	available   []*GateEvaluator
-	elementPool *polynomial.Pool
+	elementPool []*polynomial.Pool
 }
 
-func NewGateEvaluatorPool(gate gkrcore.GateBytecode, nbIn int, elementPool *polynomial.Pool) *GateEvaluatorPool {
+func NewGateEvaluatorPool(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polynomial.Pool) *GateEvaluatorPool {
 	return &GateEvaluatorPool{
 		gate:        gate,
 		nbIn:        nbIn,
@@ -151,7 +151,7 @@ func (gep *GateEvaluatorPool) Get() *GateEvaluator {
 	}
 	gep.lock.Unlock()
 
-	e := NewGateEvaluator(gep.gate, gep.nbIn, gep.elementPool)
+	e := NewGateEvaluator(gep.gate, gep.nbIn, gep.elementPool...)
 	return &e
 }
 
