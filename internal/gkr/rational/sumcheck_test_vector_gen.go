@@ -23,7 +23,7 @@ import (
 func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 
 	var poly polynomial.MultiLin
-	if v, err := sliceToElementSlice(testCaseInfo.Values); err == nil {
+	if v, err := gkrtesting.SliceToElementSlice[rational.Element](testCaseInfo.Values); err == nil {
 		poly = v
 	} else {
 		return err
@@ -44,7 +44,7 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	testCaseInfo.Proof = sumcheckToPrintableProof(proof)
 
 	// Verification
-	if v, _err := sliceToElementSlice(testCaseInfo.Values); _err == nil {
+	if v, _err := gkrtesting.SliceToElementSlice[rational.Element](testCaseInfo.Values); _err == nil {
 		poly = v
 	} else {
 		return _err

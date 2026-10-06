@@ -273,11 +273,11 @@ func proofEquals(expected Proof, seen Proof) error {
 				return fmt.Errorf("length mismatch %d ≠ %d", 0, len(seenFinalEval))
 			}
 		} else {
-			if err := sliceEquals(x.finalEvalProof, xSeen.finalEvalProof); err != nil {
+			if err := gkrtesting.SliceEquals(x.finalEvalProof, xSeen.finalEvalProof); err != nil {
 				return fmt.Errorf("final evaluation proof mismatch")
 			}
 		}
-		if err := polynomialSliceEquals(x.partialSumPolys, xSeen.partialSumPolys); err != nil {
+		if err := gkrtesting.PolynomialSliceEquals(gkrtesting.ToSlices(x.partialSumPolys), gkrtesting.ToSlices(xSeen.partialSumPolys)); err != nil {
 			return err
 		}
 	}

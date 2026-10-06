@@ -8,10 +8,8 @@ package gkr
 import (
 	"fmt"
 	"hash"
-	"math/big"
 
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
-	"github.com/consensys/gnark-crypto/ecc/bn254/fr/polynomial"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 )
 
@@ -85,65 +83,4 @@ func newMessageCounterGenerator(startState, step int) func() hash.Hash {
 	return func() hash.Hash {
 		return newMessageCounter(startState, step)
 	}
-}
-
-// setElement parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
-// then sets z to its numerator divided by its denominator, via SetBigInt, Inverse and Mul.
-func setElement(z *fr.Element, value interface{}) (*fr.Element, error) {
-	var r big.Rat
-	switch v := value.(type) {
-	case string:
-		if _, ok := r.SetString(v); !ok {
-			return nil, fmt.Errorf("cannot parse %q", v)
-		}
-	case float64:
-		asInt := int64(v)
-		if float64(asInt) != v {
-			return nil, fmt.Errorf("cannot currently parse float")
-		}
-		r.SetFloat64(v)
-	default:
-		return nil, fmt.Errorf("cannot parse value of type %T", value)
-	}
-
-	var denom fr.Element
-	z.SetBigInt(r.Num())
-	denom.SetBigInt(r.Denom())
-	denom.Inverse(&denom)
-	z.Mul(z, &denom)
-	return z, nil
-}
-
-func sliceToElementSlice[T any](slice []T) ([]fr.Element, error) {
-	elementSlice := make([]fr.Element, len(slice))
-	for i, v := range slice {
-		if _, err := setElement(&elementSlice[i], v); err != nil {
-			return nil, err
-		}
-	}
-	return elementSlice, nil
-}
-
-func sliceEquals(a []fr.Element, b []fr.Element) error {
-	if len(a) != len(b) {
-		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
-	}
-	for i := range a {
-		if !a[i].Equal(&b[i]) {
-			return fmt.Errorf("at index %d: %s ≠ %s", i, a[i].String(), b[i].String())
-		}
-	}
-	return nil
-}
-
-func polynomialSliceEquals(a []polynomial.Polynomial, b []polynomial.Polynomial) error {
-	if len(a) != len(b) {
-		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
-	}
-	for i := range a {
-		if err := sliceEquals(a[i], b[i]); err != nil {
-			return fmt.Errorf("at index %d: %w", i, err)
-		}
-	}
-	return nil
 }

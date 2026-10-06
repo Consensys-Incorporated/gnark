@@ -1,12 +1,7 @@
 import (
 	"fmt"
 	"hash"
-	"math/big"
 	"{{.FieldPackagePath}}"
-	"{{.FieldPackagePath}}/polynomial"
-	{{- if .Mixed }}
-	"{{ .BaseFieldPackagePath }}"
-	{{- end }}
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 )
 
@@ -81,80 +76,3 @@ func newMessageCounterGenerator(startState, step int) func() hash.Hash {
 		return newMessageCounter(startState, step)
 	}
 }
-
-{{ template "elementHelpers" dict "Config" . "Base" false }}
-{{- if .Mixed }}
-
-{{ template "elementHelpers" dict "Config" . "Base" true }}
-{{- end }}
-
-func polynomialSliceEquals(a []polynomial.Polynomial{{ .ExtensionSuffix }}, b []polynomial.Polynomial{{ .ExtensionSuffix }}) error {
-	if len(a) != len(b) {
-		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
-	}
-	for i := range a {
-		if err := sliceEquals(a[i],b[i]); err != nil {
-			return fmt.Errorf("at index %d: %w", i, err)
-		}
-	}
-	return nil
-}
-
-{{ define "elementHelpers" }}
-{{- $elem := .Config.ElementType }}
-{{- $name := "Element" }}
-{{- $equals := "sliceEquals" }}
-{{- if .Base }}
-{{- $elem = .Config.BaseElementType }}
-{{- $name = "BaseElement" }}
-{{- $equals = "baseSliceEquals" }}
-{{- end }}
-// set{{ $name }} parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
-// then sets z to its numerator divided by its denominator, via SetBigInt, Inverse and Mul.
-func set{{ $name }}(z *{{ $elem }}, value interface{}) (*{{ $elem }}, error) {
-	var r big.Rat
-	switch v := value.(type) {
-	case string:
-		if _, ok := r.SetString(v); !ok {
-			return nil, fmt.Errorf("cannot parse %q", v)
-		}
-	case float64:
-		asInt := int64(v)
-		if float64(asInt) != v {
-			return nil, fmt.Errorf("cannot currently parse float")
-		}
-		r.SetFloat64(v)
-	default:
-		return nil, fmt.Errorf("cannot parse value of type %T", value)
-	}
-
-	var denom {{ $elem }}
-	z.SetBigInt(r.Num())
-	denom.SetBigInt(r.Denom())
-	denom.Inverse(&denom)
-	z.Mul(z, &denom)
-	return z, nil
-}
-
-func sliceTo{{ $name }}Slice[T any](slice []T) ([]{{ $elem }}, error) {
-	elementSlice := make([]{{ $elem }}, len(slice))
-	for i, v := range slice {
-		if _, err := set{{ $name }}(&elementSlice[i], v); err != nil {
-			return nil, err
-		}
-	}
-	return elementSlice, nil
-}
-
-func {{ $equals }}(a []{{ $elem }}, b []{{ $elem }}) error {
-	if len(a) != len(b) {
-		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
-	}
-	for i := range a {
-		if !a[i].Equal(&b[i]) {
-			return fmt.Errorf("at index %d: %s ≠ %s", i, a[i].String(), b[i].String())
-		}
-	}
-	return nil
-}
-{{ end }}

@@ -179,7 +179,7 @@ func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 			finalEvalSlice := reflect.ValueOf(printable[i].FinalEvalProof)
 			finalEvalProof = make([]rational.Element, finalEvalSlice.Len())
 			for k := range finalEvalProof {
-				if _, err := setElement(&finalEvalProof[k], finalEvalSlice.Index(k).Interface()); err != nil {
+				if err := gkrtesting.SetElement(&finalEvalProof[k], finalEvalSlice.Index(k).Interface()); err != nil {
 					return nil, err
 				}
 			}
@@ -191,7 +191,7 @@ func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 		}
 		for k := range printable[i].PartialSumPolys {
 			var err error
-			if proof[i].partialSumPolys[k], err = sliceToElementSlice(printable[i].PartialSumPolys[k]); err != nil {
+			if proof[i].partialSumPolys[k], err = gkrtesting.SliceToElementSlice[rational.Element](printable[i].PartialSumPolys[k]); err != nil {
 				return nil, err
 			}
 		}
@@ -273,7 +273,7 @@ func newTestCase(path string) (*TestCase, error) {
 		}
 		if assignmentRaw != nil {
 			var wireAssignment []rational.Element
-			if wireAssignment, err = sliceToElementSlice(assignmentRaw); err != nil {
+			if wireAssignment, err = gkrtesting.SliceToElementSlice[rational.Element](assignmentRaw); err != nil {
 				return nil, err
 			}
 
@@ -286,7 +286,7 @@ func newTestCase(path string) (*TestCase, error) {
 
 	for i := range circuit {
 		if outputSet[i] {
-			if err = sliceEquals(inOutAssignment[i], fullAssignment[i]); err != nil {
+			if err = gkrtesting.SliceEquals(inOutAssignment[i], fullAssignment[i]); err != nil {
 				return nil, fmt.Errorf("assignment mismatch: %v", err)
 			}
 		}

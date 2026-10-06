@@ -272,11 +272,11 @@ func proofEquals(expected Proof, seen Proof) error {
 				return fmt.Errorf("length mismatch %d ≠ %d", 0, len(seenFinalEval))
 			}
 		} else {
-			if err := sliceEquals(x.finalEvalProof, xSeen.finalEvalProof); err != nil {
+			if err := gkrtesting.SliceEquals(x.finalEvalProof, xSeen.finalEvalProof); err != nil {
 				return fmt.Errorf("final evaluation proof mismatch")
 			}
 		}
-		if err := polynomialSliceEquals(x.partialSumPolys, xSeen.partialSumPolys); err != nil {
+		if err := gkrtesting.PolynomialSliceEquals(gkrtesting.ToSlices(x.partialSumPolys), gkrtesting.ToSlices(xSeen.partialSumPolys)); err != nil {
 			return err
 		}
 	}
@@ -457,7 +457,7 @@ func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 			finalEvalSlice := reflect.ValueOf(printable[i].FinalEvalProof)
 			finalEvalProof = make([]extensions.E6, finalEvalSlice.Len())
 			for k := range finalEvalProof {
-				if _, err := setElement(&finalEvalProof[k], finalEvalSlice.Index(k).Interface()); err != nil {
+				if err := gkrtesting.SetElement(&finalEvalProof[k], finalEvalSlice.Index(k).Interface()); err != nil {
 					return nil, err
 				}
 			}
@@ -469,7 +469,7 @@ func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 		}
 		for k := range printable[i].PartialSumPolys {
 			var err error
-			if proof[i].partialSumPolys[k], err = sliceToElementSlice(printable[i].PartialSumPolys[k]); err != nil {
+			if proof[i].partialSumPolys[k], err = gkrtesting.SliceToElementSlice[extensions.E6](printable[i].PartialSumPolys[k]); err != nil {
 				return nil, err
 			}
 		}
@@ -550,7 +550,7 @@ func newTestCase(path string) (*TestCase, error) {
 		}
 		if assignmentRaw != nil {
 			var wireAssignment []koalabear.Element
-			if wireAssignment, err = sliceToBaseElementSlice(assignmentRaw); err != nil {
+			if wireAssignment, err = gkrtesting.SliceToElementSlice[koalabear.Element](assignmentRaw); err != nil {
 				return nil, err
 			}
 
@@ -563,7 +563,7 @@ func newTestCase(path string) (*TestCase, error) {
 
 	for i := range circuit {
 		if outputSet[i] {
-			if err = baseSliceEquals(inOutAssignment[i], fullAssignment[i]); err != nil {
+			if err = gkrtesting.SliceEquals(inOutAssignment[i], fullAssignment[i]); err != nil {
 				return nil, fmt.Errorf("assignment mismatch: %v", err)
 			}
 		}
