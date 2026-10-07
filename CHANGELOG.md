@@ -1,6 +1,45 @@
 
+<a name="v0.16.4"></a>
+## [v0.16.4] - 2026-10-07
+### Build
+- **deps-dev:** bump the npm_and_yarn group across 1 directory with 2 updates ([#1819](https://github.com/Consensys/gnark/issues/1819))
+### CI
+- update notif channel ([#1825](https://github.com/Consensys/gnark/issues/1825))
+### Chore
+- move to Go 1.26 ([#1866](https://github.com/Consensys/gnark/issues/1866))
+- remove stale UnmarshalSolidity ([#1839](https://github.com/Consensys/gnark/issues/1839))
+- regenerate tinyfield ([#1824](https://github.com/Consensys/gnark/issues/1824))
+- remove failing tests ([#1815](https://github.com/Consensys/gnark/issues/1815))
+### Docs
+- specify limb range assumptions for KZG point evaluation precompile ([#1863](https://github.com/Consensys/gnark/issues/1863))
+- clarify security assumptions of precomputed G2 line evaluations ([#1858](https://github.com/Consensys/gnark/issues/1858))
+- reporting addresses ([#1829](https://github.com/Consensys/gnark/issues/1829))
+### Feat
+- allow modifying the upper bound in bits.ToBinary ([#1809](https://github.com/Consensys/gnark/issues/1809))
+- init codeowners ([#1830](https://github.com/Consensys/gnark/issues/1830))
+- add WebGPU+WASM backend ([#1789](https://github.com/Consensys/gnark/issues/1789))
+- **GKR:** Scheduler sum-check batching ([#1828](https://github.com/Consensys/gnark/issues/1828))
+- **eddsa:** Bandersnatch in Assign helpers, re-enable the Bandersnat… ([#1818](https://github.com/Consensys/gnark/issues/1818))
+### Fix
+- rule out zero residue witness in BW6-761 AssertFinalExponentiationIsOne ([#1871](https://github.com/Consensys/gnark/issues/1871))
+- make profile Top report constraints again ([#1835](https://github.com/Consensys/gnark/issues/1835))
+- multiround commits with shared vals ([#1814](https://github.com/Consensys/gnark/issues/1814))
+- **recursion:** use complete addition for K[0] in the groth16 verifier ([#1843](https://github.com/Consensys/gnark/issues/1843))
+- **sw_bls12377:** accept the G1 point at infinity in the pairing ([#1851](https://github.com/Consensys/gnark/issues/1851))
+- **sw_bw6761:** handle a G1 point at infinity in the Miller loop ([#1850](https://github.com/Consensys/gnark/issues/1850))
+- **webgpu:** reject non-Uint8Array byte arguments ([#1832](https://github.com/Consensys/gnark/issues/1832))
+- **witness:** avoid mutating schema in FromJSON ([#1821](https://github.com/Consensys/gnark/issues/1821))
+### Perf
+- emulated-curve scalar multiplication ([#1826](https://github.com/Consensys/gnark/issues/1826))
+- fold constant byte operations in std/math/uints ([#1796](https://github.com/Consensys/gnark/issues/1796))
+- optimize keccack permutation ([#1802](https://github.com/Consensys/gnark/issues/1802))
+### Refactor
+- **GKR:** Re-surface Prover and Verifier ([#1852](https://github.com/Consensys/gnark/issues/1852))
+- **GKR:** Decouple I/O Claims from GKR Core ([#1844](https://github.com/Consensys/gnark/issues/1844))
 <a name="v0.16.3"></a>
 ## [v0.16.3] - 2026-08-24
+### Chore
+- prepare release v0.16.3
 ### Fix
 - range check quotient for small fields
 - update version
@@ -3140,6 +3179,7 @@
 - Merge pull request [#8](https://github.com/Consensys/gnark/issues/8) from ConsenSys/internal-curve-tests
 - Merge pull request [#7](https://github.com/Consensys/gnark/issues/7) from ConsenSys/develop Fixed [#6](https://github.com/Consensys/gnark/issues/6)
 - Merge pull request [#5](https://github.com/Consensys/gnark/issues/5) from ConsenSys/go1.14_deps
+[v0.16.4]: https://github.com/Consensys/gnark/compare/v0.16.3...v0.16.4
 [v0.16.3]: https://github.com/Consensys/gnark/compare/v0.16.2...v0.16.3
 [v0.16.2]: https://github.com/Consensys/gnark/compare/v0.16.1...v0.16.2
 [v0.16.1]: https://github.com/Consensys/gnark/compare/v0.16.0...v0.16.1
