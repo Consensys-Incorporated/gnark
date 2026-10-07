@@ -157,6 +157,68 @@ go generate ./...
 
 See [CHANGELOG.md](CHANGELOG.md).
 
+## Solver Output Cache
+
+When proving the same circuit repeatedly (e.g. during development), the
+constraint-system solver is the single largest bottleneck.  The ICICLE
+backends support a **raw solver-values cache** that dumps the solver's
+wire-value array to disk
+after the first run and reloads it on subsequent runs, skipping the solver
+entirely.
+
+### How it works
+
+1. **First run** -- the solver runs normally and writes every wire value
+   (Montgomery form, `[]fr.Element`) to a binary file.  BSB22 commitment
+   polynomials are saved alongside.
+2. **Subsequent runs** -- the cache file is read back, the L/R/O
+   Lagrange evaluations are derived via `evaluateLROSmallDomain`, and the
+   BSB22 commitment is recomputed from the cached committed-wire values.
+   The solver is never invoked.
+
+**Zero-knowledge caveat**: for circuits with BSB22 commitments (anything
+using `std/rangecheck` and friends), the cached commitment polynomials
+include their random blinding rows.  Replaying them across proofs would
+make the commitments linkable and progressively leak the committed private
+wires, so in the default (blinding-on) mode the cache is **automatically
+disabled** for such circuits, with a warning.  It stays available for them
+when `GNARK_DISABLE_BLINDING` is set, i.e. when zero-knowledge has already
+been explicitly traded away.
+
+### Usage
+
+Set the `GNARK_RAW_SOLVER_CACHE` environment variable to a file path
+(ideally on a tmpfs / RAM-disk such as `/dev/shm`):
+
+```bash
+export GNARK_RAW_SOLVER_CACHE=/dev/shm/raw_solver.bin
+```
+
+The first proving run creates the file; every subsequent run loads it.
+Delete the file whenever the witness or circuit changes.
+
+For the ICICLE Groth16 backend, the `WithSolutionCachePath` prover option
+caches the full `R1CSSolution` instead.
+
+### Performance (sha256 circuit, RTX 4090, ICICLE PLONK BN254)
+
+Measured with `ICICLE_STEP_PROFILE=1` and blinding disabled
+(`GNARK_DISABLE_BLINDING` set; the default is blinding on, matching the
+native prover).
+
+| Step | No Cache | With Cache | Saved |
+|------|----------|------------|-------|
+| **Solve constraints** | **4,243 ms** | **164 ms** | **4,079 ms** |
+| Commit L, R, O | 446 | 445 | -- |
+| Build ratio copy constraint | 462 | 445 | -- |
+| Commit Z | 155 | 166 | -- |
+| Compute quotient (total) | 5,794 | 4,919 | 875 ms |
+| Open Z | 896 | 807 | 89 ms |
+| Linearized polynomial | 1,230 | 1,287 | -- |
+| **Total prover** | **22,889 ms** | **18,271 ms** | **4,618 ms (20%)** |
+
+Cache file sizes: `raw_solver.bin` ~163 MB, `bsb22_commit_0.bin` ~257 MB.
+
 ## Citing
 
 If you use `gnark` in research, please cite the latest release:
