@@ -13,8 +13,11 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/secp256k1/ecdsa"
 	"github.com/consensys/gnark-crypto/ecc/secp256k1/fr"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
+	limbs "github.com/consensys/gnark/std/internal/limbcomposition"
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/test"
 )
@@ -348,4 +351,136 @@ func TestOverKoalabear(t *testing.T) {
 	circuit, witness := testRoutineECRecover(t, false)
 	err := test.IsSolved(circuit, witness, koalabear.Modulus())
 	assert.NoError(err)
+}
+
+// TestECRecoverNonCanonicalSqrtRoot is a regression test for a soundness
+// issue in ECRecover: the parity of Ry was taken from Field.ToBits, which
+// decomposes the element as-is. Sqrt only enforces that the hinted root fits
+// the limb width and squares to the input, so for roots y < 2^32 + 977 a
+// prover could return the non-canonical encoding y + p. As p is odd, this
+// flips the parity bit, the circuit then selects the negated point -R, and
+// the recovered public key diverges from what the EVM ecrecover returns for
+// the same (msg, v, r, s). The fix reads the parity from
+// Field.ToBitsCanonical instead.
+func TestECRecoverNonCanonicalSqrtRoot(t *testing.T) {
+	assert := test.NewAssert(t)
+	p := emulated.Secp256k1Fp{}.Modulus()
+	n := fr.Modulus()
+
+	// Craft a curve point R = (x, y) with y < 2^32 + 977 so that y + p still
+	// fits the limb width. We need y^2 - 7 to be a cubic residue mod p
+	// (p = 1 mod 3, so this holds for about one y in three); x is then a cube
+	// root of y^2 - 7.
+	pm1over3 := new(big.Int).Div(new(big.Int).Sub(p, big.NewInt(1)), big.NewInt(3))
+	cubeRootExp := new(big.Int).ModInverse(big.NewInt(3), pm1over3)
+	limit := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 32), big.NewInt(977))
+	var x, y *big.Int
+	for yi := int64(1); ; yi++ {
+		y = big.NewInt(yi)
+		c := new(big.Int).Mul(y, y)
+		c.Sub(c, big.NewInt(7)).Mod(c, p)
+		if c.Sign() == 0 || new(big.Int).Exp(c, pm1over3, p).Cmp(big.NewInt(1)) != 0 {
+			continue
+		}
+		xi := new(big.Int).Exp(c, cubeRootExp, p)
+		x3 := new(big.Int).Exp(xi, big.NewInt(3), p)
+		x3.Add(x3, big.NewInt(7)).Mod(x3, p)
+		y2 := new(big.Int).Mod(new(big.Int).Mul(y, y), p)
+		if x3.Cmp(y2) != 0 || xi.Sign() == 0 || xi.Cmp(n) >= 0 {
+			continue
+		}
+		x = xi
+		break
+	}
+	if y.Cmp(limit) >= 0 {
+		t.Fatal("no small-y point found")
+	}
+
+	// signature material: r = R.x, v = parity of the small root y, any s.
+	r := new(big.Int).Set(x)
+	v := uint(y.Bit(0))
+	s := big.NewInt(42)
+	msg := big.NewInt(123456789)
+
+	// qHonest is what the EVM returns; qForged is recovery with -R.
+	var pkHonest, pkForged ecdsa.PublicKey
+	assert.NoError(pkHonest.RecoverFrom(msg.Bytes(), v, r, s))
+	assert.NoError(pkForged.RecoverFrom(msg.Bytes(), v^1, r, s))
+
+	mkAssignment := func(pk *ecdsa.PublicKey) *ecrecoverCircuit {
+		return &ecrecoverCircuit{
+			Message:   emulated.ValueOf[emulated.Secp256k1Fr](msg),
+			V:         v + 27,
+			R:         emulated.ValueOf[emulated.Secp256k1Fr](r),
+			S:         emulated.ValueOf[emulated.Secp256k1Fr](s),
+			Strict:    0,
+			IsFailure: 0,
+			Expected: sw_emulated.AffinePoint[emulated.Secp256k1Fp]{
+				X: emulated.ValueOf[emulated.Secp256k1Fp](pk.A.X),
+				Y: emulated.ValueOf[emulated.Secp256k1Fp](pk.A.Y),
+			},
+		}
+	}
+	witnessHonest := mkAssignment(&pkHonest)
+	witnessForged := mkAssignment(&pkForged)
+
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &ecrecoverCircuit{})
+	assert.NoError(err)
+
+	// the malicious prover returns y + p from the Sqrt hint whenever the
+	// non-canonical encoding fits the limb width.
+	forgedSqrtHint := func(_ *big.Int, in, out []*big.Int) error {
+		return emulated.UnwrapHint(in, out, func(mod *big.Int, inputs, outputs []*big.Int) error {
+			a := new(big.Int).Mod(inputs[0], mod)
+			z := new(big.Int).ModSqrt(a, mod)
+			if z == nil {
+				return nil
+			}
+			if w := new(big.Int).Sub(mod, z); z.Cmp(limit) >= 0 && w.Cmp(limit) < 0 {
+				z.Set(w)
+			}
+			if z.Cmp(limit) < 0 {
+				outputs[0].Add(z, mod)
+			} else {
+				outputs[0].Set(z)
+			}
+			return nil
+		})
+	}
+	// and returns the wrong public key from the recovery hint.
+	nbFpLimbs, nbFpBits := emulated.GetEffectiveFieldParams[emulated.Secp256k1Fp](ecc.BN254.ScalarField())
+	forgedPKHint := func(_ *big.Int, _, outputs []*big.Int) error {
+		qx := pkForged.A.X.BigInt(new(big.Int))
+		qy := pkForged.A.Y.BigInt(new(big.Int))
+		if err := limbs.Decompose(qx, uint(nbFpBits), outputs[:nbFpLimbs]); err != nil {
+			return err
+		}
+		if err := limbs.Decompose(qy, uint(nbFpBits), outputs[nbFpLimbs:2*nbFpLimbs]); err != nil {
+			return err
+		}
+		outputs[2*nbFpLimbs].SetInt64(0)
+		return nil
+	}
+	sqrtID := solver.GetHintID(emulated.SqrtHint)
+	pkID := solver.GetHintID(recoverPublicKeyHint)
+
+	wHonest, err := frontend.NewWitness(witnessHonest, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	wForged, err := frontend.NewWitness(witnessForged, ecc.BN254.ScalarField())
+	assert.NoError(err)
+
+	// sanity: the honest assignment solves with the honest hints.
+	assert.NoError(ccs.IsSolved(wHonest))
+
+	// the fix makes the circuit agnostic to the root encoding: even with the
+	// forged Sqrt hint the proof still attests the EVM-correct key.
+	assert.NoError(ccs.IsSolved(wHonest, solver.OverrideHint(sqrtID, forgedSqrtHint)))
+
+	// but claiming the divergent key must be rejected. Before the fix, this
+	// witness was accepted: the flipped parity made the in-circuit
+	// recomputation match the forged key.
+	err = ccs.IsSolved(wForged,
+		solver.OverrideHint(sqrtID, forgedSqrtHint),
+		solver.OverrideHint(pkID, forgedPKHint))
+	assert.Error(err, "forged witness claiming the non-EVM key must be rejected")
 }
