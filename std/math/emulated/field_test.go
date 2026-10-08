@@ -3,10 +3,13 @@ package emulated
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"testing"
 
+	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
+	"github.com/consensys/gnark/frontend/cs/scs"
 	"github.com/consensys/gnark/test"
 )
 
@@ -242,6 +245,45 @@ func (c *InverseConstantFastPathCircuit) Define(api frontend.API) error {
 func TestInverseConstantFastPathCircuit(t *testing.T) {
 	assert := test.NewAssert(t)
 	assert.CheckCircuit(&InverseConstantFastPathCircuit{}, test.WithValidAssignment(&InverseConstantFastPathCircuit{Dummy: 1}), test.NoTestEngine())
+}
+
+type InverseShortElementCircuit struct {
+	B        frontend.Variable
+	Expected Element[Secp256k1Fp]
+}
+
+func (c *InverseShortElementCircuit) Define(api frontend.API) error {
+	f, err := NewField[Secp256k1Fp](api)
+	if err != nil {
+		return err
+	}
+	// the selected element is stored on a single limb
+	x := f.Select(c.B, f.NewElement(3), f.NewElement(5))
+	f.AssertIsEqual(f.Inverse(x), &c.Expected)
+	return nil
+}
+
+func TestInverseShortElement(t *testing.T) {
+	assert := test.NewAssert(t)
+	var fp Secp256k1Fp
+	for _, tc := range []struct {
+		b int
+		v int64
+	}{{1, 3}, {0, 5}} {
+		inv := new(big.Int).ModInverse(big.NewInt(tc.v), fp.Modulus())
+		assignment := InverseShortElementCircuit{B: tc.b, Expected: ValueOf[Secp256k1Fp](inv)}
+		assert.NoError(test.IsSolved(&InverseShortElementCircuit{}, &assignment, ecc.BN254.ScalarField()))
+		w, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+		assert.NoError(err)
+		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &InverseShortElementCircuit{})
+		assert.NoError(err)
+		_, err = ccs.Solve(w)
+		assert.NoError(err)
+		ccs, err = frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &InverseShortElementCircuit{})
+		assert.NoError(err)
+		_, err = ccs.Solve(w)
+		assert.NoError(err)
+	}
 }
 
 type SqrtConstantFastPathCircuit struct {
