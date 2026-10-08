@@ -29,7 +29,7 @@ import (
 // binary decomposition, comparison, or hashing), use [Field.ModMulCanonical] or
 // reduce with [Field.assertLessThanModulus].
 func (f *Field[T]) ModMul(a, b *Element[T], modulus *Element[T]) *Element[T] {
-	f.checkModulus(modulus)
+	modulus = f.checkModulus(modulus)
 	// fast path when either of the inputs is zero then result is always zero
 	if len(a.Limbs) == 0 || len(b.Limbs) == 0 {
 		return f.Zero()
@@ -83,7 +83,7 @@ func (f *Field[T]) ModMulCanonical(a, b *Element[T], modulus *Element[T]) *Eleme
 // would silently change the modulus whenever it does not fit T. If reducing it
 // is intended, wrap it in [Field.ReduceStrict] explicitly.
 func (f *Field[T]) ModAdd(a, b *Element[T], modulus *Element[T]) *Element[T] {
-	f.checkModulus(modulus)
+	modulus = f.checkModulus(modulus)
 	// inlined version of [Field.reduceAndOp] which uses variable-modulus reduction
 	var nextOverflow uint
 	var err error
@@ -145,7 +145,7 @@ func (f *Field[T]) modSub(a, b *Element[T], modulus *Element[T]) *Element[T] {
 // would silently change the modulus whenever it does not fit T. If reducing it
 // is intended, wrap it in [Field.ReduceStrict] explicitly.
 func (f *Field[T]) ModAssertIsEqual(a, b *Element[T], modulus *Element[T]) {
-	f.checkModulus(modulus)
+	modulus = f.checkModulus(modulus)
 	// like fixed modulus AssertIsEqual, but uses current Sub implementation for
 	// computing the diff
 	diff := f.modSub(b, a, modulus)
@@ -176,7 +176,7 @@ func (f *Field[T]) ModAssertIsEqual(a, b *Element[T], modulus *Element[T]) {
 // or decompose into bits. Intermediate multiplications use [Field.ModMul]
 // without the canonicality assertion, keeping the per-call cost low.
 func (f *Field[T]) ModExp(base, exp, modulus *Element[T]) *Element[T] {
-	f.checkModulus(modulus)
+	modulus = f.checkModulus(modulus)
 	// fast path when the base is zero then result is always zero
 	if len(base.Limbs) == 0 {
 		return f.Zero()
@@ -265,7 +265,7 @@ func (f *Field[T]) ModExp(base, exp, modulus *Element[T]) *Element[T] {
 // not fit T. See the note on the exported variable-modulus methods.
 //
 // The method adds no constraints.
-func (f *Field[T]) checkModulus(modulus *Element[T]) {
+func (f *Field[T]) checkModulus(modulus *Element[T]) *Element[T] {
 	// populate the limbs in case the modulus was constructed in-circuit with
 	// [ValueOf]. No-op for a witness element, which is initialized at witness
 	// parsing time.
@@ -276,6 +276,18 @@ func (f *Field[T]) checkModulus(modulus *Element[T]) {
 	if value, isConstant := f.constantValue(modulus); isConstant && value.Cmp(f.fParams.Modulus()) >= 0 {
 		panic(fmt.Sprintf("variable modulus must be smaller than emulation modulus %s", f.fParams.Modulus()))
 	}
+	// the hints of the variable-modulus operations read NbLimbs modulus limbs
+	// from their inputs, but a constant created with [Field.NewElement] is
+	// stored on the minimal number of limbs. Pad it with zero limbs.
+	if nbLimbs := int(f.fParams.NbLimbs()); len(modulus.Limbs) < nbLimbs {
+		limbs := make([]frontend.Variable, nbLimbs)
+		copy(limbs, modulus.Limbs)
+		for i := len(modulus.Limbs); i < nbLimbs; i++ {
+			limbs[i] = 0
+		}
+		modulus = f.newInternalElement(limbs, 0)
+	}
+	return modulus
 }
 
 // assertLessThanModulus asserts that e < modulus as integers, where modulus is

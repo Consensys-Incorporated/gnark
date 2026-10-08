@@ -8,6 +8,8 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
+	"github.com/consensys/gnark/frontend/cs/scs"
 	"github.com/consensys/gnark/std/math/emulated/emparams"
 	"github.com/consensys/gnark/test"
 )
@@ -201,4 +203,58 @@ func TestVariableExpEdgeCases(t *testing.T) {
 			assert.NoError(err)
 		}, tc.name)
 	}
+}
+
+type constantModulusCircuit[T FieldParams] struct {
+	A, B                   Element[T]
+	Mul, Add, Exp          Element[T]
+	constModulus, constExp *big.Int
+}
+
+func (c *constantModulusCircuit[T]) Define(api frontend.API) error {
+	f, err := NewField[T](api)
+	if err != nil {
+		return err
+	}
+	modulus := f.NewElement(c.constModulus)
+	f.AssertIsEqual(f.ModMulCanonical(&c.A, &c.B, modulus), &c.Mul)
+	f.ModAssertIsEqual(f.ModAdd(&c.A, &c.B, modulus), &c.Add, modulus)
+	f.AssertIsEqual(f.ModExp(&c.A, f.NewElement(c.constExp), modulus), &c.Exp)
+	return nil
+}
+
+// TestConstantModulus checks the variable-modulus methods with a constant
+// modulus which fits in fewer limbs than the emulated parameters use.
+func TestConstantModulus(t *testing.T) {
+	testConstantModulus[emparams.Secp256k1Fp](t)
+	testConstantModulus[emparams.Mod1e512](t)
+}
+
+func testConstantModulus[T FieldParams](t *testing.T) {
+	assert := test.NewAssert(t)
+	modulus := big.NewInt(1000003)
+	exp := big.NewInt(65537)
+	a, b := big.NewInt(123456), big.NewInt(654321)
+	mul := new(big.Int).Mod(new(big.Int).Mul(a, b), modulus)
+	add := new(big.Int).Mod(new(big.Int).Add(a, b), modulus)
+	expRes := new(big.Int).Exp(a, exp, modulus)
+	circuit := constantModulusCircuit[T]{constModulus: modulus, constExp: exp}
+	assignment := constantModulusCircuit[T]{
+		A:   ValueOf[T](a),
+		B:   ValueOf[T](b),
+		Mul: ValueOf[T](mul),
+		Add: ValueOf[T](add),
+		Exp: ValueOf[T](expRes),
+	}
+	assert.NoError(test.IsSolved(&circuit, &assignment, ecc.BN254.ScalarField()))
+	w, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &circuit)
+	assert.NoError(err)
+	_, err = ccs.Solve(w)
+	assert.NoError(err)
+	ccs, err = frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &circuit)
+	assert.NoError(err)
+	_, err = ccs.Solve(w)
+	assert.NoError(err)
 }
