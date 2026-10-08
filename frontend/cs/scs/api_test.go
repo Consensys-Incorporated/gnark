@@ -198,6 +198,34 @@ func TestExistDiv02(t *testing.T) {
 	assert.NoError(err)
 }
 
+type IssueDiv0Circuit3 struct {
+	A, B       frontend.Variable
+	Res1, Res2 frontend.Variable
+}
+
+func (c *IssueDiv0Circuit3) Define(api frontend.API) error {
+	// B cancels out, which leaves a recorded addition with a zero coefficient
+	t1 := api.Add(c.A, c.B, api.Neg(c.B))
+	t2 := api.Add(api.Mul(2, c.A), c.B, api.Neg(c.B))
+
+	api.AssertIsEqual(t1, c.Res1)
+	api.AssertIsEqual(t2, c.Res2)
+	return nil
+}
+
+func TestExistDiv03(t *testing.T) {
+	assert := test.NewAssert(t)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &IssueDiv0Circuit3{})
+	assert.NoError(err)
+	w, err := frontend.NewWitness(&IssueDiv0Circuit3{
+		A: 11, B: 21,
+		Res1: 11, Res2: 22,
+	}, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	_, err = ccs.Solve(w)
+	assert.NoError(err)
+}
+
 type TestZeroMulNoConstraintCircuit struct {
 	A, B frontend.Variable
 }
