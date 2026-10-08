@@ -39,8 +39,8 @@ func (d *digest) Sum() []uints.U8 {
 	padded := d.padding()
 
 	blocks := d.composeBlocks(padded)
-	d.absorbing(blocks)
-	return d.squeezeBlocks()
+	state := d.absorbing(blocks)
+	return d.squeezeBlocks(state)
 }
 
 func (d *digest) FixedLengthSum(length frontend.Variable) []uints.U8 {
@@ -48,9 +48,9 @@ func (d *digest) FixedLengthSum(length frontend.Variable) []uints.U8 {
 
 	blocks := d.composeBlocks(padded)
 
-	d.absorbingFixedWidth(blocks, numberOfBlocks)
+	state := d.absorbingFixedWidth(blocks, numberOfBlocks)
 
-	return d.squeezeBlocks()
+	return d.squeezeBlocks(state)
 }
 
 func (d *digest) padding() []uints.U8 {
@@ -151,16 +151,21 @@ func (d *digest) composeBlocks(padded []uints.U8) [][]uints.U64 {
 	return blocks
 }
 
-func (d *digest) absorbing(blocks [][]uints.U64) {
+// absorbing absorbs the blocks starting from the initial state and returns the
+// resulting state. It doesn't modify d.state so that Sum can be called several
+// times and interleaved with Write.
+func (d *digest) absorbing(blocks [][]uints.U64) [25]uints.U64 {
+	state := d.state
 	for _, block := range blocks {
 		for i := range block {
-			d.state[i] = d.uapi.Xor(d.state[i], block[i])
+			state[i] = d.uapi.Xor(state[i], block[i])
 		}
-		d.state = keccakf.Permute(d.uapi, d.state)
+		state = keccakf.Permute(d.uapi, state)
 	}
+	return state
 }
 
-func (d *digest) absorbingFixedWidth(blocks [][]uints.U64, nbBlocks frontend.Variable) {
+func (d *digest) absorbingFixedWidth(blocks [][]uints.U64, nbBlocks frontend.Variable) [25]uints.U64 {
 	minNbOfBlocks := d.minimalLength / d.rate
 	var state [25]uints.U64
 	var resultState [25]uints.U64
@@ -191,12 +196,12 @@ func (d *digest) absorbingFixedWidth(blocks [][]uints.U64, nbBlocks frontend.Var
 			}
 		}
 	}
-	copy(d.state[:], resultState[:])
+	return resultState
 }
 
-func (d *digest) squeezeBlocks() (result []uints.U8) {
+func (d *digest) squeezeBlocks(state [25]uints.U64) (result []uints.U8) {
 	for i := 0; i < d.outputLen/8; i++ {
-		result = append(result, d.uapi.UnpackLSB(d.state[i])...)
+		result = append(result, d.uapi.UnpackLSB(state[i])...)
 	}
 	return
 }
