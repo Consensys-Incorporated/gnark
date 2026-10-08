@@ -17,6 +17,12 @@ import (
 // The method enforces that lower < 2^split and upper < 2^split', where
 // split'=nbScalar-split. When giving the option [WithNbDigits], we instead use
 // the bound split'=nbDigits-split.
+//
+// When split is greater than or equal to the effective width (nbDigits when
+// [WithNbDigits] is set, otherwise the native field width), the upper part is
+// necessarily empty: the function returns lower = v and upper = 0. This keeps
+// the call well-defined and consistent between the constant and variable paths
+// (the constant path already returns the same values via big.Int arithmetic).
 func Partition(api frontend.API, v frontend.Variable, split uint, opts ...Option) (lower, upper frontend.Variable) {
 	opt, err := parseOpts(opts...)
 	if err != nil {
@@ -36,6 +42,25 @@ func Partition(api frontend.API, v frontend.Variable, split uint, opts ...Option
 		return l, u
 	}
 	rh := rangecheck.New(api)
+
+	// effectiveBits is the width of the region we decompose. When WithNbDigits
+	// is set (and smaller than the field width), the decomposition spans
+	// nbDigits bits; otherwise it spans the whole native field. If split is at
+	// or beyond that width, the upper part is necessarily empty (upper == 0 and
+	// lower == v). We handle this explicitly so that the call stays well-defined
+	// and consistent with the constant path, instead of panicking on a slice
+	// bound or feeding a negative width to the range checker.
+	effectiveBits := api.Compiler().FieldBitLen()
+	if opt.digits > 0 && opt.digits < effectiveBits {
+		effectiveBits = opt.digits
+	}
+	if split >= uint(effectiveBits) {
+		if opt.digits > 0 {
+			rh.Check(v, opt.digits)
+		}
+		return v, 0
+	}
+
 	if split == 0 {
 		if opt.digits > 0 {
 			rh.Check(v, opt.digits)
@@ -69,11 +94,7 @@ func Partition(api frontend.API, v frontend.Variable, split uint, opts ...Option
 		}
 		return
 	}
-	upperBound := api.Compiler().FieldBitLen()
-	if opt.digits > 0 {
-		upperBound = opt.digits
-	}
-	rh.Check(upper, upperBound-int(split))
+	rh.Check(upper, int(effectiveBits)-int(split))
 	rh.Check(lower, int(split))
 
 	m := big.NewInt(1)
