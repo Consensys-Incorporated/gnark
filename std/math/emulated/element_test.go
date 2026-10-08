@@ -1651,6 +1651,11 @@ func (c *FastPathsCircuit[T]) Define(api frontend.API) error {
 	f.AssertIsEqual(res, &c.Zero)
 	f.AssertIsEqual(res, zero)
 
+	// the fast paths above never read Rand. Compare against the general path
+	// with the witness zero.
+	res = f.Add(&c.Rand, &c.Zero)
+	f.AssertIsEqual(res, &c.Rand)
+
 	return nil
 }
 

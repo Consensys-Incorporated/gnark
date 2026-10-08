@@ -1,9 +1,11 @@
 package constraint
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/blang/semver/v4"
@@ -425,9 +427,162 @@ func (system *System) GetNbConstraints() int {
 	return system.NbConstraints
 }
 
+// CheckUnconstrainedWires returns an error if a user input (public or secret)
+// is referenced by no constraint, and logs a warning for hint output wires that
+// no constraint uses.
+//
+// An input that appears in no constraint is free: nothing ties the value the
+// verifier supplies to the proof, so a proof produced for one value verifies
+// for every other value too. Frontends call this at the end of Compile;
+// frontend.IgnoreUnconstrainedInputs turns the error into a warning.
+//
+// A wire is constrained by an R1CS or sparse R1CS constraint, or by being
+// included in a commitment. Feeding a wire to a hint does not constrain it: a
+// hint is solved, not enforced. A hint output is nonetheless reported as used
+// when another hint consumes it, so that a chain of hints ending in a
+// constraint does not warn.
 func (system *System) CheckUnconstrainedWires() error {
-	// TODO @gbotrel
-	return nil
+	nbPublic := system.GetNbPublicVariables()
+	nbSecret := system.GetNbSecretVariables()
+	nbInputs := nbPublic + nbSecret
+
+	constrained := make([]bool, nbInputs)
+	nbUnconstrained := nbInputs
+	if system.Type == SystemR1CS && nbInputs > 0 {
+		// in R1CS the first public wire holds the constant 1; it is not a user
+		// input and needs no constraint.
+		constrained[0] = true
+		nbUnconstrained--
+	}
+	if nbUnconstrained == 0 {
+		// nothing has been marked yet, so the system declares no user input.
+		return errors.New("invalid constraint system: no input defined")
+	}
+
+	// hint outputs are internal wires; the value records whether a constraint
+	// or a downstream hint reads them.
+	usedHintOutput := make(map[uint32]bool)
+
+	// markConstrained records a wire read by a constraint.
+	markConstrained := func(wireID uint32) {
+		if int(wireID) < nbInputs {
+			if !constrained[wireID] {
+				constrained[wireID] = true
+				nbUnconstrained--
+			}
+			return
+		}
+		if _, ok := usedHintOutput[wireID]; ok {
+			usedHintOutput[wireID] = true
+		}
+	}
+	// markRead records a wire read by a hint. It does not constrain an input.
+	markRead := func(wireID uint32) {
+		if _, ok := usedHintOutput[wireID]; ok {
+			usedHintOutput[wireID] = true
+		}
+	}
+	visit := func(l LinearExpression, mark func(uint32)) {
+		for i := range l {
+			if l[i].CoeffID() == CoeffIdZero {
+				// a zero coefficient leaves the wire free
+				continue
+			}
+			mark(uint32(l[i].WireID()))
+		}
+	}
+
+	var (
+		r1c  R1C
+		scs  SparseR1C
+		hint HintMapping
+	)
+	for i := range system.Instructions {
+		blueprint := system.Blueprints[system.Instructions[i].BlueprintID]
+		inst := system.Instructions[i].Unpack(system)
+
+		if b, ok := blueprint.(BlueprintR1C); ok {
+			b.DecompressR1C(&r1c, inst)
+			visit(r1c.L, markConstrained)
+			visit(r1c.R, markConstrained)
+			visit(r1c.O, markConstrained)
+		}
+		if b, ok := blueprint.(BlueprintSparseR1C); ok {
+			b.DecompressSparseR1C(&scs, inst)
+			// qL*xa + qR*xb + qM*xa*xb + qO*xc + qC == 0; a zero coefficient
+			// leaves its wire free.
+			if scs.QL != CoeffIdZero || scs.QM != CoeffIdZero {
+				markConstrained(scs.XA)
+			}
+			if scs.QR != CoeffIdZero || scs.QM != CoeffIdZero {
+				markConstrained(scs.XB)
+			}
+			if scs.QO != CoeffIdZero {
+				markConstrained(scs.XC)
+			}
+		}
+		if b, ok := blueprint.(BlueprintHint); ok {
+			b.DecompressHint(&hint, inst)
+			for _, in := range hint.Inputs {
+				visit(in, markRead)
+			}
+			for w := hint.OutputRange.Start; w < hint.OutputRange.End; w++ {
+				if _, ok := usedHintOutput[w]; !ok {
+					usedHintOutput[w] = false
+				}
+			}
+		}
+	}
+
+	// a wire included in a commitment is bound by the commitment itself, even
+	// when no constraint references it. For Plonk the committed values are
+	// defined by constraints, which the walk above already visited.
+	if c, ok := system.CommitmentInfo.(Groth16Commitments); ok {
+		for i := range c {
+			for _, w := range c[i].PublicAndCommitmentCommitted {
+				markConstrained(uint32(w))
+			}
+			for _, w := range c[i].PrivateCommitted {
+				markConstrained(uint32(w))
+			}
+		}
+	}
+
+	var nbUnusedHints int
+	for _, used := range usedHintOutput {
+		if !used {
+			nbUnusedHints++
+		}
+	}
+	if nbUnusedHints != 0 {
+		// an unused hint output wastes solver work but is not unsound, so it
+		// does not fail the compilation.
+		log := logger.Logger()
+		log.Warn().
+			Int("nbUnusedHintOutputs", nbUnusedHints).
+			Msg("circuit has hint output wires that no constraint uses")
+	}
+
+	if nbUnconstrained == 0 {
+		return nil
+	}
+
+	var sbb strings.Builder
+	sbb.WriteString(strconv.Itoa(nbUnconstrained))
+	sbb.WriteString(" unconstrained input(s):")
+	for i := 0; i < len(constrained) && nbUnconstrained != 0; i++ {
+		if constrained[i] {
+			continue
+		}
+		sbb.WriteByte('\n')
+		if i < nbPublic {
+			sbb.WriteString(system.Public[i])
+		} else {
+			sbb.WriteString(system.Secret[i-nbPublic])
+		}
+		nbUnconstrained--
+	}
+	return errors.New(sbb.String())
 }
 
 func (system *System) GetR1CIterator() R1CIterator {
