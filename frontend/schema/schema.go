@@ -181,8 +181,12 @@ func structTag(baseNameTag string, visibility Visibility, omitEmpty bool) reflec
 func parse(r []Field, input interface{}, target reflect.Type, parentFullName, parentGoName, parentTagName string, parentVisibility Visibility, nbPublic, nbSecret *int, field *big.Int) ([]Field, error) {
 	tValue := reflect.ValueOf(input)
 
-	// get pointed value if needed
-	if tValue.Kind() == reflect.Pointer {
+	// get pointed value if needed. Struct fields are passed by address, so a
+	// field of pointer type arrives here as a pointer to a pointer.
+	for tValue.Kind() == reflect.Pointer {
+		if tValue.IsNil() {
+			return r, nil
+		}
 		tValue = tValue.Elem()
 	}
 
