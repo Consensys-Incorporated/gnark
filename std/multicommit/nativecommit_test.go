@@ -32,6 +32,45 @@ func TestNoRecursion(t *testing.T) {
 	assert.Error(err)
 }
 
+type deferredCommitmentCircuit struct {
+	X, Y frontend.Variable
+}
+
+func (c *deferredCommitmentCircuit) Define(api frontend.API) error {
+	var first frontend.Variable
+	WithCommitment(api, func(api frontend.API, commitment frontend.Variable) error {
+		api.AssertIsDifferent(c.X, commitment)
+		first = commitment
+		return nil
+	}, c.X)
+	// a gadget which asks for a commitment only in its own deferred function,
+	// registered after the first call to WithCommitment
+	api.Compiler().Defer(func(api frontend.API) error {
+		WithCommitment(api, func(api frontend.API, commitment frontend.Variable) error {
+			api.AssertIsDifferent(first, commitment)
+			return nil
+		}, c.Y)
+		return nil
+	})
+	return nil
+}
+
+func TestDeferredCommitment(t *testing.T) {
+	assert := test.NewAssert(t)
+	assignment := deferredCommitmentCircuit{X: 10, Y: 20}
+	assert.NoError(test.IsSolved(&deferredCommitmentCircuit{}, &assignment, ecc.BN254.ScalarField()))
+	w, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &deferredCommitmentCircuit{})
+	assert.NoError(err)
+	_, err = ccs.Solve(w)
+	assert.NoError(err)
+	ccs, err = frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &deferredCommitmentCircuit{})
+	assert.NoError(err)
+	_, err = ccs.Solve(w)
+	assert.NoError(err)
+}
+
 type multipleCommitmentCircuit struct {
 	X frontend.Variable
 }
