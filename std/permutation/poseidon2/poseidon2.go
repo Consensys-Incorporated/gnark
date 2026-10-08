@@ -23,6 +23,34 @@ type Permutation struct {
 	params Parameters
 }
 
+// ExternalMatrix selects the 4x4 matrix M4 the external layer is built from.
+// The two in use are not interchangeable: a permutation is only compatible with
+// an implementation that picked the same one.
+type ExternalMatrix int
+
+const (
+	// ExternalMatrixPoseidon2 is the matrix of https://eprint.iacr.org/2023/323.pdf
+	// appendix B:
+	//
+	//	(5 7 1 3)
+	//	(4 6 1 1)
+	//	(1 3 5 7)
+	//	(1 1 4 6)
+	//
+	// It is what gnark-crypto uses for every curve scalar field, and is the zero
+	// value so that existing parameters keep their behaviour.
+	ExternalMatrixPoseidon2 ExternalMatrix = iota
+
+	// ExternalMatrixPlonky3 is the cheaper matrix used by Plonky3, and by
+	// gnark-crypto for its small fields:
+	//
+	//	(2 3 1 1)
+	//	(1 2 3 1)
+	//	(1 1 2 3)
+	//	(3 1 1 2)
+	ExternalMatrixPlonky3
+)
+
 // Parameters describing the poseidon2 implementation
 type Parameters struct {
 	// len(preimage)+len(digest)=len(preimage)+ceil(log(2*<security_level>/r))
@@ -39,6 +67,11 @@ type Parameters struct {
 
 	// round keys: ordered by round then variable
 	RoundKeys [][]big.Int
+	// ExternalMatrix selects the 4x4 matrix the external layer is built from.
+	// The zero value is the one from the Poseidon2 paper, used by every curve
+	// scalar field; the small fields in gnark-crypto use the Plonky3 one.
+	ExternalMatrix ExternalMatrix
+
 	// DiagM1 holds the diagonal entries of the internal matrix for width >= 4.
 	// For width 2 and 3 the internal matrix is hardcoded and this field is unused.
 	// See https://eprint.iacr.org/2023/323.pdf page 15.
@@ -125,7 +158,7 @@ func GetDefaultParameters(curve ecc.ID) (Parameters, error) {
 // NewPoseidon2 returns a new Poseidon2 hasher with default parameters as
 // defined in the gnark-crypto library.
 func NewPoseidon2(api frontend.API) (*Permutation, error) {
-	params, err := GetDefaultParameters(utils.FieldToCurve(api.Compiler().Field()))
+	params, err := GetDefaultParametersForField(api.Compiler().Field())
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +266,10 @@ func (h *Permutation) sBox(index int, input []frontend.Variable) {
 // on chunks of 4 elements on each part of the buffer
 // see https://eprint.iacr.org/2023/323.pdf appendix B for the addition chain
 func (h *Permutation) matMulM4InPlace(s []frontend.Variable) {
+	if h.params.ExternalMatrix == ExternalMatrixPlonky3 {
+		h.matMulM4Plonky3InPlace(s)
+		return
+	}
 	c := len(s) / 4
 	for i := 0; i < c; i++ {
 		t0 := h.api.Add(s[4*i], s[4*i+1])   // s0+s1
@@ -251,6 +288,35 @@ func (h *Permutation) matMulM4InPlace(s []frontend.Variable) {
 		s[4*i+1] = t5
 		s[4*i+2] = t7
 		s[4*i+3] = t4
+	}
+}
+
+// matMulM4Plonky3InPlace computes s <- M4*s for the Plonky3 matrix
+//
+//	(2 3 1 1)
+//	(1 2 3 1)
+//	(1 1 2 3)
+//	(3 1 1 2)
+//
+// following the same addition chain as gnark-crypto's small-field Poseidon2.
+func (h *Permutation) matMulM4Plonky3InPlace(s []frontend.Variable) {
+	c := len(s) / 4
+	for i := 0; i < c; i++ {
+		t01 := h.api.Add(s[4*i], s[4*i+1])
+		t23 := h.api.Add(s[4*i+2], s[4*i+3])
+		t0123 := h.api.Add(t01, t23)
+		t01123 := h.api.Add(t0123, s[4*i+1])
+		t01233 := h.api.Add(t0123, s[4*i+3])
+
+		s3 := h.api.Add(h.api.Mul(s[4*i], 2), t01233)
+		s1 := h.api.Add(h.api.Mul(s[4*i+2], 2), t01123)
+		s0 := h.api.Add(t01, t01123)
+		s2 := h.api.Add(t23, t01233)
+
+		s[4*i] = s0
+		s[4*i+1] = s1
+		s[4*i+2] = s2
+		s[4*i+3] = s3
 	}
 }
 

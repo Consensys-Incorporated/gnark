@@ -13,6 +13,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/secp256k1/ecdsa"
 	"github.com/consensys/gnark-crypto/ecc/secp256k1/fr"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
 	"github.com/consensys/gnark/std/math/emulated"
@@ -347,5 +348,15 @@ func TestOverKoalabear(t *testing.T) {
 	assert := test.NewAssert(t)
 	circuit, witness := testRoutineECRecover(t, false)
 	err := test.IsSolved(circuit, witness, koalabear.Modulus())
+	assert.NoError(err)
+}
+
+// TestOverMamabear is the koalabear test over the other small native field.
+// mamabear is 49 bits rather than 31, so the emulated arithmetic this circuit
+// is built from packs its limbs differently.
+func TestOverMamabear(t *testing.T) {
+	assert := test.NewAssert(t)
+	circuit, witness := testRoutineECRecover(t, false)
+	err := test.IsSolved(circuit, witness, mamabear.Modulus())
 	assert.NoError(err)
 }

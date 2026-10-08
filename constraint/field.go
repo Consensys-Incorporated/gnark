@@ -65,14 +65,15 @@ func NewElement[E Element](b []byte) E {
 
 // FitsElement returns true if the element fits in the given modulus. This can
 // be used to type-switch in the implementation at runtime.
+//
+// Being a small field does not by itself imply U32: [U32] holds a single
+// uint32, so a small field wider than that is represented in [U64] instead.
+// mamabear is 49 bits and is the first such field.
 func FitsElement[E Element](modulus *big.Int) bool {
 	var e E
 	switch any(e).(type) {
 	case U32:
-		if smallfields.IsSmallField(modulus) {
-			return true
-		}
-		return false
+		return smallfields.IsSmallField(modulus) && modulus.BitLen() <= 32
 	case U64:
 		for _, c := range gnark.Curves() {
 			if modulus.Cmp(c.ScalarField()) == 0 {
@@ -82,7 +83,8 @@ func FitsElement[E Element](modulus *big.Int) bool {
 		if modulus.Cmp(ecc.GRUMPKIN.ScalarField()) == 0 {
 			return true
 		}
-		return false
+		// small fields too wide for U32
+		return smallfields.IsSmallField(modulus) && modulus.BitLen() > 32
 	default:
 		panic("unsupported type")
 	}

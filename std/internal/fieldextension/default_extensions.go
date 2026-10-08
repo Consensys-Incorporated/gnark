@@ -25,10 +25,16 @@ var defaultExtensions = map[string][]*big.Int{
 	"18446744069414584321-default": {biN7, bi0, bi0, bi0, bi1}, // x^4 - 7 -- Goldilocks field
 	"18446744069414584321-4":       {biN7, bi0, bi0, bi0, bi1}, // x^4 - 7 -- Goldilocks field
 	"18446744069414584321-2":       {biN7, bi0, bi1},           // x^2 - 7 -- Goldilocks field
+
+	// MamaBear's degree-3 extension is F_p[t]/(t^3 - t - 1), which is not of
+	// the form x^n + d that the generic implementation reduces. It is served by
+	// a dedicated implementation instead, so it is deliberately absent here:
+	// an entry would be taken as a binomial and reduced incorrectly.
 }
 
 var defaultExtensionDegrees = map[string]int{
 	"2013265921":           8, // BabyBear field
 	"2130706433":           4, // KoalaBear field
 	"18446744069414584321": 4, // Goldilocks field
+	"562932773552129":      3, // MamaBear field
 }

@@ -41,7 +41,7 @@ func Compile(field *big.Int, newBuilder NewBuilder, circuit Circuit, opts ...Com
 		for _, c := range gnark.Curves() {
 			supported = append(supported, c.String())
 		}
-		return nil, fmt.Errorf("can not compile over field %s. This method supports compiling over scalar fields of supported curves: %s. For compiling over small fields use frontend.CompileU32", field, strings.Join(supported, ", "))
+		return nil, fmt.Errorf("can not compile over field %s. This method supports compiling over scalar fields of supported curves: %s, and over small fields too wide for the U32 element. For compiling over small fields which fit U32 use frontend.CompileU32", field, strings.Join(supported, ", "))
 	}
 	return CompileGeneric(field, newBuilder, circuit, opts...)
 }
@@ -57,7 +57,7 @@ func CompileU32(field *big.Int, newBuilder NewBuilderU32, circuit Circuit, opts 
 		for _, c := range smallfields.Supported() {
 			supported = append(supported, c.String())
 		}
-		return nil, fmt.Errorf("can not compile over field %s. This method only supports the following moduli: %s. For compiling over scalar fields of supported elliptic curves use frontend.Compile", field, strings.Join(supported, ", "))
+		return nil, fmt.Errorf("can not compile over field %s. This method only supports small field moduli which fit the U32 element: %s. For scalar fields of supported elliptic curves, and for wider small fields such as mamabear, use frontend.Compile", field, strings.Join(supported, ", "))
 	}
 	return CompileGeneric(field, newBuilder, circuit, opts...)
 }

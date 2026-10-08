@@ -10,6 +10,7 @@ import (
 	fp_bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 	fr_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/math/emulated/emparams"
@@ -438,34 +439,47 @@ func unreducedElement[T emulated.FieldParams](native, value *big.Int) emulated.E
 	return emulated.Element[T]{Limbs: limbValues}
 }
 
+// smallFields are the small native fields these conversions are exercised over.
+// mamabear is 49 bits against koalabear's 31, so it packs emulated limbs
+// differently and is worth covering separately.
+var smallFields = []struct {
+	name    string
+	modulus *big.Int
+}{
+	{"koalabear", koalabear.Modulus()},
+	{"mamabear", mamabear.Modulus()},
+}
+
 func TestEmulatedToBytesNotDivisibleAllowOverflow(t *testing.T) {
-	native := koalabear.Modulus()
-	overflowValue := new(big.Int).Add(fp_bls12381.Modulus(), big.NewInt(5))
-	topByteValue := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 383), big.NewInt(5))
-	for _, tc := range []struct {
-		name          string
-		allowOverflow bool
-		value         *big.Int
-		expected      *big.Int
-	}{
-		{name: "strict", value: overflowValue, expected: big.NewInt(5)},
-		{name: "allow-overflow", allowOverflow: true, value: topByteValue, expected: topByteValue},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			expected := tc.expected.FillBytes(make([]byte, fp_bls12381.Bytes))
-			circuit := &EmulatedToBytesCircuit[emparams.BLS12381Fp]{
-				Expected:      make([]uints.U8, len(expected)),
-				allowOverflow: tc.allowOverflow,
-			}
-			assignment := &EmulatedToBytesCircuit[emparams.BLS12381Fp]{
-				In:            unreducedElement[emparams.BLS12381Fp](native, tc.value),
-				Expected:      uints.NewU8Array(expected),
-				allowOverflow: tc.allowOverflow,
-			}
-			if err := test.IsSolved(circuit, assignment, native); err != nil {
-				t.Fatal(err)
-			}
-		})
+	for _, nf := range smallFields {
+		native := nf.modulus
+		overflowValue := new(big.Int).Add(fp_bls12381.Modulus(), big.NewInt(5))
+		topByteValue := new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 383), big.NewInt(5))
+		for _, tc := range []struct {
+			name          string
+			allowOverflow bool
+			value         *big.Int
+			expected      *big.Int
+		}{
+			{name: "strict", value: overflowValue, expected: big.NewInt(5)},
+			{name: "allow-overflow", allowOverflow: true, value: topByteValue, expected: topByteValue},
+		} {
+			t.Run(nf.name+"/"+tc.name, func(t *testing.T) {
+				expected := tc.expected.FillBytes(make([]byte, fp_bls12381.Bytes))
+				circuit := &EmulatedToBytesCircuit[emparams.BLS12381Fp]{
+					Expected:      make([]uints.U8, len(expected)),
+					allowOverflow: tc.allowOverflow,
+				}
+				assignment := &EmulatedToBytesCircuit[emparams.BLS12381Fp]{
+					In:            unreducedElement[emparams.BLS12381Fp](native, tc.value),
+					Expected:      uints.NewU8Array(expected),
+					allowOverflow: tc.allowOverflow,
+				}
+				if err := test.IsSolved(circuit, assignment, native); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
 	}
 }
 
@@ -504,8 +518,12 @@ func TestEmulatedBytesNotDivisibleRoundTrip(t *testing.T) {
 		In:       uints.NewU8Array(input),
 		Expected: uints.NewU8Array(expected),
 	}
-	if err := test.IsSolved(circuit, assignment, koalabear.Modulus()); err != nil {
-		t.Fatal(err)
+	for _, nf := range smallFields {
+		t.Run(nf.name, func(t *testing.T) {
+			if err := test.IsSolved(circuit, assignment, nf.modulus); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

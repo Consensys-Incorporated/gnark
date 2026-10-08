@@ -50,6 +50,7 @@ func main() {
 	tiny_field := templateData{
 		RootPath:          "../../../internal/smallfields/tinyfield/",
 		CSPath:            "../../../constraint/tinyfield",
+		SmallField:        true,
 		Curve:             "tinyfield",
 		CurveID:           "UNKNOWN",
 		noBackend:         true,
@@ -59,6 +60,7 @@ func main() {
 	}
 	baby_bear_field := templateData{
 		CSPath:      "../../../constraint/babybear/",
+		SmallField:  true,
 		Curve:       "babybear",
 		CurveID:     "UNKNOWN",
 		OnlyField:   true,
@@ -68,12 +70,25 @@ func main() {
 	}
 	koala_bear_field := templateData{
 		CSPath:      "../../../constraint/koalabear/",
+		SmallField:  true,
 		Curve:       "koalabear",
 		CurveID:     "UNKNOWN",
 		OnlyField:   true,
 		noBackend:   true,
 		NoGKR:       true,
 		ElementType: "U32",
+	}
+	// mamabear is 49 bits and is stored in a single uint64 word, so unlike the
+	// 31-bit babybear and koalabear it is generated with the U64 element type.
+	mama_bear_field := templateData{
+		CSPath:      "../../../constraint/mamabear/",
+		SmallField:  true,
+		Curve:       "mamabear",
+		CurveID:     "UNKNOWN",
+		OnlyField:   true,
+		noBackend:   true,
+		NoGKR:       true,
+		ElementType: "U64",
 	}
 	grumpkin := templateData{
 		CSPath:      "../../../constraint/grumpkin/",
@@ -93,6 +108,7 @@ func main() {
 		tiny_field,
 		baby_bear_field,
 		koala_bear_field,
+		mama_bear_field,
 		grumpkin,
 	}
 
@@ -295,6 +311,10 @@ type templateData struct {
 	NoGKR             bool
 	NoTests           bool
 	ElementType       string
+	// SmallField marks a field that is not the scalar field of a curve.
+	// It is independent of ElementType: mamabear is a small field stored
+	// in a U64 word, so the two must not be conflated.
+	SmallField bool
 }
 
 func generateGkrBackend(cfg gkrConfig) error {

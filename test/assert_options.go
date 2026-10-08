@@ -1,6 +1,8 @@
 package test
 
 import (
+	"math/big"
+
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -197,9 +199,14 @@ func WithSolidityExportOptions(solidityOpts ...solidity.ExportOption) TestingOpt
 // compilation and solving in a small field. If not set then the small field
 // checks are skipped. We can enforce small field checks by using the
 // "smallfield_checks" build tag.
-func WithSmallfieldCheck() TestingOption {
+//
+// The fields to check over may be given explicitly; with no argument the
+// default (koalabear) is used. Pass a field when the circuit under test is
+// specific to it, for example an extension defined only over mamabear.
+func WithSmallfieldCheck(fields ...*big.Int) TestingOption {
 	return func(tc *testingConfig) error {
 		tc.checkSmallField = true
+		tc.smallFields = fields
 		return nil
 	}
 }

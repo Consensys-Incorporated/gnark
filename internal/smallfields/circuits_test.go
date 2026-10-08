@@ -10,6 +10,10 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark-crypto/field/babybear"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
+	"github.com/consensys/gnark/backend/witness"
+	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -38,10 +42,30 @@ var testCases = []struct {
 	name            string
 	modulus         *big.Int
 	supportsCompile bool
+	// u64 marks a small field whose constraint system uses the U64 element
+	// type. mamabear is 49 bits, so it does not fit the U32 element the 31-bit
+	// fields use, even though it is just as much a small field.
+	u64 bool
 }{
-	{"tinyfield", tinyfield.Modulus(), true},
-	{"babybear", babybear.Modulus(), true},
-	{"koalabear", koalabear.Modulus(), true},
+	{"tinyfield", tinyfield.Modulus(), true, false},
+	{"babybear", babybear.Modulus(), true, false},
+	{"koalabear", koalabear.Modulus(), true, false},
+	{"mamabear", mamabear.Modulus(), true, true},
+}
+
+// solvable is the part of a constraint system this test needs. The U32 and U64
+// constraint systems share no common interface, so we narrow to what is used.
+type solvable interface {
+	IsSolved(witness witness.Witness, opts ...solver.Option) error
+}
+
+// compileSmallField compiles with the element type matching the field's
+// constraint system.
+func compileSmallField(u64 bool, modulus *big.Int, newBuilderU32 frontend.NewBuilderU32, newBuilderU64 frontend.NewBuilder, circuit frontend.Circuit) (solvable, error) {
+	if u64 {
+		return frontend.Compile(modulus, newBuilderU64, circuit)
+	}
+	return frontend.CompileU32(modulus, newBuilderU32, circuit)
 }
 
 func TestNativeCircuitTestSolve(t *testing.T) {
@@ -61,7 +85,7 @@ func TestNativeCircuitCompileAndSolve(t *testing.T) {
 			continue
 		}
 		assert.Run(func(assert *test.Assert) {
-			ccs, err := frontend.CompileU32(tc.modulus, r1cs.NewBuilder, &NativeCircuit{})
+			ccs, err := compileSmallField(tc.u64, tc.modulus, r1cs.NewBuilder, r1cs.NewBuilder, &NativeCircuit{})
 			assert.NoError(err)
 			assignment := &NativeCircuit{A: 2, B: 4}
 			wit, err := frontend.NewWitness(assignment, tc.modulus)
@@ -71,7 +95,7 @@ func TestNativeCircuitCompileAndSolve(t *testing.T) {
 
 		}, fmt.Sprintf("ccs=r1cs/field=%s", tc.name))
 		assert.Run(func(assert *test.Assert) {
-			ccs, err := frontend.CompileU32(tc.modulus, scs.NewBuilder, &NativeCircuit{})
+			ccs, err := compileSmallField(tc.u64, tc.modulus, scs.NewBuilder, scs.NewBuilder, &NativeCircuit{})
 			assert.NoError(err)
 			assignment := &NativeCircuit{A: 2, B: 4}
 			wit, err := frontend.NewWitness(assignment, tc.modulus)
@@ -122,7 +146,7 @@ func TestCompileEmulatedCircuit(t *testing.T) {
 
 	assignment := &EmulatedCircuit[emparams.BN254Fp]{A: emulated.ValueOf[emparams.BN254Fp](2), B: emulated.ValueOf[emparams.BN254Fp](4)}
 
-	ccs, err := frontend.CompileU32(f, widecommitter.From(scs.NewBuilder), &EmulatedCircuit[emparams.BN254Fp]{})
+	ccs, err := frontend.CompileU32(f, widecommitter.From[constraint.U32](scs.NewBuilder), &EmulatedCircuit[emparams.BN254Fp]{})
 	assert.NoError(err)
 
 	w, err := frontend.NewWitness(assignment, f)
@@ -131,7 +155,7 @@ func TestCompileEmulatedCircuit(t *testing.T) {
 	err = ccs.IsSolved(w)
 	assert.NoError(err)
 
-	ccs2, err := frontend.CompileU32(f, widecommitter.From(r1cs.NewBuilder), &EmulatedCircuit[emparams.BN254Fp]{})
+	ccs2, err := frontend.CompileU32(f, widecommitter.From[constraint.U32](r1cs.NewBuilder), &EmulatedCircuit[emparams.BN254Fp]{})
 	assert.NoError(err)
 
 	err = ccs2.IsSolved(w)
@@ -178,7 +202,7 @@ func TestPairTestSolve(t *testing.T) {
 	err = test.IsSolved(&PairCircuit{}, &witness, testSmallField)
 	assert.NoError(err)
 
-	ccs, err := frontend.CompileU32(testSmallField, widecommitter.From(scs.NewBuilder), &PairCircuit{})
+	ccs, err := frontend.CompileU32(testSmallField, widecommitter.From[constraint.U32](scs.NewBuilder), &PairCircuit{})
 	assert.NoError(err)
 
 	w, err := frontend.NewWitness(&witness, testSmallField)

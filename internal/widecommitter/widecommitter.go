@@ -15,8 +15,8 @@ import (
 // wrappedBuilder mimics the behaviour of the backend which has wide commitment
 // and rangechecker capabilities. We don't have these in gnark yet, but we
 // in principle allow other backends to implement them.
-type wrappedBuilder struct {
-	frontend.Builder[constraint.U32]
+type wrappedBuilder[E constraint.Element] struct {
+	frontend.Builder[E]
 }
 
 // From creates a new builder that implements [frontend.WideCommitter] and [frontend.Rangechecker].
@@ -25,24 +25,24 @@ type wrappedBuilder struct {
 //
 // NB! The [Check] method is a no-op and does not perform any checks. The [WideCommit] method does not
 // perform any checks in the proof system, returning pseudo-random values instead.
-func From(newBuilder frontend.NewBuilderU32) frontend.NewBuilderU32 {
-	return func(field *big.Int, config frontend.CompileConfig) (frontend.Builder[constraint.U32], error) {
+func From[E constraint.Element](newBuilder frontend.NewBuilderGeneric[E]) frontend.NewBuilderGeneric[E] {
+	return func(field *big.Int, config frontend.CompileConfig) (frontend.Builder[E], error) {
 		b, err := newBuilder(field, config)
 		if err != nil {
 			return nil, err
 		}
 		log := logger.Logger()
 		log.Warn().Msg("using fake wide committer, no checks will be performed. Use only for testing")
-		return &wrappedBuilder{b}, nil
+		return &wrappedBuilder[E]{b}, nil
 	}
 }
 
-func (w *wrappedBuilder) WideCommit(width int, toCommit ...frontend.Variable) (commitment []frontend.Variable, err error) {
+func (w *wrappedBuilder[E]) WideCommit(width int, toCommit ...frontend.Variable) (commitment []frontend.Variable, err error) {
 	res, err := w.NewHint(mockedWideCommitHint, width, toCommit...)
 	return res, err
 }
 
-func (w *wrappedBuilder) Check(in frontend.Variable, width int) {
+func (w *wrappedBuilder[E]) Check(in frontend.Variable, width int) {
 	_, err := w.NewHint(mockedRangecheckHint, 1, width, in)
 	if err != nil {
 		panic(fmt.Sprintf("failed to check range: %v", err))

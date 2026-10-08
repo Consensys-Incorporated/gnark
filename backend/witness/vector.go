@@ -13,6 +13,7 @@ import (
 	fr_grumpkin "github.com/consensys/gnark-crypto/ecc/grumpkin/fr"
 	"github.com/consensys/gnark-crypto/field/babybear"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/internal/smallfields/tinyfield"
 	"github.com/consensys/gnark/internal/utils"
 )
@@ -40,6 +41,9 @@ func newVector(field *big.Int, size int) (any, error) {
 		}
 		if field.Cmp(koalabear.Modulus()) == 0 {
 			return make(koalabear.Vector, size), nil
+		}
+		if field.Cmp(mamabear.Modulus()) == 0 {
+			return make(mamabear.Vector, size), nil
 		}
 		return nil, errors.New("unsupported modulus")
 	}
@@ -79,6 +83,10 @@ func newFrom(from any, n int) (any, error) {
 		a := make(koalabear.Vector, n)
 		copy(a, wt)
 		return a, nil
+	case mamabear.Vector:
+		a := make(mamabear.Vector, n)
+		copy(a, wt)
+		return a, nil
 	default:
 		return nil, errors.New("unsupported modulus")
 	}
@@ -102,6 +110,8 @@ func leafType(v any) reflect.Type {
 		return reflect.TypeOf(babybear.Element{})
 	case koalabear.Vector:
 		return reflect.TypeOf(koalabear.Element{})
+	case mamabear.Vector:
+		return reflect.TypeOf(mamabear.Element{})
 	default:
 		panic("invalid input")
 	}
@@ -152,6 +162,12 @@ func set(v any, index int, value any) error {
 		_, err := pv[index].SetInterface(value)
 		return err
 	case koalabear.Vector:
+		if index >= len(pv) {
+			return errors.New("out of bounds")
+		}
+		_, err := pv[index].SetInterface(value)
+		return err
+	case mamabear.Vector:
 		if index >= len(pv) {
 			return errors.New("out of bounds")
 		}
@@ -221,6 +237,13 @@ func iterate(v any) chan any {
 			}
 			close(chValues)
 		}()
+	case mamabear.Vector:
+		go func() {
+			for i := 0; i < len(pv); i++ {
+				chValues <- &(pv)[i]
+			}
+			close(chValues)
+		}()
 	default:
 		panic("invalid input")
 	}
@@ -245,6 +268,8 @@ func resize(v any, n int) any {
 		return make(babybear.Vector, n)
 	case koalabear.Vector:
 		return make(koalabear.Vector, n)
+	case mamabear.Vector:
+		return make(mamabear.Vector, n)
 	default:
 		panic("invalid input")
 	}

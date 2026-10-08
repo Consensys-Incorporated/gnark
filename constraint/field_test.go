@@ -120,15 +120,18 @@ func TestFitsElement(t *testing.T) {
 			})
 	}
 	for _, c := range smallfields.Supported() {
+		// A small field is represented in U32 only if it fits a single uint32.
+		// Wider small fields, such as the 49-bit mamabear, use U64.
+		fitsU32 := c.BitLen() <= 32
 		tcs = append(tcs,
 			tc{
 				isU32:        true,
 				field:        c,
-				expectedFits: true},
+				expectedFits: fitsU32},
 			tc{
 				isU32:        false,
 				field:        c,
-				expectedFits: false,
+				expectedFits: !fitsU32,
 			})
 	}
 	for _, tc := range tcs {
