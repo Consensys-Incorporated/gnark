@@ -169,7 +169,7 @@ func (r *resources) verifyLevelSetup(levelI int, proof Proof) (frontend.Variable
 
 	foldingCoeff := frontend.Variable(0)
 	if level.NbClaims() >= 2 {
-		foldingCoeff = r.t.getChallenge()
+		foldingCoeff = r.t.Squeeze()
 	}
 
 	var claimedEvals []frontend.Variable
@@ -223,7 +223,7 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 
 		copy(gPrime[1:], partialSumPoly)
 
-		challenges[j] = r.t.getChallenge(proof[levelI].PartialSumPolys[j]...)
+		challenges[j] = r.t.Squeeze(proof[levelI].PartialSumPolys[j]...)
 		claimedSum = polynomial.InterpolateLDE(r.api, challenges[j], gPrime[:(degree+1)])
 	}
 
@@ -262,7 +262,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 		}
 	}
 	bind, include := r.levelPredicates(levelI)
-	constraint.BindGkrFinalEvalProof(r.t, proof[levelI].FinalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	constraint.AbsorbGkrFinalEvalProof(r.t, proof[levelI].FinalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
 	gkr.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].FinalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return nil
 }
@@ -270,7 +270,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // Verify the consistency of the claimed output with the claimed input, and return the evaluation
 // claims on the circuit's inputs and outputs. A nil error means nothing until the returned Claims
 // are checked: Verify reads no assignment, so the caller must call Claims.Check itself. The claim
-// values returned to the caller, the output evaluations among them, are not bound into the
+// values returned to the caller, the output evaluations among them, are not absorbed into the
 // transcript.
 func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, h hash.FieldHasher) (Claims, error) {
 	r := &resources{
@@ -319,7 +319,7 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 
 	firstChallenge := make([]frontend.Variable, logNbInstances)
 	for j := range logNbInstances {
-		firstChallenge[j] = r.t.getChallenge()
+		firstChallenge[j] = r.t.Squeeze()
 	}
 	r.outgoingEvalPoints[initialChallengeI] = [][]frontend.Variable{firstChallenge}
 	var boundOutputEvals []frontend.Variable
@@ -328,7 +328,7 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 			boundOutputEvals = append(boundOutputEvals, outputLevel.FinalEvalProof[i])
 		}
 	}
-	r.t.Bind(boundOutputEvals...)
+	r.t.Absorb(boundOutputEvals...)
 	gkr.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.FinalEvalProof, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {

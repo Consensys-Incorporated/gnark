@@ -176,14 +176,14 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 		panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
 	}
 	bind, include := r.levelPredicates(levelI)
-	constraint.BindGkrFinalEvalProof(r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	constraint.AbsorbGkrFinalEvalProof(r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
 	gkr.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], entry.finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return entry
 }
 
 // Prove consistency of the claimed assignment. It returns the evaluation claims on the circuit's
 // inputs and outputs; the caller must check them. The claim values returned to the caller, the
-// output evaluations among them, are not bound into the transcript.
+// output evaluations among them, are not absorbed into the transcript.
 func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.Hash) (Proof, Claims, error) {
 	nbInstances := assignment.NumInstances()
 	nbVars := assignment.NumVars()
@@ -222,7 +222,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	// Derive the initial challenge point
 	firstChallenge := make([]extensions.E6, r.nbVars)
 	for j := range r.nbVars {
-		firstChallenge[j] = r.transcript.Challenge()
+		firstChallenge[j] = r.transcript.Squeeze()
 	}
 	r.outgoingEvalPoints[len(schedule)] = [][]extensions.E6{firstChallenge}
 
@@ -238,7 +238,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 			boundOutputEvals = append(boundOutputEvals, outputEvals[i])
 		}
 	}
-	r.transcript.Bind(boundOutputEvals...)
+	r.transcript.Absorb(boundOutputEvals...)
 	gkr.AppendOutputClaims(r.claims, c, firstChallenge, outputEvals, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
@@ -267,7 +267,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 		return fmt.Errorf("level %d: %v", levelI, err)
 	}
 	bind, include := r.levelPredicates(levelI)
-	constraint.BindGkrFinalEvalProof(r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	constraint.AbsorbGkrFinalEvalProof(r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
 	gkr.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return nil
 }
@@ -275,7 +275,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // Verify the consistency of the claimed output with the claimed input, and return the evaluation
 // claims on the circuit's inputs and outputs. A nil error means nothing until the returned Claims
 // are checked: Verify reads no assignment, so the caller must call Claims.Check itself. The claim
-// values returned to the caller, the output evaluations among them, are not bound into the
+// values returned to the caller, the output evaluations among them, are not absorbed into the
 // transcript.
 func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.Hash) (Claims, error) {
 	if logNbInstances == 0 {
@@ -317,7 +317,7 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 	// Derive the initial challenge point
 	firstChallenge := make([]extensions.E6, r.nbVars)
 	for j := range r.nbVars {
-		firstChallenge[j] = r.transcript.Challenge()
+		firstChallenge[j] = r.transcript.Squeeze()
 	}
 	r.outgoingEvalPoints[len(schedule)] = [][]extensions.E6{firstChallenge}
 	var boundOutputEvals []extensions.E6
@@ -326,7 +326,7 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 			boundOutputEvals = append(boundOutputEvals, outputLevel.finalEvalProof[i])
 		}
 	}
-	r.transcript.Bind(boundOutputEvals...)
+	r.transcript.Absorb(boundOutputEvals...)
 	gkr.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.finalEvalProof, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
