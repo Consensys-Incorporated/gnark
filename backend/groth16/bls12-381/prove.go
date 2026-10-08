@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -164,6 +165,9 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 
 	// override hints
 	bsb22ID := solver.GetHintID(fcs.Bsb22CommitmentComputePlaceholder)
+	// the solver may run the hints of independent commitments concurrently,
+	// the hash function is shared between them so it needs a lock
+	var htfLock sync.Mutex
 	solverOpts = append(solverOpts, solver.OverrideHint(bsb22ID, func(_ *big.Int, in []*big.Int, out []*big.Int) error {
 		i := int(in[0].Int64())
 		in = in[1:]
@@ -179,9 +183,11 @@ func Prove(r1cs *cs.R1CS, pk *ProvingKey, fullWitness witness.Witness, opts ...b
 			return err
 		}
 
+		htfLock.Lock()
 		opt.HashToFieldFn.Write(constraint.SerializeCommitment(proof.Commitments[i].Marshal(), hashed, (fr.Bits-1)/8+1))
 		hashBts := opt.HashToFieldFn.Sum(nil)
 		opt.HashToFieldFn.Reset()
+		htfLock.Unlock()
 		nbBuf := fr.Bytes
 		if opt.HashToFieldFn.Size() < fr.Bytes {
 			nbBuf = opt.HashToFieldFn.Size()
