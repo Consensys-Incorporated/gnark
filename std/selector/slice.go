@@ -43,6 +43,22 @@ func Slice(api frontend.API, start, end frontend.Variable, input []frontend.Vari
 // We must have pivotPosition >= 0 and pivotPosition <= len(input), otherwise a proof cannot be generated.
 func Partition(api frontend.API, pivotPosition frontend.Variable, rightSide bool,
 	input []frontend.Variable) (out []frontend.Variable) {
+	// stepMask requires an output length of at least two, so the degenerate
+	// cases are handled separately. The semantics are the same as in the
+	// general case: for a single element, pivotPosition is either 0 or 1, and
+	// for an empty input the only valid pivot position is 0.
+	switch len(input) {
+	case 0:
+		api.AssertIsEqual(pivotPosition, 0)
+		return []frontend.Variable{}
+	case 1:
+		api.AssertIsBoolean(pivotPosition)
+		if rightSide {
+			return []frontend.Variable{api.Mul(api.Sub(1, pivotPosition), input[0])}
+		}
+		return []frontend.Variable{api.Mul(pivotPosition, input[0])}
+	}
+
 	out = make([]frontend.Variable, len(input))
 	var mask []frontend.Variable
 	// we create a bit mask to multiply with the input.
