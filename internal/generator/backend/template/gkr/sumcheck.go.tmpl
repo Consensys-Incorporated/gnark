@@ -165,9 +165,9 @@ type zeroCheckClaims struct {
 // baseInput is set, and from input otherwise.
 func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial{{ .ExtensionSuffix }} {
 	if c.baseInput != nil {
-		return c.roundPolynomialBase()
+		return c.roundPolynomialBaseInputs()
 	}
-	return c.roundPolynomialMixed()
+	return c.roundPolynomialExt()
 }
 {{- end }}
 
@@ -489,9 +489,9 @@ type singleSourceZeroCheckClaims struct {
 // baseInput is set, and from input otherwise.
 func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial{{ .ExtensionSuffix }} {
 	if c.baseInput != nil {
-		return c.roundPolynomialBase()
+		return c.roundPolynomialBaseInputs()
 	}
-	return c.roundPolynomialMixed()
+	return c.roundPolynomialExt()
 }
 {{- end }}
 
@@ -656,25 +656,28 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 
 {{ define "zeroCheckRoundPolynomial" -}}
 {{- $name := "roundPolynomial" }}
+{{- $use := "" }}
 {{- $inputs := "c.input" }}
 {{- $inElem := .Config.ElementType }}
 {{- $pools := "c.gateEvaluatorPools" }}
 {{- $ge := "GateEvaluator" }}
 {{- $mul := "Mul" }}
 {{- if .Base }}
-{{- $name = "roundPolynomialBase" }}
+{{- $name = "roundPolynomialBaseInputs" }}
+{{- $use = "\n// It is used for the first round, whose input tables are base field columns." }}
 {{- $inputs = "c.baseInput" }}
 {{- $inElem = .Config.BaseElementType }}
 {{- $pools = "c.baseGateEvaluatorPools" }}
 {{- $mul = "MulByElement" }}
 {{- else if .Config.Mixed }}
-{{- $name = "roundPolynomialMixed" }}
+{{- $name = "roundPolynomialExt" }}
+{{- $use = "\n// It is used for every round after the first, which runs entirely over the extension." }}
 {{- $ge = "GateEvaluatorMixed" }}
 {{- end }}
 // {{ $name }} computes gⱼ = ∑ₕ ∑ᵥ eqs[v](Xⱼ, h...) · gateᵥ(inputs(Xⱼ, h...)).
 // The polynomial is represented by the evaluations gⱼ(1), gⱼ(2), ..., gⱼ(deg(gⱼ)).
 // The value gⱼ(0) is inferred from the equation gⱼ(0) + gⱼ(1) = gⱼ₋₁(rⱼ₋₁).
-// By convention, g₀ is a constant polynomial equal to the claimed sum.
+// By convention, g₀ is a constant polynomial equal to the claimed sum.{{ $use }}
 func (c *zeroCheckClaims) {{ $name }}() polynomial.Polynomial{{ .Config.ExtensionSuffix }} {
 	level := c.resources.schedule[c.levelI].(*constraint.GkrSumcheckLevel)
 	degree := c.resources.circuit.ZeroCheckDegree(level)
@@ -762,6 +765,7 @@ func (c *zeroCheckClaims) {{ $name }}() polynomial.Polynomial{{ .Config.Extensio
 
 {{ define "singleSourceRoundPolynomial" -}}
 {{- $name := "roundPolynomial" }}
+{{- $use := "" }}
 {{- $inputs := "c.input" }}
 {{- $inElem := .Config.ElementType }}
 {{- $pools := "c.gateEvaluatorPools" }}
@@ -769,20 +773,22 @@ func (c *zeroCheckClaims) {{ $name }}() polynomial.Polynomial{{ .Config.Extensio
 {{- $set := "Set" }}
 {{- $add := "Add" }}
 {{- if .Base }}
-{{- $name = "roundPolynomialBase" }}
+{{- $name = "roundPolynomialBaseInputs" }}
+{{- $use = "\n// It is used for the first round, whose input tables are base field columns." }}
 {{- $inputs = "c.baseInput" }}
 {{- $inElem = .Config.BaseElementType }}
 {{- $pools = "c.baseGateEvaluatorPools" }}
 {{- $set = "SetElement" }}
 {{- $add = "AddElement" }}
 {{- else if .Config.Mixed }}
-{{- $name = "roundPolynomialMixed" }}
+{{- $name = "roundPolynomialExt" }}
+{{- $use = "\n// It is used for every round after the first, which runs entirely over the extension." }}
 {{- $ge = "GateEvaluatorMixed" }}
 {{- end }}
 // {{ $name }} computes g'_j(1), ..., g'_j(d) where d is the gate degree.
 // g'_j(m) = ∑_h suffixEq[j+1][h] · ∑_w α^w · gate_w(inputs at (m, h))
 // The wire contributions are accumulated via Horner's method in α (= foldingCoeff),
-// eliminating precomputed batchCoeffs and the multiply-by-one for wire 0.
+// eliminating precomputed batchCoeffs and the multiply-by-one for wire 0.{{ $use }}
 func (c *singleSourceZeroCheckClaims) {{ $name }}() polynomial.Polynomial{{ .Config.ExtensionSuffix }} {
 	level := c.resources.schedule[c.levelI].(*constraint.GkrSingleSourceZeroCheckLevel)
 	degree := c.resources.circuit.ZeroCheckDegree(level)

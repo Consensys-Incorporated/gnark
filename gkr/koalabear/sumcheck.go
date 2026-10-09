@@ -158,11 +158,12 @@ type zeroCheckClaims struct {
 	eqs []polynomial.MultiLinE6 // per-wire interpolation bases for evaluating wire assignments at challenge points
 }
 
-// roundPolynomialMixed computes gⱼ = ∑ₕ ∑ᵥ eqs[v](Xⱼ, h...) · gateᵥ(inputs(Xⱼ, h...)).
+// roundPolynomialExt computes gⱼ = ∑ₕ ∑ᵥ eqs[v](Xⱼ, h...) · gateᵥ(inputs(Xⱼ, h...)).
 // The polynomial is represented by the evaluations gⱼ(1), gⱼ(2), ..., gⱼ(deg(gⱼ)).
 // The value gⱼ(0) is inferred from the equation gⱼ(0) + gⱼ(1) = gⱼ₋₁(rⱼ₋₁).
 // By convention, g₀ is a constant polynomial equal to the claimed sum.
-func (c *zeroCheckClaims) roundPolynomialMixed() polynomial.PolynomialE6 {
+// It is used for every round after the first, which runs entirely over the extension.
+func (c *zeroCheckClaims) roundPolynomialExt() polynomial.PolynomialE6 {
 	level := c.resources.schedule[c.levelI].(*constraint.GkrSumcheckLevel)
 	degree := c.resources.circuit.ZeroCheckDegree(level)
 	nbUniqueInputs := len(c.input)
@@ -246,11 +247,12 @@ func (c *zeroCheckClaims) roundPolynomialMixed() polynomial.PolynomialE6 {
 	return p
 }
 
-// roundPolynomialBase computes gⱼ = ∑ₕ ∑ᵥ eqs[v](Xⱼ, h...) · gateᵥ(inputs(Xⱼ, h...)).
+// roundPolynomialBaseInputs computes gⱼ = ∑ₕ ∑ᵥ eqs[v](Xⱼ, h...) · gateᵥ(inputs(Xⱼ, h...)).
 // The polynomial is represented by the evaluations gⱼ(1), gⱼ(2), ..., gⱼ(deg(gⱼ)).
 // The value gⱼ(0) is inferred from the equation gⱼ(0) + gⱼ(1) = gⱼ₋₁(rⱼ₋₁).
 // By convention, g₀ is a constant polynomial equal to the claimed sum.
-func (c *zeroCheckClaims) roundPolynomialBase() polynomial.PolynomialE6 {
+// It is used for the first round, whose input tables are base field columns.
+func (c *zeroCheckClaims) roundPolynomialBaseInputs() polynomial.PolynomialE6 {
 	level := c.resources.schedule[c.levelI].(*constraint.GkrSumcheckLevel)
 	degree := c.resources.circuit.ZeroCheckDegree(level)
 	nbUniqueInputs := len(c.baseInput)
@@ -338,9 +340,9 @@ func (c *zeroCheckClaims) roundPolynomialBase() polynomial.PolynomialE6 {
 // baseInput is set, and from input otherwise.
 func (c *zeroCheckClaims) roundPolynomial() polynomial.PolynomialE6 {
 	if c.baseInput != nil {
-		return c.roundPolynomialBase()
+		return c.roundPolynomialBaseInputs()
 	}
-	return c.roundPolynomialMixed()
+	return c.roundPolynomialExt()
 }
 
 // roundFold folds all input and eq polynomials at the verifier challenge r.
@@ -622,11 +624,12 @@ type singleSourceZeroCheckClaims struct {
 	suffixEq polynomial.MultiLinE6 // contiguous buffer; second half is the current round's eq segment
 }
 
-// roundPolynomialMixed computes g'_j(1), ..., g'_j(d) where d is the gate degree.
+// roundPolynomialExt computes g'_j(1), ..., g'_j(d) where d is the gate degree.
 // g'_j(m) = ∑_h suffixEq[j+1][h] · ∑_w α^w · gate_w(inputs at (m, h))
 // The wire contributions are accumulated via Horner's method in α (= foldingCoeff),
 // eliminating precomputed batchCoeffs and the multiply-by-one for wire 0.
-func (c *singleSourceZeroCheckClaims) roundPolynomialMixed() polynomial.PolynomialE6 {
+// It is used for every round after the first, which runs entirely over the extension.
+func (c *singleSourceZeroCheckClaims) roundPolynomialExt() polynomial.PolynomialE6 {
 	level := c.resources.schedule[c.levelI].(*constraint.GkrSingleSourceZeroCheckLevel)
 	degree := c.resources.circuit.ZeroCheckDegree(level)
 	nbUniqueInputs := len(c.input)
@@ -705,11 +708,12 @@ func (c *singleSourceZeroCheckClaims) roundPolynomialMixed() polynomial.Polynomi
 	return p
 }
 
-// roundPolynomialBase computes g'_j(1), ..., g'_j(d) where d is the gate degree.
+// roundPolynomialBaseInputs computes g'_j(1), ..., g'_j(d) where d is the gate degree.
 // g'_j(m) = ∑_h suffixEq[j+1][h] · ∑_w α^w · gate_w(inputs at (m, h))
 // The wire contributions are accumulated via Horner's method in α (= foldingCoeff),
 // eliminating precomputed batchCoeffs and the multiply-by-one for wire 0.
-func (c *singleSourceZeroCheckClaims) roundPolynomialBase() polynomial.PolynomialE6 {
+// It is used for the first round, whose input tables are base field columns.
+func (c *singleSourceZeroCheckClaims) roundPolynomialBaseInputs() polynomial.PolynomialE6 {
 	level := c.resources.schedule[c.levelI].(*constraint.GkrSingleSourceZeroCheckLevel)
 	degree := c.resources.circuit.ZeroCheckDegree(level)
 	nbUniqueInputs := len(c.baseInput)
@@ -792,9 +796,9 @@ func (c *singleSourceZeroCheckClaims) roundPolynomialBase() polynomial.Polynomia
 // baseInput is set, and from input otherwise.
 func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.PolynomialE6 {
 	if c.baseInput != nil {
-		return c.roundPolynomialBase()
+		return c.roundPolynomialBaseInputs()
 	}
-	return c.roundPolynomialMixed()
+	return c.roundPolynomialExt()
 }
 
 // roundFold folds only input multilinears at the verifier challenge r.
