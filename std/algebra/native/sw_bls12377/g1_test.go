@@ -927,3 +927,24 @@ func TestMultiScalarMulFolded(t *testing.T) {
 	}, &assignment, ecc.BW6_761.ScalarField())
 	assert.NoError(err)
 }
+
+// TestMultiScalarMulFoldedSinglePoint checks that folding a single point
+// returns the point itself (gamma^0 * P0).
+func TestMultiScalarMulFoldedSinglePoint(t *testing.T) {
+	assert := test.NewAssert(t)
+	var s, gamma fr.Element
+	s.SetRandom()
+	gamma.SetRandom()
+	var p bls12377.G1Affine
+	p.ScalarMultiplicationBase(s.BigInt(new(big.Int)))
+	assignment := MultiScalarMulFoldedEdgeCasesTest{
+		Points:  []G1Affine{NewG1Affine(p)},
+		Scalars: []emulated.Element[ScalarField]{NewScalar(gamma)},
+		Res:     NewG1Affine(p),
+	}
+	err := test.IsSolved(&MultiScalarMulFoldedEdgeCasesTest{
+		Points:  make([]G1Affine, 1),
+		Scalars: make([]emulated.Element[ScalarField], 1),
+	}, &assignment, ecc.BW6_761.ScalarField())
+	assert.NoError(err)
+}
