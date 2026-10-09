@@ -55,11 +55,11 @@ func sumcheckProve(claims sumcheckClaims, t *transcript) sumcheckProof {
 	challenges := make([]fr.Element, varsNum)
 
 	for j := range varsNum - 1 {
-		challenges[j] = t.Challenge(proof.partialSumPolys[j]...)
+		challenges[j] = t.Squeeze(proof.partialSumPolys[j]...)
 		claims.roundFold(challenges[j])
 		proof.partialSumPolys[j+1] = claims.roundPolynomial()
 	}
-	challenges[varsNum-1] = t.Challenge(proof.partialSumPolys[varsNum-1]...)
+	challenges[varsNum-1] = t.Squeeze(proof.partialSumPolys[varsNum-1]...)
 
 	proof.finalEvalProof = claims.proveFinalEval(challenges)
 	return proof
@@ -81,7 +81,7 @@ func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum f
 		copy(gJ[1:], proof.partialSumPolys[j])
 		gJ[0].Sub(&gJR, &proof.partialSumPolys[j][0])
 
-		r[j] = t.Challenge(proof.partialSumPolys[j]...)
+		r[j] = t.Squeeze(proof.partialSumPolys[j]...)
 		gJCoeffs := polynomial.InterpolateOnRange(gJ[:(degree + 1)])
 		gJR = gJCoeffs.Eval(&r[j])
 	}
@@ -359,7 +359,7 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 	c.resources = r
 	level := r.schedule[levelI]
 	if level.NbClaims() >= 2 {
-		c.foldingCoeff = r.transcript.Challenge()
+		c.foldingCoeff = r.transcript.Squeeze()
 	}
 
 	uniqueInputs, inputIndices := r.circuit.InputMapping(level)
@@ -444,7 +444,7 @@ func (r *resources) verifyLevelSetup(levelI int, proof Proof) (fr.Element, *zero
 	level := r.schedule[levelI]
 	var foldingCoeff fr.Element
 	if level.NbClaims() >= 2 {
-		foldingCoeff = r.transcript.Challenge()
+		foldingCoeff = r.transcript.Squeeze()
 	}
 
 	claimedEvals := make(polynomial.Polynomial, 0, level.NbClaims())
@@ -700,7 +700,7 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 
 		copy(gPrime[1:], partialPoly)
 
-		challenges[j] = r.transcript.Challenge(partialPoly...)
+		challenges[j] = r.transcript.Squeeze(partialPoly...)
 		gPrimeCoeffs := polynomial.InterpolateOnRange(gPrime[:(degree + 1)])
 		claimedSum = gPrimeCoeffs.Eval(&challenges[j])
 	}

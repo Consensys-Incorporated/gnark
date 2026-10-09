@@ -15,7 +15,7 @@ import (
 
 // hashFromDescription returns the hash a test vector names. The only type is "const": a
 // messageCounter with step 0, so every challenge equals the given value regardless of what was
-// bound to the transcript. Test vectors therefore pin down the GKR and sumcheck arithmetic only.
+// absorbed by the transcript. Test vectors therefore pin down the GKR and sumcheck arithmetic only.
 // Transcript handling is exercised by the tests using newMessageCounter with a nonzero step, and
 // end to end by the std/gkrapi tests, which use real hashes.
 func hashFromDescription(d gkrtesting.HashDescription) (hash.Hash, error) {

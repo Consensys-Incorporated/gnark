@@ -83,13 +83,13 @@ func (l *GkrSingleSourceZeroCheckLevel) ClaimGroups() []GkrClaimGroup {
 }
 func (l *GkrSingleSourceZeroCheckLevel) FinalEvalProofIndex(wireI, _ int) int { return wireI }
 
-// BindGkrFinalEvalProof binds the entries of finalEvalProof belonging to the unique gate inputs
+// AbsorbGkrFinalEvalProof absorbs the entries of finalEvalProof belonging to the unique gate inputs
 // bind selects. A claimed value returned to the caller unconsolidated is checked directly against
-// the assignment (see Claims.Check), never reduced by a further level, so it is not bound.
-func BindGkrFinalEvalProof[F any](transcript interface{ Bind(...F) }, finalEvalProof []F, uniqueGateInputs []int, bind func(wireI int) bool, level GkrProvingLevel) {
+// the assignment (see Claims.Check), never reduced by a further level, so it is not absorbed.
+func AbsorbGkrFinalEvalProof[F any](transcript interface{ Absorb(...F) }, finalEvalProof []F, uniqueGateInputs []int, bind func(wireI int) bool, level GkrProvingLevel) {
 	for i, inputWireI := range uniqueGateInputs {
 		if bind(inputWireI) {
-			transcript.Bind(finalEvalProof[level.FinalEvalProofIndex(i, 0):level.FinalEvalProofIndex(i+1, 0)]...)
+			transcript.Absorb(finalEvalProof[level.FinalEvalProofIndex(i, 0):level.FinalEvalProofIndex(i+1, 0)]...)
 		}
 	}
 }
