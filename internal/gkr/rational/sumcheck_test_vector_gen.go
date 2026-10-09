@@ -14,9 +14,10 @@ import (
 	"path/filepath"
 	"runtime/pprof"
 
+	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
-	"github.com/consensys/gnark/internal/small_rational"
-	"github.com/consensys/gnark/internal/small_rational/polynomial"
+	"github.com/consensys/gnark/internal/rational"
+	"github.com/consensys/gnark/internal/rational/polynomial"
 )
 
 func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
@@ -38,8 +39,8 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	}
 
 	claim := singleMultilinClaim{poly}
-	t := transcript{h: hsh}
-	proof := sumcheckProve(&claim, &t)
+	t := gkrcore.NewHashTranscript[rational.Element](hsh)
+	proof := sumcheckProve(&claim, t)
 	testCaseInfo.Proof = sumcheckToPrintableProof(proof)
 
 	// Verification
@@ -48,7 +49,7 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	} else {
 		return _err
 	}
-	var claimedSum small_rational.SmallRational
+	var claimedSum rational.Element
 	if _, err = claimedSum.SetInterface(testCaseInfo.ClaimedSum); err != nil {
 		return err
 	}
@@ -56,8 +57,8 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}
-	t = transcript{h: hsh}
-	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, &t); err != nil {
+	t = gkrcore.NewHashTranscript[rational.Element](hsh)
+	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, t); err != nil {
 		return fmt.Errorf("proof rejected: %v", err)
 	}
 
@@ -65,8 +66,8 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}
-	t = transcript{h: hsh}
-	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, &t); err == nil {
+	t = gkrcore.NewHashTranscript[rational.Element](hsh)
+	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, t); err == nil {
 		return fmt.Errorf("bad proof accepted")
 	}
 
@@ -155,7 +156,7 @@ type singleMultilinClaim struct {
 	g polynomial.MultiLin
 }
 
-func (c *singleMultilinClaim) proveFinalEval(r []small_rational.SmallRational) []small_rational.SmallRational {
+func (c *singleMultilinClaim) proveFinalEval(r []rational.Element) []rational.Element {
 	return nil // verifier can compute the final eval itself
 }
 
@@ -168,23 +169,23 @@ func sumForX1One(g polynomial.MultiLin) polynomial.Polynomial {
 	for i := len(g)/2 + 1; i < len(g); i++ {
 		sum.Add(&sum, &g[i])
 	}
-	return []small_rational.SmallRational{sum}
+	return []rational.Element{sum}
 }
 
 func (c *singleMultilinClaim) roundPolynomial() polynomial.Polynomial {
 	return sumForX1One(c.g)
 }
 
-func (c *singleMultilinClaim) roundFold(r small_rational.SmallRational) {
+func (c *singleMultilinClaim) roundFold(r rational.Element) {
 	c.g.Fold(r)
 }
 
 type singleMultilinLazyClaim struct {
 	g          polynomial.MultiLin
-	claimedSum small_rational.SmallRational
+	claimedSum rational.Element
 }
 
-func (c singleMultilinLazyClaim) verifyFinalEval(r []small_rational.SmallRational, purportedValue small_rational.SmallRational, proof []small_rational.SmallRational) error {
+func (c singleMultilinLazyClaim) verifyFinalEval(r []rational.Element, purportedValue rational.Element, proof []rational.Element) error {
 	val := c.g.Evaluate(r, nil)
 	if val.Equal(&purportedValue) {
 		return nil

@@ -78,7 +78,7 @@ func (api *API) Compile(fiatshamirHashName string, options ...CompileOption) (*C
 	field := compiler.Field()
 	curveID := utils.FieldToCurve(field)
 
-	gadgetCircuit, serializableCircuit, err := api.circuit.Compile(field)
+	gadgetCircuit, serializableCircuit, err := api.circuit.Compile(gkrcore.PrimeField(field))
 	if err != nil {
 		return nil, err
 	}

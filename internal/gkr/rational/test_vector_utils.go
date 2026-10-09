@@ -8,15 +8,15 @@ package gkr
 import (
 	"fmt"
 	"hash"
-
-	"github.com/consensys/gnark/internal/small_rational"
-	"github.com/consensys/gnark/internal/small_rational/polynomial"
+	"math/big"
 
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
+	"github.com/consensys/gnark/internal/rational"
+	"github.com/consensys/gnark/internal/rational/polynomial"
 )
 
-func toElement(i int64) *small_rational.SmallRational {
-	var res small_rational.SmallRational
+func toElement(i int64) *rational.Element {
+	var res rational.Element
 	res.SetInt64(i)
 	return &res
 }
@@ -39,6 +39,9 @@ func hashFromDescription(d gkrtesting.HashDescription) (hash.Hash, error) {
 	return nil, fmt.Errorf("hash description missing type")
 }
 
+// messageCounterBlockSize is the length of an element's Marshal().
+const messageCounterBlockSize = rational.Bytes
+
 // messageCounter is a stand-in hash whose state depends only on the number of field-element
 // blocks written to it, not on their values.
 type messageCounter struct {
@@ -48,18 +51,17 @@ type messageCounter struct {
 }
 
 func (m *messageCounter) Write(p []byte) (n int, err error) {
-	inputBlockSize := (len(p)-1)/small_rational.Bytes + 1
+	inputBlockSize := (len(p)-1)/messageCounterBlockSize + 1
 	m.state += int64(inputBlockSize) * m.step
 	return len(p), nil
 }
 
 func (m *messageCounter) Sum(b []byte) []byte {
-	inputBlockSize := (len(b)-1)/small_rational.Bytes + 1
+	inputBlockSize := (len(b)-1)/messageCounterBlockSize + 1
 	resI := m.state + int64(inputBlockSize)*m.step
-	var res small_rational.SmallRational
+	var res rational.Element
 	res.SetInt64(int64(resI))
-	resBytes := res.Bytes()
-	return resBytes[:]
+	return (&res).Marshal()
 }
 
 func (m *messageCounter) Reset() {
@@ -67,11 +69,11 @@ func (m *messageCounter) Reset() {
 }
 
 func (m *messageCounter) Size() int {
-	return small_rational.Bytes
+	return messageCounterBlockSize
 }
 
 func (m *messageCounter) BlockSize() int {
-	return small_rational.Bytes
+	return messageCounterBlockSize
 }
 
 func newMessageCounter(startState, step int) hash.Hash {
@@ -85,17 +87,44 @@ func newMessageCounterGenerator(startState, step int) func() hash.Hash {
 	}
 }
 
-func sliceToElementSlice[T any](slice []T) ([]small_rational.SmallRational, error) {
-	elementSlice := make([]small_rational.SmallRational, len(slice))
+// setElement parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
+// then sets z to its numerator divided by its denominator, via SetBigInt, Inverse and Mul.
+func setElement(z *rational.Element, value interface{}) (*rational.Element, error) {
+	var r big.Rat
+	switch v := value.(type) {
+	case string:
+		if _, ok := r.SetString(v); !ok {
+			return nil, fmt.Errorf("cannot parse %q", v)
+		}
+	case float64:
+		asInt := int64(v)
+		if float64(asInt) != v {
+			return nil, fmt.Errorf("cannot currently parse float")
+		}
+		r.SetFloat64(v)
+	default:
+		return nil, fmt.Errorf("cannot parse value of type %T", value)
+	}
+
+	var denom rational.Element
+	z.SetBigInt(r.Num())
+	denom.SetBigInt(r.Denom())
+	denom.Inverse(&denom)
+	z.Mul(z, &denom)
+	return z, nil
+}
+
+func sliceToElementSlice[T any](slice []T) ([]rational.Element, error) {
+	elementSlice := make([]rational.Element, len(slice))
 	for i, v := range slice {
-		if _, err := elementSlice[i].SetInterface(v); err != nil {
+		if _, err := setElement(&elementSlice[i], v); err != nil {
 			return nil, err
 		}
 	}
 	return elementSlice, nil
 }
 
-func sliceEquals(a []small_rational.SmallRational, b []small_rational.SmallRational) error {
+func sliceEquals(a []rational.Element, b []rational.Element) error {
 	if len(a) != len(b) {
 		return fmt.Errorf("length mismatch %d≠%d", len(a), len(b))
 	}

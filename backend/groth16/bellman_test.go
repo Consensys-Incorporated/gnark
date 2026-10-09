@@ -97,8 +97,12 @@ func TestVerifyBellmanProof(t *testing.T) {
 		proofBytes, err := base64.StdEncoding.DecodeString(test.proof)
 		require.NoError(t, err)
 
-		// pad with 0 bytes to account for commitment stuff
-		proofBytes = append(proofBytes, make([]byte, bls12381.SizeOfG1AffineUncompressed+4)...)
+		// Pad for an empty Commitments slice (4-byte zero length), then CommitmentPok as the point
+		// at infinity in uncompressed form: top 3 bits 0b010 (BLS12-381's uncompressed-infinity
+		// flag), the rest zero.
+		padding := make([]byte, bls12381.SizeOfG1AffineUncompressed+4)
+		padding[4] = 0b010 << 5
+		proofBytes = append(proofBytes, padding...)
 
 		proof := NewProof(ecc.BLS12_381)
 		_, err = proof.ReadFrom(bytes.NewReader(proofBytes))

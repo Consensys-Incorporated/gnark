@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var scheduleTestCache = gkrtesting.NewCache(ecc.BN254.ScalarField())
+var scheduleTestCache = gkrtesting.NewCache(gkrcore.PrimeField(ecc.BN254.ScalarField()))
 
 func TestDefaultProvingSchedule(t *testing.T) {
 	_, c := scheduleTestCache.Compile(t, gkrtesting.SingleMulGateCircuit())

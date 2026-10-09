@@ -1,6 +1,6 @@
-package small_rational
+package rational
 
-type Vector []SmallRational
+type Vector []Element
 
 func (v Vector) MustSetRandom() {
 	for i := range v {
