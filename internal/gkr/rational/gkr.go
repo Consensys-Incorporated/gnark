@@ -41,8 +41,22 @@ type Claims map[int][]EvaluationClaim
 
 // Check asserts that every claim in c holds against assignment.
 func (c Claims) Check(assignment WireAssignment) error {
+	if len(c[0]) == 0 { // wire 0 is always an input, so it must have a claim
+		return errors.New("no claims on wire 0")
+	}
+	nbVars := len(c[0][0].EvaluationPoint)
+	nbInstances := 1 << nbVars
 	for wI, wireClaims := range c {
-		for _, claim := range wireClaims {
+		if wI < 0 || wI >= len(assignment) || len(assignment[wI]) == 0 {
+			return fmt.Errorf("wire %d: no assignment", wI)
+		}
+		if len(assignment[wI]) != nbInstances {
+			return fmt.Errorf("wire %d: %d instances, expected %d", wI, len(assignment[wI]), nbInstances)
+		}
+		for claimI, claim := range wireClaims {
+			if len(claim.EvaluationPoint) != nbVars {
+				return fmt.Errorf("wire %d claim %d: evaluation point has %d coordinates, expected %d = log(%d)", wI, claimI, len(claim.EvaluationPoint), nbVars, nbInstances)
+			}
 			eval := assignment[wI].Evaluate(claim.EvaluationPoint, nil)
 			if !eval.Equal(&claim.Evaluation) {
 				return fmt.Errorf("wire %d: claimed evaluation %v, computed %v", wI, &claim.Evaluation, &eval)
@@ -166,7 +180,8 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 
 // Prove consistency of the claimed assignment. It returns the evaluation claims on the circuit's
 // inputs and outputs; the caller must check them. The claim values returned to the caller, the
-// output evaluations among them, are not bound into the transcript.
+// output evaluations among them, are not bound into the transcript. hasher must be seeded as
+// Verify requires.
 func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.Hash) (Proof, Claims, error) {
 	nbInstances := assignment.NumInstances()
 	nbVars := assignment.NumVars()
@@ -257,9 +272,14 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 
 // Verify the consistency of the claimed output with the claimed input, and return the evaluation
 // claims on the circuit's inputs and outputs. A nil error means nothing until the returned Claims
-// are checked: Verify reads no assignment, so the caller must call Claims.Check itself. The claim
-// values returned to the caller, the output evaluations among them, are not bound into the
-// transcript.
+// are checked: Verify reads no assignment, so the caller must call Claims.Check itself, on every
+// claim, including those on exported inputs under gkrapi.ConsolidateNone, which no level
+// cross-checks. The claim values returned to the caller, the output evaluations among them, are
+// not bound into the transcript.
+//
+// The transcript starts empty, so for soundness the verifier must seed hasher, as the prover did,
+// with a commitment to the circuit, the schedule, the number of instances and the input and output
+// columns, computed from values it trusts.
 func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.Hash) (Claims, error) {
 	if logNbInstances == 0 {
 		return nil, errors.New("number of variables must be positive")

@@ -29,6 +29,8 @@ func Example() {
 	assignment[y] = []fr.Element{fr.NewElement(5), fr.NewElement(7)}
 	// assignment[z] is left nil: Prove computes it.
 
+	// Prove and Verify must be given hashes seeded identically with a commitment to the circuit,
+	// the schedule, the number of instances and the inputs and outputs. The example omits it.
 	proof, proverClaims, err := gkrbn254.Prove(circuit, schedule, assignment, gcHash.MIMC_BN254.New())
 	assertNoError(err)
 	assertNoError(proverClaims.Check(assignment))
@@ -42,7 +44,7 @@ func Example() {
 
 	verifierClaims, err := gkrbn254.Verify(circuit, schedule, 1, deserialized, gcHash.MIMC_BN254.New())
 	assertNoError(err)
-	assertNoError(verifierClaims.Check(assignment))
+	assertNoError(verifierClaims.Check(assignment)) // every returned claim must be checked
 
 	fmt.Println("proof verified")
 	// Output: proof verified

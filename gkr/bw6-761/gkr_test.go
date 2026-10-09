@@ -126,6 +126,46 @@ func TestEndToEndPoseidon2(t *testing.T) {
 	assert.Error(t, err, "tampered proof accepted")
 }
 
+// TestCheckRejectsMismatchedLengths checks that Claims.Check rejects assignments of another size
+// than the claims', and ones missing a claimed wire.
+func TestCheckRejectsMismatchedLengths(t *testing.T) {
+	api := gkrapi.New()
+	x := api.NewInput()
+	y := api.NewInput()
+	z := api.Mul(x, y)
+	circuit, schedule, err := api.Compile(gkr.PrimeField(ecc.BW6_761.ScalarField()), gkrapi.ConsolidateAll)
+	require.NoError(t, err)
+
+	elements := func(values ...uint64) []fr.Element {
+		res := make([]fr.Element, len(values))
+		for i, v := range values {
+			res[i] = fr.NewElement(v)
+		}
+		return res
+	}
+
+	// The prover proves instances 0 and 2 of the larger assignment below only.
+	proven := make(WireAssignment, len(circuit))
+	proven[x], proven[y] = elements(2, 4), elements(5, 6)
+	proof, _, err := Prove(circuit, schedule, proven, newMessageCounter(1, 1))
+	require.NoError(t, err)
+
+	claims, err := Verify(circuit, schedule, 1, proof, newMessageCounter(1, 1))
+	require.NoError(t, err)
+	assert.NoError(t, claims.Check(proven))
+
+	// Instances 1 and 3 of z are false.
+	larger := make(WireAssignment, len(circuit))
+	larger[x], larger[y], larger[z] = elements(2, 3, 4, 5), elements(5, 7, 6, 8), elements(10, 999, 24, 12345)
+	assert.Error(t, claims.Check(larger), "claims about 2 instances accepted against an assignment of 4")
+
+	inputsOnly := make(WireAssignment, len(circuit))
+	inputsOnly[x], inputsOnly[y] = elements(2, 4), elements(5, 6)
+	assert.NotPanics(t, func() {
+		assert.Error(t, claims.Check(inputsOnly), "claims on a wire accepted without an assignment")
+	})
+}
+
 // proveAndVerify proves assignment against schedule and verifies the proof rebuilt by
 // DeserializeProof from the elements of its Flatten, then asserts that: every wire of
 // schedule[0] has exactly one claim, and all of them share one point; the number of
