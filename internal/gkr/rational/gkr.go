@@ -281,7 +281,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // with a commitment to the circuit, the schedule, the number of instances and the input and output
 // columns, computed from values it trusts.
 func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.Hash) (Claims, error) {
-	if logNbInstances == 0 {
+	if logNbInstances < 1 {
 		return nil, errors.New("number of variables must be positive")
 	}
 	r := newResources(c, schedule, logNbInstances, hasher)
@@ -428,7 +428,7 @@ func (p Proof) Flatten() iter.Seq2[int, *rational.Element] {
 func DeserializeProof(c Circuit, schedule constraint.GkrProvingSchedule, serialized []rational.Element) (Proof, error) {
 	identity := identityGate()
 	logNbInstances, err := gkrcore.ComputeLogNbInstances(c, schedule, len(serialized), identity)
-	if err != nil {
+	if err != nil && !errors.Is(err, gkrcore.ErrNbInstancesUndetermined) {
 		return nil, err
 	}
 

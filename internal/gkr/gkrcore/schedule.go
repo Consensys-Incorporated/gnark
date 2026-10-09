@@ -520,10 +520,11 @@ func CollectOutgoingEvalPoints[F any](level *constraint.GkrSkipLevel, levelI int
 	return outPoints
 }
 
+var ErrNbInstancesUndetermined = errors.New("the proof's length does not determine the number of instances")
+
 // ComputeLogNbInstances derives n such that the number of instances is 2ⁿ from the length of the
 // serialized proof and the circuit/schedule structure, identity being the gate that level 0's view
-// of the circuit uses. It returns -1 if the schedule has no level that runs a sumcheck, as then
-// the proof's length does not depend on n, and an error if no n matches the length.
+// of the circuit uses.
 func ComputeLogNbInstances[G any](c Circuit[G], schedule constraint.GkrProvingSchedule, serializedProofLen int, identity Gate[G]) (int, error) {
 	serializedProofLen -= len(c.Outputs())
 	perVar := 0
@@ -543,7 +544,7 @@ func ComputeLogNbInstances[G any](c Circuit[G], schedule constraint.GkrProvingSc
 	}
 	if perVar == 0 {
 		if serializedProofLen == 0 {
-			return -1, nil
+			return 0, ErrNbInstancesUndetermined
 		}
 	} else if serializedProofLen%perVar == 0 {
 		return serializedProofLen / perVar, nil

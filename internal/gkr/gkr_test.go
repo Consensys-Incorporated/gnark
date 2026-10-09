@@ -264,11 +264,11 @@ func TestLogNbInstances(t *testing.T) {
 			assert.NoError(t, err)
 			serializedProof := testCase.Proof.Serialize()
 			logNbInstances, err := gkrcore.ComputeLogNbInstances(testCase.Circuit, testCase.Schedule, len(serializedProof), identityGate())
-			assert.NoError(t, err)
 			if hasSumcheck(testCase.Schedule) {
+				assert.NoError(t, err)
 				assert.Equal(t, 1, logNbInstances)
 			} else {
-				assert.Equal(t, -1, logNbInstances, "no-sumcheck schedule should have logNbInstances=-1, got %d instead", logNbInstances)
+				assert.ErrorIs(t, err, gkrcore.ErrNbInstancesUndetermined)
 			}
 		}
 	}
