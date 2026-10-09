@@ -9,6 +9,8 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/consensys/gnark/gkr"
+
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/rational"
@@ -116,7 +118,7 @@ func (e *zeroCheckLazyClaims) degree(int) int {
 func (e *zeroCheckLazyClaims) verifyFinalEval(r []rational.Element, purportedValue rational.Element, uniqueInputEvaluations []rational.Element) error {
 	e.resources.outgoingEvalPoints[e.levelI] = [][]rational.Element{r}
 	level := e.resources.schedule[e.levelI]
-	gateInputEvals := gkrcore.ReduplicateInputs(level, e.resources.circuit, uniqueInputEvaluations)
+	gateInputEvals := gkr.ReduplicateInputs(level, e.resources.circuit, uniqueInputEvaluations)
 
 	var claimedEvals polynomial.Polynomial
 	levelWireI := 0

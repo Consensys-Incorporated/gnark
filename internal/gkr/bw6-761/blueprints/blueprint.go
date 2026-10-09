@@ -12,6 +12,8 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/consensys/gnark/gkr"
+
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bw6-761/fr"
 	"github.com/consensys/gnark-crypto/ecc/bw6-761/fr/polynomial"
@@ -35,7 +37,7 @@ type circuitEvaluator struct {
 // BlueprintSolve is a BW6_761-specific blueprint for solving GKR circuit instances.
 type BlueprintSolve struct {
 	// Circuit structure (serialized)
-	Circuit     gkrcore.SerializableCircuit
+	Circuit     gkr.SerializableCircuit
 	NbInstances uint32
 
 	// Not serialized - recreated lazily at solve time
@@ -435,7 +437,7 @@ func (b *BlueprintGetAssignment) UpdateInstructionTree(inst constraint.Instructi
 }
 
 // NewBlueprints creates and registers all GKR blueprints for BW6_761
-func NewBlueprints(circuit gkrcore.SerializableCircuit, schedule constraint.GkrProvingSchedule, hashName string, compiler constraint.CustomizableSystem) gkrcore.Blueprints {
+func NewBlueprints(circuit gkr.SerializableCircuit, schedule constraint.GkrProvingSchedule, hashName string, compiler constraint.CustomizableSystem) gkrcore.Blueprints {
 	// Create and register solve blueprint
 	solve := &BlueprintSolve{Circuit: circuit}
 	solveID := compiler.AddBlueprint(solve)

@@ -8,13 +8,16 @@ import (
 )
 
 // Circuit is a circuit compiled by API.Compile, ready to prove and verify with gkr/<curve>.
-type Circuit = gkrcore.SerializableCircuit
+type Circuit = gkr.SerializableCircuit
 
 // PrimeField describes F_p itself.
 var PrimeField = gkr.PrimeField
 
 // KoalaBearE6 describes KoalaBear's degree-6 extension E6.
 var KoalaBearE6 = gkr.KoalaBearE6
+
+// MamaBearE3 describes MamaBear's degree-3 extension E3.
+var MamaBearE3 = gkr.MamaBearE3
 
 // ConsolidationMode selects which wires DefaultProvingSchedule consolidates into level 0.
 type ConsolidationMode = gkrcore.ConsolidationMode

@@ -106,7 +106,7 @@ func TestConstantsFirst(t *testing.T) {
 		f            gkr.GateFunction
 		nbIn         int
 		constants    []int64
-		instructions []GateInstruction
+		instructions []gkr.GateInstruction
 	}{
 		{
 			"x+(2+3): constants only fold",
@@ -114,7 +114,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.Add(in[0], api.Add(2, 3))
 			},
 			1, []int64{5},
-			[]GateInstruction{{OpAdd, []uint16{0, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1}}},
 		},
 		{
 			"x+2+y+3: constants merge and come first",
@@ -122,7 +122,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.Add(in[0], 2, in[1], 3)
 			},
 			2, []int64{5},
-			[]GateInstruction{{OpAdd, []uint16{0, 2, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 2, 1}}},
 		},
 		{
 			"x*2*y*3: constants merge and come first",
@@ -130,7 +130,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.Mul(in[0], 2, in[1], 3)
 			},
 			2, []int64{6},
-			[]GateInstruction{{OpMul, []uint16{0, 2, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{0, 2, 1}}},
 		},
 		{
 			"x*7: constant comes first",
@@ -138,7 +138,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.Mul(in[0], 7)
 			},
 			1, []int64{7},
-			[]GateInstruction{{OpMul, []uint16{0, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{0, 1}}},
 		},
 		{
 			"x*((2*3)-1): folding nests",
@@ -146,7 +146,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.Mul(in[0], api.Sub(api.Mul(2, 3), 1))
 			},
 			1, []int64{5},
-			[]GateInstruction{{OpMul, []uint16{0, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{0, 1}}},
 		},
 		{
 			"x+(2-5): folding is exact over the integers",
@@ -154,7 +154,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.Add(in[0], api.Sub(2, 5))
 			},
 			1, []int64{-3},
-			[]GateInstruction{{OpAdd, []uint16{0, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1}}},
 		},
 		{
 			"10-x-3-y-2: a constant minuend absorbs the constant subtrahends",
@@ -162,7 +162,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.Sub(10, in[0], 3, in[1], 2)
 			},
 			2, []int64{5},
-			[]GateInstruction{{OpSub, []uint16{0, 1, 2}}},
+			[]gkr.GateInstruction{{Op: gkr.OpSub, Inputs: []uint16{0, 1, 2}}},
 		},
 		{
 			"x-3-y-2: constant subtrahends merge into one, placed last",
@@ -170,7 +170,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.Sub(in[0], 3, in[1], 2)
 			},
 			2, []int64{5},
-			[]GateInstruction{{OpSub, []uint16{1, 2, 0}}},
+			[]gkr.GateInstruction{{Op: gkr.OpSub, Inputs: []uint16{1, 2, 0}}},
 		},
 		{
 			"x-y-4: a single constant subtrahend stays",
@@ -178,7 +178,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.Sub(in[0], in[1], 4)
 			},
 			2, []int64{4},
-			[]GateInstruction{{OpSub, []uint16{1, 2, 0}}},
+			[]gkr.GateInstruction{{Op: gkr.OpSub, Inputs: []uint16{1, 2, 0}}},
 		},
 		{
 			"x+y*z: multiplicands first, addend last",
@@ -186,7 +186,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.MulAcc(in[0], in[1], in[2])
 			},
 			3, nil,
-			[]GateInstruction{{OpMulAcc, []uint16{1, 2, 0}}},
+			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{1, 2, 0}}},
 		},
 		{
 			"x+3*y: a constant multiplicand stays first",
@@ -194,7 +194,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.MulAcc(in[0], 3, in[1])
 			},
 			2, []int64{3},
-			[]GateInstruction{{OpMulAcc, []uint16{0, 2, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{0, 2, 1}}},
 		},
 		{
 			"x+y*3: a constant multiplicand moves first",
@@ -202,7 +202,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.MulAcc(in[0], in[1], 3)
 			},
 			2, []int64{3},
-			[]GateInstruction{{OpMulAcc, []uint16{0, 2, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{0, 2, 1}}},
 		},
 		{
 			"5+x*y: a constant addend stays last",
@@ -210,7 +210,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.MulAcc(5, in[0], in[1])
 			},
 			2, []int64{5},
-			[]GateInstruction{{OpMulAcc, []uint16{1, 2, 0}}},
+			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{1, 2, 0}}},
 		},
 		{
 			"(x+y+z)^17: inputs keep their order",
@@ -218,7 +218,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.SumExp17(in[0], in[1], in[2])
 			},
 			3, nil,
-			[]GateInstruction{{OpSumExp17, []uint16{0, 1, 2}}},
+			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{0, 1, 2}}},
 		},
 		{
 			"(x+3+y)^17: a constant moves first",
@@ -226,7 +226,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.SumExp17(in[0], 3, in[1])
 			},
 			2, []int64{3},
-			[]GateInstruction{{OpSumExp17, []uint16{0, 1, 2}}},
+			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{0, 1, 2}}},
 		},
 		{
 			"(x+y+3)^17: a constant swaps with the first input",
@@ -234,7 +234,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.SumExp17(in[0], in[1], 3)
 			},
 			2, []int64{3},
-			[]GateInstruction{{OpSumExp17, []uint16{0, 2, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{0, 2, 1}}},
 		},
 		{
 			"(x+4+3)^17: constants stay unmerged",
@@ -242,7 +242,7 @@ func TestConstantsFirst(t *testing.T) {
 				return api.SumExp17(in[0], 4, 3)
 			},
 			1, []int64{4, 3},
-			[]GateInstruction{{OpSumExp17, []uint16{0, 2, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{0, 2, 1}}},
 		},
 		{
 			"x+y with a constant used only after the output: the constant gets no index",
@@ -252,7 +252,7 @@ func TestConstantsFirst(t *testing.T) {
 				return out
 			},
 			2, nil,
-			[]GateInstruction{{OpAdd, []uint16{0, 1}}},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1}}},
 		},
 	}
 
