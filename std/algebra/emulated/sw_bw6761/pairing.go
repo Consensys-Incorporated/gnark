@@ -145,6 +145,15 @@ func (pr *Pairing) AssertFinalExponentiationIsOne(x *GTEl) {
 		A5: *res[5],
 	}
 
+	// Constrain residueWitness to be invertible (non-zero). The check below,
+	// x == residueWitness^Λ, is homogeneous in the hint output, so for x == 0
+	// the all-zero residue witness would satisfy it: the exponentiation chain
+	// degenerates to 0 and DivUnchecked(0, 0) only enforces 0 = quotient·0,
+	// leaving the quotient free. But 0 is not in the multiplicative target
+	// group and its final exponentiation is not one. Inverse asserts
+	// residueWitness·residueWitness⁻¹ == 1, ruling that out.
+	pr.Ext6.Inverse(&residueWitness)
+
 	// Check that x == residueWitness^Λ
 	// where Λ = x₀+1+p(x₀³-x₀²-x₀) and residueWitness from the hint.
 

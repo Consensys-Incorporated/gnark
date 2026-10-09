@@ -126,6 +126,38 @@ func TestFinalExponentiationIsOneSoundness(t *testing.T) {
 	assert.Error(err)
 }
 
+// assertFinalExponentiationIsOneDirectCircuit asserts the final-exponentiation
+// property of a witness-supplied accumulator, as in
+// https://eprint.iacr.org/2024/640.pdf Section 4 where the Miller loop output
+// is a prover input.
+type assertFinalExponentiationIsOneDirectCircuit struct {
+	InGt GTEl
+}
+
+func (c *assertFinalExponentiationIsOneDirectCircuit) Define(api frontend.API) error {
+	pairing, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	pairing.AssertFinalExponentiationIsOne(&c.InGt)
+	return nil
+}
+
+// TestFinalExponentiationIsOneRejectsZeroAccumulator is a regression for the
+// zero-residue-witness underconstraint: the check x == residueWitness^Λ is
+// homogeneous in the hint output, so for a zero accumulator (x = 0, which is
+// not in the multiplicative target group — its final exponentiation is 0, not
+// 1) the all-zero residue witness degenerated the exponentiation chain and the
+// unchecked division to 0 == 0 and was accepted. The invertibility anchor
+// (residueWitness·residueWitness⁻¹ == 1) now rejects it.
+func TestFinalExponentiationIsOneRejectsZeroAccumulator(t *testing.T) {
+	assert := test.NewAssert(t)
+	var zero bw6761.GT // = 0
+	witness := assertFinalExponentiationIsOneDirectCircuit{InGt: NewGTEl(zero)}
+	err := test.IsSolved(&assertFinalExponentiationIsOneDirectCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.Error(err, "zero accumulator must be rejected: Inverse(0) anchor is unsatisfiable")
+}
+
 type FinalExponentiationCircuit struct {
 	InGt GTEl
 	Res  GTEl
