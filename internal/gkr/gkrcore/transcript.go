@@ -7,7 +7,7 @@ import "hash"
 // implicitly part of future challenges.
 type HashTranscript[E any, PE interface {
 	*E
-	SetBytes([]byte) *E
+	SetBytesCanonical([]byte) error
 	Marshal() []byte
 }] struct {
 	h     hash.Hash
@@ -17,11 +17,11 @@ type HashTranscript[E any, PE interface {
 
 // NewHashTranscript returns a transcript backed by h. Bind writes each element's Marshal().
 // Challenge writes a separator byte if nothing was bound since the last challenge, then returns
-// the element set by SetBytes from the first len(Marshal()) bytes of h.Sum(nil). h.Size() must be
-// at least len(Marshal()).
+// the element set by SetBytesCanonical from the first len(Marshal()) bytes of h.Sum(nil).
+// h.Size() must be at least len(Marshal()).
 func NewHashTranscript[E any, PE interface {
 	*E
-	SetBytes([]byte) *E
+	SetBytesCanonical([]byte) error
 	Marshal() []byte
 }](h hash.Hash) *HashTranscript[E, PE] {
 	var zero E
@@ -41,7 +41,8 @@ func (t *HashTranscript[E, PE]) Bind(elements ...E) {
 
 // Challenge binds elements as Bind would, then squeezes a challenge from the current hash state.
 // If no bindings were added since the last challenge, a separator byte is written first to
-// advance the state and prevent repeated values.
+// advance the state and prevent repeated values. It panics if the digest prefix is not a canonical
+// encoding of an element, which a hash producing field elements never yields.
 func (t *HashTranscript[E, PE]) Challenge(elements ...E) E {
 	t.Bind(elements...)
 	if !t.bound {
@@ -49,6 +50,8 @@ func (t *HashTranscript[E, PE]) Challenge(elements ...E) E {
 	}
 	t.bound = false
 	var res E
-	PE(&res).SetBytes(t.h.Sum(nil)[:t.size])
+	if err := PE(&res).SetBytesCanonical(t.h.Sum(nil)[:t.size]); err != nil {
+		panic(err)
+	}
 	return res
 }

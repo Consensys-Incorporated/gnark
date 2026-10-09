@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -147,13 +148,8 @@ func main() {
 				curvePackageName := strings.ToLower(d.Curve)
 
 				cfg := gkrConfig{
-					ElementType:        "fr.Element",
-					FieldPackageName:   "fr",
-					FieldPackagePath:   "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
-					FieldID:            d.CurveID,
-					FieldDescription:   "gkrcore.PrimeField(ecc." + d.CurveID + ".ScalarField())",
-					GkrPackageName:     curvePackageName,
-					EvaluatorQualifier: "evaluator.",
+					FieldPackagePath: "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
+					GkrPackageName:   curvePackageName,
 				}
 
 				assertNoError(generateGkrBackend(cfg))
@@ -230,15 +226,24 @@ func main() {
 	}
 
 	wg.Add(1)
+	// GKR over KoalaBear's E6
+	go func() {
+		defer wg.Done()
+		assertNoError(generateGkrBackend(gkrConfig{
+			FieldPackagePath: "github.com/consensys/gnark-crypto/field/koalabear/extensions",
+			ExtensionSuffix:  "E6",
+			GkrPackageName:   "koalabear",
+			Description:      "gkr.KoalaBearE6()",
+		}))
+	}()
+
+	wg.Add(1)
 	// GKR test vectors
 	go func() {
 		// generate gkr and sumcheck for rational
 		cfg := gkrConfig{
-			ElementType:         "rational.Element",
 			FieldPackagePath:    "github.com/consensys/gnark/internal/rational",
-			FieldPackageName:    "rational",
 			GkrPackageName:      "rational",
-			NoGkrTests:          true,
 			GenerateTestVectors: true,
 		}
 		assertNoError(generateGkrBackend(cfg))
@@ -319,7 +324,7 @@ func generateGkrBackend(cfg gkrConfig) error {
 		{File: filepath.Join(proverDir, testVectorUtilsFileName), Templates: []string{"test_vector_utils.go.tmpl"}},
 	}
 
-	if !cfg.NoGkrTests {
+	if !cfg.GenerateTestVectors {
 		entries = append(entries, bavard.Entry{
 			File: filepath.Join(proverDir, "gkr_test.go"), Templates: []string{"gkr.test.go.tmpl", "gkr.test.vectors.go.tmpl"},
 		})
@@ -332,11 +337,11 @@ func generateGkrBackend(cfg gkrConfig) error {
 		}...)
 	}
 
-	if err := bgen.Generate(cfg, "gkr", "./template/gkr/", entries...); err != nil {
+	if err := bgen.Generate(cfg, cfg.PackageName(), "./template/gkr/", entries...); err != nil {
 		return err
 	}
 
-	if !cfg.GenerateTestVectors {
+	if !cfg.GenerateTestVectors && !cfg.Mixed() {
 		// The blueprints call the prover, which imports the evaluators; putting them in the
 		// evaluators' package would close an import cycle, so they get their own package.
 		blueprintEntry := bavard.Entry{File: filepath.Join(internalDir, "blueprints", "blueprint.go"), Templates: []string{"blueprint.go.tmpl"}}
@@ -349,24 +354,91 @@ func generateGkrBackend(cfg gkrConfig) error {
 }
 
 type gkrConfig struct {
-	ElementType         string
-	FieldPackagePath    string
-	FieldPackageName    string
-	GkrPackageName      string // the GKR package, relative to the repo root
-	FieldID             string // e.g. BLS12_377, BABYBEAR, etc.
-	GenerateTestVectors bool
-	NoGkrTests          bool
-	// EvaluatorQualifier prefixes references to the gate evaluator types, for fields whose prover
-	// package is not the evaluators' own package. Empty when they are the same package.
-	EvaluatorQualifier string
+	// FieldPackagePath is the import path of the package of the field's element type, e.g.
+	// github.com/consensys/gnark-crypto/ecc/bn254/fr.
+	FieldPackagePath string
 	// ExtensionSuffix is the suffix gnark-crypto's extensions package appends to the names of an
-	// extension's types and constants (e.g. VectorE6, BytesE6). Empty for the curves and
-	// rational.
+	// extension's types and constants (e.g. E6, VectorE6, BytesE6). Empty for a prime field.
 	ExtensionSuffix string
-	// FieldDescription is the Go expression of the field's gkrcore.Field description, e.g.
-	// "gkrcore.PrimeField(ecc.BN254.ScalarField())". Used only where gkr.test.go.tmpl is
-	// generated (NoGkrTests false), so rational leaves it empty.
-	FieldDescription string
+	// GkrPackageName is the directory of the generated packages, relative to the GKR roots.
+	GkrPackageName string
+	// Description is the Go expression of the field's gkr.Field description. Empty for the
+	// curves, whose description is derived from FieldID.
+	Description string
+	// GenerateTestVectors is set for the configuration whose package also generates the test
+	// vectors, instead of running tests against them.
+	GenerateTestVectors bool
+}
+
+// FieldPackageName is the name of the package of the field's element type.
+func (c gkrConfig) FieldPackageName() string { return path.Base(c.FieldPackagePath) }
+
+// ElementType is the type of the field's elements.
+func (c gkrConfig) ElementType() string {
+	if c.Mixed() {
+		return c.FieldPackageName() + "." + c.ExtensionSuffix
+	}
+	return c.FieldPackageName() + ".Element"
+}
+
+// BaseFieldPackagePath is the import path of BaseElementType's package: the prime subfield's,
+// the parent of an extension's package.
+func (c gkrConfig) BaseFieldPackagePath() string {
+	if c.Mixed() {
+		return path.Dir(c.FieldPackagePath)
+	}
+	return c.FieldPackagePath
+}
+
+// BaseFieldPackageName is the name of the package of the prime subfield's element type.
+func (c gkrConfig) BaseFieldPackageName() string { return path.Base(c.BaseFieldPackagePath()) }
+
+// BaseElementType is the type of the prime subfield's elements, in which gate constants live.
+// It is ElementType itself unless the field is an extension.
+func (c gkrConfig) BaseElementType() string { return c.BaseFieldPackageName() + ".Element" }
+
+// Mixed reports whether the field is an extension of its prime subfield, so that gate constants
+// are not elements of the field itself.
+func (c gkrConfig) Mixed() bool { return c.ExtensionSuffix != "" }
+
+// BasePolynomial is the name under which templates import the polynomial package over
+// BaseElementType: basePolynomial when the field is an extension, polynomial otherwise.
+func (c gkrConfig) BasePolynomial() string {
+	if c.Mixed() {
+		return "basePolynomial"
+	}
+	return "polynomial"
+}
+
+// PackageName is the name of the generated packages: "gkr" followed by GkrPackageName with its
+// hyphens removed, e.g. gkrbls12377. The name gkr alone clashes with github.com/consensys/gnark/gkr,
+// and GkrPackageName alone with gnark-crypto's packages of the same name.
+func (c gkrConfig) PackageName() string {
+	return "gkr" + strings.ReplaceAll(c.GkrPackageName, "-", "")
+}
+
+// FieldID names the field in gnark-crypto's identifiers: the ecc.ID of a curve, and the hash
+// registered for the field, as in POSEIDON2_KOALABEAR. For example BLS12_377.
+func (c gkrConfig) FieldID() string {
+	return strings.ToUpper(strings.ReplaceAll(c.GkrPackageName, "-", "_"))
+}
+
+// EvaluatorQualifier prefixes references to the gate evaluator types, for fields whose prover
+// package is not the evaluators' own package. Empty when they are the same package.
+func (c gkrConfig) EvaluatorQualifier() string {
+	if c.GenerateTestVectors {
+		return ""
+	}
+	return "evaluator."
+}
+
+// FieldDescription is the Go expression of the field's gkr.Field description, used where
+// gkr.test.go.tmpl is generated.
+func (c gkrConfig) FieldDescription() string {
+	if c.Description != "" {
+		return c.Description
+	}
+	return "gkr.PrimeField(ecc." + c.FieldID() + ".ScalarField())"
 }
 
 func assertNoError(err error) {

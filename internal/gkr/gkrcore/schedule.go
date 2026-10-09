@@ -2,6 +2,7 @@ package gkrcore
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -517,4 +518,36 @@ func CollectOutgoingEvalPoints[F any](level *constraint.GkrSkipLevel, levelI int
 	}
 	outgoingEvalPoints[levelI] = outPoints
 	return outPoints
+}
+
+var ErrNbInstancesUndetermined = errors.New("the proof's length does not determine the number of instances")
+
+// ComputeLogNbInstances derives n such that the number of instances is 2ⁿ from the length of the
+// serialized proof and the circuit/schedule structure, identity being the gate that level 0's view
+// of the circuit uses.
+func ComputeLogNbInstances[G any](c Circuit[G], schedule constraint.GkrProvingSchedule, serializedProofLen int, identity Gate[G]) (int, error) {
+	serializedProofLen -= len(c.Outputs())
+	perVar := 0
+	for levelI, level := range schedule {
+		levelCircuit := c.LevelCircuit(schedule, levelI, identity)
+		nbUniqueInputs := len(levelCircuit.UniqueGateInputs(level))
+		switch level.(type) {
+		case *constraint.GkrSkipLevel:
+			serializedProofLen -= nbUniqueInputs * level.NbOutgoingEvalPoints()
+		default:
+			perVar += levelCircuit.ZeroCheckDegree(level)
+			serializedProofLen -= nbUniqueInputs
+		}
+	}
+	if serializedProofLen < 0 {
+		return 0, errors.New("proof too short")
+	}
+	if perVar == 0 {
+		if serializedProofLen == 0 {
+			return 0, ErrNbInstancesUndetermined
+		}
+	} else if serializedProofLen%perVar == 0 {
+		return serializedProofLen / perVar, nil
+	}
+	return 0, errors.New("proof length matches no number of instances")
 }
