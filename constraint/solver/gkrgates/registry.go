@@ -119,7 +119,7 @@ func Register(f gkr.GateFunction, nbIn int, options ...RegisterOption) error {
 	}
 
 	for _, curve := range s.curves {
-		compiled, err := gkrcore.CompileGateFunction(f, nbIn, gkrcore.PrimeField(curve.ScalarField()))
+		compiled, err := gkrcore.CompileGateFunction(f, nbIn, gkr.PrimeField(curve.ScalarField()))
 		if err != nil {
 			return err
 		}

@@ -1,3 +1,4 @@
+{{ $gateEvaluator := "GateEvaluator" }}{{ if .Mixed }}{{ $gateEvaluator = "GateEvaluatorMixed" }}{{ end }}
 import (
 	"errors"
 	"fmt"
@@ -6,30 +7,35 @@ import (
 
 	"{{.FieldPackagePath}}"
 	"{{.FieldPackagePath}}/polynomial"
+	{{- if .Mixed }}
+	"{{ .BaseFieldPackagePath }}"
+	basePolynomial "{{ .BaseFieldPackagePath }}/polynomial"
+	{{- end }}
 	"github.com/consensys/gnark-crypto/utils"
 	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/gkr"
 	{{- if .EvaluatorQualifier }}
 	evaluator "github.com/consensys/gnark/internal/gkr/{{.GkrPackageName}}"
 	{{- end }}
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 )
 
-// Type aliases for bytecode-based GKR types
-type (
-	Wire    = gkrcore.SerializableWire
-	Circuit = gkrcore.SerializableCircuit
-)
+// Circuit is a circuit as compiled by gkrapi.API.Compile.
+type Circuit = gkrcore.SerializableCircuit
 
-// The goal is to prove/verify evaluations of many instances of the same circuit
+// WireAssignment is the assignment of values to the same wire across many instances of the
+// circuit: WireAssignment[wireI][instanceI] is the value of wire wireI at instance instanceI. The
+// values are {{ .BaseElementType }} elements
+{{- if .Mixed }}; the claims that Prove and Verify return are over {{ .ElementType }}{{ end }}.
+type WireAssignment []{{ .BasePolynomial }}.MultiLin
 
-// WireAssignment is the assignment of values to the same wire across many instances of the circuit
-type WireAssignment []polynomial.MultiLin
-
-type Proof []sumcheckProof // for each layer, for each wire, a sumcheck (for each variable, a polynomial)
+// Proof is a GKR proof: one sumcheck proof per level of the proving schedule, followed by the
+// output level's entry.
+type Proof []sumcheckProof
 
 // EvaluationClaim is an assertion that a wire's multilinear extension evaluates to Evaluation at
 // EvaluationPoint.
-type EvaluationClaim = gkrcore.EvaluationClaim[{{ .ElementType }}]
+type EvaluationClaim = gkr.EvaluationClaim[{{ .ElementType }}]
 
 // Claims are the evaluation claims on circuit inputs and outputs that Prove and Verify return, by
 // wire. The consumption order within a wire's slice is up to the caller.
@@ -37,9 +43,16 @@ type Claims map[int][]EvaluationClaim
 
 // Check asserts that every claim in c holds against assignment.
 func (c Claims) Check(assignment WireAssignment) error {
+	{{- if .Mixed }}
+	var scratch polynomial.MultiLin{{ .ExtensionSuffix }}
+	{{- end }}
 	for wI, wireClaims := range c {
 		for _, claim := range wireClaims {
+			{{- if .Mixed }}
+			eval := scratch.EvaluateBase(assignment[wI], claim.EvaluationPoint)
+			{{- else }}
 			eval := assignment[wI].Evaluate(claim.EvaluationPoint, nil)
+			{{- end }}
 			if !eval.Equal(&claim.Evaluation) {
 				return fmt.Errorf("wire %d: claimed evaluation %v, computed %v", wI, &claim.Evaluation, &eval)
 			}
@@ -55,7 +68,7 @@ type resources struct {
 	outgoingEvalPoints [][][]{{ .ElementType }}
 	nbVars             int
 	assignment         WireAssignment
-	memPool            polynomial.Pool
+	memPool            polynomial.Pool{{ .ExtensionSuffix }}
 	workers            *utils.WorkerPool
 	circuit            Circuit
 	schedule           constraint.GkrProvingSchedule
@@ -65,6 +78,17 @@ type resources struct {
 	consolidated       []bool // the wires of schedule[0], indexed by wire
 }
 
+{{ if .Mixed -}}
+// evaluateBase returns the evaluation of the multilinear extension of the base field column col at
+// point.
+func (r *resources) evaluateBase(col {{ .BasePolynomial }}.MultiLin, point []{{ .ElementType }}) {{ .ElementType }} {
+	buf := polynomial.MultiLin{{ .ExtensionSuffix }}(r.memPool.Make(len(col) / 2))
+	eval := buf.EvaluateBase(col, point)
+	r.memPool.Dump(buf)
+	return eval
+}
+
+{{ end -}}
 // identityGate is the identity gate LevelCircuit and ConsolidationView use to build level 0's
 // view of the circuit.
 func identityGate() gkrcore.SerializableGate {
@@ -96,7 +120,11 @@ func (r *resources) proveSkipLevel(levelI int) sumcheckProof {
 	evals := make([]{{ .ElementType }}, len(uniqueInputs)*len(outPoints))
 	for uiI, inW := range uniqueInputs {
 		for k, point := range outPoints {
+			{{- if .Mixed }}
+			evals[level.FinalEvalProofIndex(uiI, k)] = r.evaluateBase(r.assignment[inW], point)
+			{{- else }}
 			evals[level.FinalEvalProofIndex(uiI, k)] = r.assignment[inW].Evaluate(point, &r.memPool)
+			{{- end }}
 		}
 	}
 	return sumcheckProof{finalEvalProof: evals}
@@ -114,7 +142,7 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 
 	for levelWireI, wI := range group.Wires {
 		wire := r.circuit[wI]
-		evaluator := {{.EvaluatorQualifier}}NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
+		evaluator := {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}(wire.Gate.Evaluate, len(wire.Inputs))
 		for claimI, src := range group.ClaimSources {
 			for _, inI := range inputIndices[levelWireI] {
 				evaluator.PushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
@@ -166,22 +194,29 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.Hash) (Proof, Claims, error) {
 	nbInstances := assignment.NumInstances()
 	nbVars := assignment.NumVars()
+	if nbVars == 0 {
+		return nil, nil, errors.New("number of variables must be positive")
+	}
 	if 1<<nbVars != nbInstances {
 		return nil, nil, errors.New("number of instances must be power of 2")
 	}
 
 	r := newResources(c, schedule, nbVars, hasher)
 	r.assignment = assignment
-	r.memPool = polynomial.NewPool(gkrcore.MemoryRequirements(c, nbInstances)...)
+	r.memPool = polynomial.NewPool{{ .ExtensionSuffix }}(gkrcore.MemoryRequirements(c, nbInstances)...)
 	r.workers = utils.NewWorkerPool()
 	defer r.workers.Stop()
 
 	for wireI := range c {
 		if len(assignment[wireI]) == 0 {
 			const minBlockSize = 64
-			assignment[wireI] = make([]{{ .ElementType }}, nbInstances)
+			assignment[wireI] = make([]{{ .BaseElementType }}, nbInstances)
 			r.workers.Submit(nbInstances, func(start, end int) {
-				gateEval := {{.EvaluatorQualifier}}NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
+				{{- if .Mixed }}
+				gateEval := {{ .EvaluatorQualifier }}NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs))
+				{{- else }}
+				gateEval := {{ .EvaluatorQualifier }}NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
+				{{- end }}
 				for instanceI := start; instanceI < end; instanceI++ {
 					for _, inputWireI := range c[wireI].Inputs {
 						gateEval.PushInput(assignment[inputWireI][instanceI])
@@ -205,7 +240,11 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	outputs := c.Outputs()
 	outputEvals := make([]{{ .ElementType }}, len(outputs))
 	for i, w := range outputs {
+		{{- if .Mixed }}
+		outputEvals[i] = r.evaluateBase(r.assignment[w], firstChallenge)
+		{{- else }}
 		outputEvals[i] = r.assignment[w].Evaluate(firstChallenge, &r.memPool)
+		{{- end }}
 	}
 	proof[len(schedule)] = sumcheckProof{finalEvalProof: outputEvals}
 	var boundOutputEvals []{{ .ElementType }}
@@ -254,6 +293,9 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // values returned to the caller, the output evaluations among them, are not bound into the
 // transcript.
 func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.Hash) (Claims, error) {
+	if logNbInstances == 0 {
+		return nil, errors.New("number of variables must be positive")
+	}
 	r := newResources(c, schedule, logNbInstances, hasher)
 
 	if len(proof) != len(schedule)+1 {
@@ -318,14 +360,14 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 
 	nbInstances := a.NumInstances()
-	evaluators := make([]{{.EvaluatorQualifier}}GateEvaluator, len(circuit))
+	evaluators := make([]{{ .EvaluatorQualifier }}GateEvaluator, len(circuit))
 
 	for i := range circuit {
 		if len(a[i]) != nbInstances {
-			a[i] = make([]{{ .ElementType }}, nbInstances)
+			a[i] = make([]{{ .BaseElementType }}, nbInstances)
 		}
 		if !circuit[i].IsInput() {
-			evaluators[i] = {{.EvaluatorQualifier}}NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
+			evaluators[i] = {{ .EvaluatorQualifier }}NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
 		}
 	}
 
@@ -343,6 +385,7 @@ func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 	return a
 }
 
+// NumInstances returns the number of instances a assigns values to. It panics if a is empty.
 func (a WireAssignment) NumInstances() int {
 	for _, aW := range a {
 		if aW != nil {
@@ -352,6 +395,7 @@ func (a WireAssignment) NumInstances() int {
 	panic("empty assignment")
 }
 
+// NumVars returns log₂ of the number of instances a assigns values to. It panics if a is empty.
 func (a WireAssignment) NumVars() int {
 	for _, aW := range a {
 		if aW != nil {
@@ -371,6 +415,9 @@ func iterateElems(elems []{{ .ElementType }}, counter *int, yield func(int, *{{ 
 	return true
 }
 
+// Flatten yields the proof's elements by position. For each entry of the proof, in order, it
+// yields the coefficients of its partial sum polynomials, then its final evaluations.
+// DeserializeProof reads the same order.
 func (p Proof) Flatten() iter.Seq2[int, *{{ .ElementType }}] {
 	return func(yield func(int, *{{ .ElementType }}) bool) {
 		var counter int
@@ -385,4 +432,39 @@ func (p Proof) Flatten() iter.Seq2[int, *{{ .ElementType }}] {
 			}
 		}
 	}
+}
+
+// DeserializeProof is the inverse of Proof.Flatten: it rebuilds the proof for c and schedule from
+// its elements. The result aliases serialized. It returns an error if the length of serialized
+// does not match c and schedule.
+func DeserializeProof(c Circuit, schedule constraint.GkrProvingSchedule, serialized []{{ .ElementType }}) (Proof, error) {
+	identity := identityGate()
+	logNbInstances, err := gkrcore.ComputeLogNbInstances(c, schedule, len(serialized), identity)
+	if err != nil {
+		return nil, err
+	}
+
+	next := func(n int) []{{ .ElementType }} {
+		res := serialized[:n]
+		serialized = serialized[n:]
+		return res
+	}
+
+	proof := make(Proof, len(schedule)+1)
+	for levelI, level := range schedule {
+		levelCircuit := c.LevelCircuit(schedule, levelI, identity)
+		nbUniqueInputs := len(levelCircuit.UniqueGateInputs(level))
+		if _, isSkip := level.(*constraint.GkrSkipLevel); isSkip {
+			proof[levelI].finalEvalProof = next(nbUniqueInputs * level.NbOutgoingEvalPoints())
+		} else {
+			degree := levelCircuit.ZeroCheckDegree(level)
+			proof[levelI].partialSumPolys = make([]polynomial.Polynomial{{ .ExtensionSuffix }}, logNbInstances)
+			for j := range proof[levelI].partialSumPolys {
+				proof[levelI].partialSumPolys[j] = next(degree)
+			}
+			proof[levelI].finalEvalProof = next(nbUniqueInputs)
+		}
+	}
+	proof[len(schedule)].finalEvalProof = next(len(c.Outputs()))
+	return proof, nil
 }
