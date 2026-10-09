@@ -338,42 +338,50 @@ func (c *Curve[B, S]) AddUnified(p, q *AffinePoint[B]) *AffinePoint[B] {
 		// ---------------------------------------------------------------
 		// j-invariant ≠ 0 (a ≠ 0).
 		//
-		// For the currently supported j≠0 curves (P-256, P-384 and STARK
-		// curve), there is no rational 2-torsion, so no finite on-curve
-		// point satisfies Y=0. Under that assumption p.Y + q.Y = 0 implies
-		// p = -q, and the Brier-Joye unified formula is complete.
+		// Brier-Joye λ = ((x₁+x₂)² − x₁x₂ + a)/(y₁+y₂) is NOT complete here:
+		// y₁ = −y₂ only forces y₁² = y₂², so x₁ and x₂ need only be two of
+		// the three roots of X³ + aX + b − y₁². For such a pair the numerator
+		// vanishes too (it is (y₂²−y₁²)/(x₂−x₁)), leaving 0/0 — so reading
+		// y₁ + y₂ = 0 as "q = −p" returned O for a legitimate pair of
+		// on-curve inputs, with no malicious hint involved.
 		//
-		// If support is added for a j≠0 curve with rational 2-torsion, then
-		// the isYSumZero override below must be guarded by finiteness, as in
-		// the j=0 branch, to avoid turning O + Q into O when Q.Y = 0.
+		// Select the chord/tangent slope instead, as on the j=0 path:
+		//   • chord   λ = (q.Y − p.Y) / (q.X − p.X)    when p.X ≠ q.X
+		//   • tangent λ = (3p.X² + a) / (2p.Y)          when p.X = q.X
 		// ---------------------------------------------------------------
 
-		// λ = ((p.x+q.x)² - p.x*q.x + a)/(p.y + q.y), certified by a single
-		// deferred zero-assertion without materializing the numerator:
-		//   λ·denum − (p.x+q.x)² + p.x·q.x − a ≡ 0
-		pxplusqx := c.baseApi.Add(&p.X, &q.X)
-		denum := c.baseApi.Add(&p.Y, &q.Y)
-		// if p.y + q.y = 0, assign dummy 1 to denum and continue
-		isYSumZero := c.baseApi.IsZero(denum)
-		denum = c.baseApi.Select(isYSumZero, c.baseApi.One(), denum)
-		lams, err := c.baseApi.NewHint(bjSlopeHint, 1, &p.X, &p.Y, &q.X, &q.Y, &c.a)
+		xDiff := c.baseApi.Sub(&q.X, &p.X)
+		xEqual := c.baseApi.IsZero(xDiff)
+
+		numChord := c.baseApi.Sub(&q.Y, &p.Y)
+		denTangent := c.baseApi.MulConst(&p.Y, big.NewInt(2))
+
+		den := c.baseApi.Select(xEqual, denTangent, xDiff)
+		denIsZero := c.baseApi.IsZero(den)
+		denSafe := c.baseApi.Select(denIsZero, c.baseApi.One(), den)
+		// certify λ with a single deferred zero-assertion, blending the two
+		// numerators with the xEqual indicator instead of materializing
+		// 3x²+a and selecting:
+		//   λ·denSafe − xEqual·(3p.X² + a) − (1−xEqual)·(q.Y−p.Y) ≡ 0
+		// When denIsZero the assertion is met by the hint value and λ is
+		// discarded by the select below.
+		lams, err := c.baseApi.NewHint(unifiedSlopeHint, 1, &p.X, &p.Y, &q.X, &q.Y, &c.a)
 		if err != nil {
-			panic(fmt.Sprintf("bj slope hint: %v", err))
+			panic(fmt.Sprintf("unified slope hint: %v", err))
 		}
 		λ := lams[0]
+		zx := c.baseApi.FromBits(xEqual)
+		nzx := c.baseApi.Sub(c.baseApi.One(), zx)
 		c.baseApi.AssertEvalIsZero(
-			[][]*emulated.Element[B]{{λ, denum}, {pxplusqx, pxplusqx}, {&p.X, &q.X}, {&c.a}},
-			[]int{1, -1, 1, -1},
+			[][]*emulated.Element[B]{{λ, denSafe}, {zx, &p.X, &p.X}, {zx, &c.a}, {nzx, numChord}},
+			[]int{1, -3, -1, -1},
 		)
+		λ = c.baseApi.Select(denIsZero, c.baseApi.Zero(), λ)
 
-		// x = λ^2 - p.x - q.x
-		xr := c.baseApi.MulMod(λ, λ)
-		xr = c.baseApi.Sub(xr, pxplusqx)
-
+		// x = λ² - p.x - q.x
+		xr := c.baseApi.Eval([][]*emulated.Element[B]{{λ, λ}, {&p.X}, {&q.X}}, []int{1, -1, -1})
 		// y = λ(p.x - xr) - p.y
-		yr := c.baseApi.Sub(&p.X, xr)
-		yr = c.baseApi.MulMod(yr, λ)
-		yr = c.baseApi.Sub(yr, &p.Y)
+		yr := c.baseApi.Eval([][]*emulated.Element[B]{{λ, c.baseApi.Sub(&p.X, xr)}, {&p.Y}}, []int{1, -1})
 		result = &AffinePoint[B]{
 			X: *xr,
 			Y: *yr,
@@ -383,8 +391,17 @@ func (c *Curve[B, S]) AddUnified(p, q *AffinePoint[B]) *AffinePoint[B] {
 		result = c.Select(isPInfinity, q, result)
 		// if q=(0,0) return p
 		result = c.Select(isQInfinity, p, result)
-		// if p.y + q.y = 0, return (0, 0)
-		result = c.Select(isYSumZero, infinity, result)
+		// Return O when two finite points share the same X and their Ys
+		// cancel. On-curve and p.X = q.X gives q.Y = ±p.Y, so p.Y + q.Y = 0
+		// separates the cases exactly: it holds for p = −q and for doubling a
+		// rational 2-torsion point (both sum to O) and fails for an ordinary
+		// doubling. It therefore covers 2-torsion without the extra p.Y = 0
+		// test the j=0 branch needs. areFinite keeps O + Q (with Q.Y = 0)
+		// from being turned into O.
+		areFinite := c.api.And(c.api.Sub(1, isPInfinity), c.api.Sub(1, isQInfinity))
+		ySumIsZero := c.baseApi.IsZero(c.baseApi.Add(&p.Y, &q.Y))
+		isInverse := c.api.And(c.api.And(xEqual, areFinite), ySumIsZero)
+		result = c.Select(isInverse, infinity, result)
 	}
 
 	return result
@@ -397,22 +414,63 @@ func (c *Curve[B, S]) Add(p, q *AffinePoint[B]) *AffinePoint[B] {
 }
 
 // mulByConstant returns [k]p for a fixed k > 0, via a width-4 signed-window (NAF)
-// double-and-add using complete (unified) operations, so it is exception-free for
-// any on-curve p. Used to clear the cofactor torsion in the fake-GLV subgroup
-// binding. k is a [big.Int] because the cofactor-clearing constant can exceed 64
-// bits (e.g. the full BLS12-381 G1 cofactor is 126 bits). The signed window trims
-// the additions to ~the w-NAF weight (vs the binary Hamming weight); the doubling
-// count is unchanged. All operations stay unified (infinity-complete), which is
-// soundness-critical since p is an adversarial preimage.
+// double-and-add on the *incomplete* group law, with a guard on every step. Used
+// to clear the cofactor torsion in the fake-GLV subgroup binding. k is a
+// [big.Int] because the cofactor-clearing constant can exceed 64 bits (e.g. the
+// full BLS12-381 G1 cofactor is 126 bits). The signed window trims the additions
+// to ~the w-NAF weight (vs the binary Hamming weight); the doubling count is
+// unchanged.
+//
+// ⚠️  p must be a genuine curve point of large prime order. The (0,0) infinity
+// encoding is rejected up front, and every step asserts its own denominator is
+// nonzero, so a p that would reach an exceptional case makes the circuit
+// unsatisfiable rather than producing a wrong result.
+//
+// Why incomplete plus guards, rather than unified: [Curve.assertedRatio] pins
+// the slope with λ·den − num ≡ 0, which leaves λ *free* exactly when
+// den ≡ num ≡ 0, and makes the circuit unsatisfiable whenever den ≡ 0 with
+// num ≢ 0. So only two cases need closing, and each is closed by one emulated
+// non-zero check:
+//
+//   - tangent, a = 0: den = 2y, num = 3x², both vanish only at (0,0) — which is
+//     not on the curve but which [Curve.AssertIsOnCurve] accepts as the infinity
+//     encoding, so it can reach here from the hinted preimage. Rejected up front,
+//     and each doubling additionally asserts y ≠ 0.
+//   - chord: den = q.x − t.x, num = q.y − t.y, both vanish iff q = t, i.e. adding
+//     a point to itself. Each addition asserts q.x ≠ t.x, which also rules out
+//     q = −t (whose sum is the unrepresentable infinity).
+//
+// Every other degeneracy already fails closed via the num ≢ 0 case. This is much
+// cheaper than carrying unified formulas through all ~62 doublings and ~7
+// additions, and is sound against an adversarial preimage because a guard can
+// only reject.
+//
+// Completeness for an honest preimage: p has order r, a 255-bit prime for
+// BLS12-381 G1, while every intermediate NAF scalar stays in (0, 2^64). No
+// intermediate can therefore be infinity, equal to the summand, or its negative.
 func (c *Curve[B, S]) mulByConstant(p *AffinePoint[B], k *big.Int) *AffinePoint[B] {
+	zero := c.baseApi.Zero()
+	// Reject the (0,0) infinity encoding: on a = 0 the tangent assertion
+	// degenerates to 0 ≡ 0 there, which would leave λ unconstrained.
+	c.api.AssertIsEqual(c.api.And(c.baseApi.IsZero(&p.X), c.baseApi.IsZero(&p.Y)), 0)
+
+	double := func(q *AffinePoint[B]) *AffinePoint[B] {
+		c.baseApi.AssertIsDifferent(&q.Y, zero)
+		return c.double(q)
+	}
+	addDistinct := func(q, t *AffinePoint[B]) *AffinePoint[B] {
+		c.baseApi.AssertIsDifferent(&q.X, &t.X)
+		return c.add(q, t)
+	}
+
 	digits := naf4Digits(k) // LSB-first; each digit is 0 or an odd d with |d| < 8
 	// precompute the odd multiples 1p, 3p, 5p, 7p (negated on demand)
-	p2 := c.doubleGeneric(p, true)
+	p2 := double(p)
 	var odd [8]*AffinePoint[B]
 	odd[1] = p
-	odd[3] = c.AddUnified(p2, p)
-	odd[5] = c.AddUnified(odd[3], p2)
-	odd[7] = c.AddUnified(odd[5], p2)
+	odd[3] = addDistinct(p2, p)
+	odd[5] = addDistinct(odd[3], p2)
+	odd[7] = addDistinct(odd[5], p2)
 	pick := func(d int8) *AffinePoint[B] {
 		if d > 0 {
 			return odd[d]
@@ -426,9 +484,9 @@ func (c *Curve[B, S]) mulByConstant(p *AffinePoint[B], k *big.Int) *AffinePoint[
 	}
 	acc := pick(digits[top])
 	for i := top - 1; i >= 0; i-- {
-		acc = c.doubleGeneric(acc, true) // unified (complete) doubling
+		acc = double(acc)
 		if digits[i] != 0 {
-			acc = c.AddUnified(acc, pick(digits[i]))
+			acc = addDistinct(acc, pick(digits[i]))
 		}
 	}
 	return acc
@@ -475,9 +533,37 @@ func naf4Digits(k *big.Int) []int8 {
 //
 // The R = O case (encoded (0,0)) has no affine preimage, so a dummy in-subgroup
 // point is substituted and the equality is made vacuous to preserve completeness.
+
+// AssertIsInSubgroup asserts that R lies in the prime-order subgroup of the
+// curve.
+//
+// R must already be known to be on the curve; this method does not check that.
+// The (0,0) infinity encoding is accepted.
+//
+// It is the point-based binding described on [Curve.assertPointInSubgroup]: a
+// preimage S is hinted and [c]S == R asserted, which is cheaper than a
+// [r]-order check and, on BLS12-381 G1, cheaper than the endomorphism test
+// phi(P) = [-x^2]P.
+//
+// On a prime-order curve ([CurveParams.PrimeOrder]) every on-curve point is
+// already in the subgroup and this is a no-op. On a curve that has a nontrivial
+// cofactor but no [CurveParams.CofactorClearing] constant — BW6-761 G1 — there
+// is no supported membership check, and this panics at circuit-definition time
+// rather than silently accepting off-subgroup points.
+func (c *Curve[B, S]) AssertIsInSubgroup(R *AffinePoint[B]) {
+	c.assertPointInSubgroup(R)
+}
+
 func (c *Curve[B, S]) assertPointInSubgroup(R *AffinePoint[B]) {
 	cc := c.params.CofactorClearing
 	if cc == nil {
+		// Skipping is sound only because every on-curve point is in the
+		// subgroup. Without that, a missing constant would turn this assertion
+		// into a silent no-op, so fail closed instead.
+		if !c.params.PrimeOrder {
+			panic("sw_emulated: no subgroup membership check for this curve: " +
+				"it has a nontrivial cofactor but no CofactorClearing constant")
+		}
 		return
 	}
 	var sc S
@@ -767,6 +853,12 @@ func (c *Curve[B, S]) muxY8Signed(signBit frontend.Variable, selector frontend.V
 // N.B. For scalarMulGLVAndFakeGLV, the result is undefined when the input point is
 // not on the prime order subgroup. For scalarMulFakeGLV the result is well
 // defined for any point on the curve
+//
+// The returned point is on the curve and in the prime-order subgroup, on every
+// supported curve ((0,0) excepted). The fake-GLV paths hint the result rather
+// than compute it, so curve membership is enforced by an explicit check and
+// subgroup membership by [Curve.assertPointInSubgroup]; callers need not
+// re-assert either.
 //
 // When p is a compile-time constant point of prime order r (for example a
 // point from a fixed verification key or SRS), the method automatically uses
@@ -1469,6 +1561,9 @@ func (c *Curve[B, S]) ScalarMulBase(s *emulated.Element[S], opts ...algopts.Alge
 //
 // The [EVM] specifies these checks, which are performed on the zkEVM
 // arithmetization side before calling the circuit that uses this method.
+//
+// The returned point is on the curve and in the prime-order subgroup ((0,0)
+// excepted) — see [Curve.ScalarMul].
 func (c *Curve[B, S]) JointScalarMulBase(p *AffinePoint[B], s2, s1 *emulated.Element[S], opts ...algopts.AlgebraOption) *AffinePoint[B] {
 	cfg, err := algopts.NewConfig(opts...)
 	if err != nil {
@@ -1506,6 +1601,11 @@ func (c *Curve[B, S]) JointScalarMulBase(p *AffinePoint[B], s2, s1 *emulated.Ele
 // calls and additionally depends on internal accumulator and prefix-sum
 // collisions, so the incomplete exceptional set is not fully characterized at
 // the API level.
+//
+// The returned point is on the curve and in the prime-order subgroup ((0,0)
+// excepted) — see [Curve.ScalarMul]. The subgroup binding is applied once to
+// the aggregate sum, not per summand, which is sound because each summand's
+// accumulator already pins its subgroup part exactly.
 func (c *Curve[B, S]) MultiScalarMul(p []*AffinePoint[B], s []*emulated.Element[S], opts ...algopts.AlgebraOption) (*AffinePoint[B], error) {
 
 	if len(p) == 0 {
@@ -1665,6 +1765,12 @@ func (c *Curve[B, S]) scalarMulFakeGLV(Q *AffinePoint[B], s *emulated.Element[S]
 	if err != nil {
 		panic(fmt.Sprintf("scalar mul hint: %v", err))
 	}
+	// R is prover-supplied. The closing accumulator identity is a group-law
+	// argument, so it is vacuous for an off-curve R and the routine would
+	// return a point of the prover's choosing. AssertIsOnCurve admits the
+	// (0,0) infinity encoding, so the s=0 and Q=(0,0) branches stay complete.
+	c.AssertIsOnCurve(&AffinePoint[B]{X: *R[0], Y: *R[1]})
+
 	r0, r1 := R[0], R[1]
 
 	var isInputPointAtInfinity frontend.Variable
@@ -1905,10 +2011,40 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 		panic(err)
 	}
 	var st S
-	// LLL Hermite bound (gnark-crypto/algebra/lattice): u1, u2, v1, v2 are
-	// bounded by γ₄·r^(1/4) ≈ 1.25·r^(1/4), which fits in (BitLen+3)/4 + 2 bits.
-	// This is tighter than the previous heuristic BitLen/4 + 9 (saves ~7 iters).
-	nbits := (st.Modulus().BitLen()+3)/4 + 2
+	// Bound on the subscalars u1, u2, v1, v2 returned by rationalReconstructExt.
+	//
+	// The hint reduces the rank-4 lattice
+	//
+	//	L = {(x,y,z,t) ∈ Z⁴ : x + λy ≡ k(z + λt) mod r},  det L = r
+	//
+	// (L is the kernel of a surjection Z⁴ → Z/r, hence of index r) and returns
+	// a row with a nonzero denominator (z,t). gnark-crypto's LLL runs at
+	// δ = 99/100, so the first reduced vector obeys the LLL guarantee
+	//
+	//	‖b₁‖ ≤ (1/(δ−1/4))^((n−1)/4) · (det L)^(1/n) = 1.2534·r^(1/4)
+	//
+	// and 1.2534 < 2, so every coordinate fits in ⌈BitLen/4⌉ + 1 bits.
+	//
+	// Note this is the LLL approximation factor, NOT the Hermite constant: γ₄
+	// is √2, and Hermite would only bound λ₁(L) ≤ 2^(1/4)·r^(1/4), the length
+	// of the shortest vector, which LLL is not guaranteed to find.
+	//
+	// The selected row is the minimum-infinity-norm row among those with
+	// (z,t) ≠ (0,0), so bounding b₁ bounds it — provided b₁ is itself a
+	// candidate. It always is: a lattice vector with (z,t) = (0,0) satisfies
+	// x + λy ≡ 0 mod r, i.e. lies in the 2D GLV sublattice, whose minimum is
+	// ≈ √r ≈ 2^127. That is far above ‖b₁‖ ≈ 2^64, so b₁ can never have a zero
+	// denominator and is never skipped. (Measured: the 2D minimum is 2^128 for
+	// secp256k1 and BLS12-381, 2^127 for BN254 — see TestSubScalarBound.)
+	//
+	// +1 is minimal, not conservative: 1.2534·r^(1/4) ≈ 2^64.33 for a 256-bit
+	// r, so ⌈BitLen/4⌉ bits alone would not be provable. The hint does try an
+	// early-termination path bounded by r^(1/4) (which would fit ⌈BitLen/4⌉),
+	// but it falls through to the general reduction often enough to matter —
+	// roughly 1 in 6000 random scalars — so the bound has to cover the
+	// fallback. This is why the 64-bit bound used by hand-built circuits that
+	// search for a Minkowski-optimal vector does not transfer here.
+	nbits := (st.Modulus().BitLen()+3)/4 + 1
 
 	// handle 0-scalar and (-1)-scalar cases
 	var isScalarZero, isScalarZeroOrMinusOne, isScalarOne, isScalarMinusOne frontend.Variable
@@ -1951,7 +2087,7 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 	// return the absolute value in the hint and negate the corresponding
 	// points here when needed.
 	signs, sd, err := c.scalarApi.NewHintGeneric(rationalReconstructExt, 4, 4, nil, []*emulated.Element[S]{_s, c.eigenvalue},
-		// we later need to check that u1, u2, v1, v2 < c*r^(1/4) so we provide a hint output range check with nbits = (BitLen+3)/4 + 2
+		// we later need to check that u1, u2, v1, v2 < c*r^(1/4) so we provide a hint output range check with nbits = (BitLen+3)/4 + 1 (see above)
 		emulated.WithHintOutputRangeCheckBits(map[int]int{4: nbits, 5: nbits, 6: nbits, 7: nbits}),
 	)
 	if err != nil {
@@ -2004,6 +2140,10 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 		panic(fmt.Sprintf("scalar mul hint: %v", err))
 	}
 	Q := &AffinePoint[B]{X: *point[0], Y: *point[1]}
+	// As in scalarMulFakeGLV. The curves routed here (secp256k1, BN254) have
+	// cofactor 1, so assertPointInSubgroup is a no-op at the call sites and
+	// this is the only thing binding the hint to the curve.
+	c.AssertIsOnCurve(Q)
 
 	// handle (0,0)-point
 	var isInputPointAtInfinity frontend.Variable

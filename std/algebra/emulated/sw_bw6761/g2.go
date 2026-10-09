@@ -507,6 +507,10 @@ var bw6761G2ClassicParams = func() sw_emulated.CurveParams {
 		Eigenvalue:       lambda,
 		ThirdRootOne:     omega,
 		PreferClassicGLV: true,
+		// G2 has a nontrivial cofactor, so PrimeOrder is deliberately left
+		// false and no CofactorClearing is set: classic GLV computes its output
+		// rather than hinting it, so no binding is needed here, and
+		// AssertIsInSubgroup fails loudly instead of silently passing.
 	}
 }()
 

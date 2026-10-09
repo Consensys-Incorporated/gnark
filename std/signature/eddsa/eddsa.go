@@ -36,6 +36,18 @@ type Signature struct {
 
 // Verify verifies an eddsa signature using MiMC hash function
 // cf https://en.wikipedia.org/wiki/EdDSA
+//
+// The method asserts in-circuit that S < order, that the public key A and the
+// signature commitment R are on the curve, and that A is not of small order
+// (in particular, not the identity).
+//
+// The small-order check only requires [cofactor]A ≠ O, so mixed-order public
+// keys (a prime-order point plus a torsion point) are accepted. This diverges
+// from gnark-crypto's native verification, which requires full subgroup
+// membership. Consequently a single secret key corresponds to up to cofactor
+// distinct accepted public keys ([sk]G + T for torsion points T); callers
+// deriving an identity from the public key coordinates (e.g. hashing A.X,
+// A.Y) must take this into account.
 func Verify(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pubKey PublicKey, hash hash.FieldHasher) error {
 	res, err := IsValid(curve, sig, msg, pubKey, hash)
 	if err != nil {
@@ -46,7 +58,13 @@ func Verify(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pu
 }
 
 // IsValid checks if the signature is valid for the given message and public
-// key. It returns 1 if the signature is valid and 0 otherwise.
+// key. It returns 1 if the signature is valid and 0 otherwise. Signatures
+// for small-order public keys (including the identity) are considered invalid.
+//
+// The method asserts in-circuit that S < order and that the public key A and
+// the signature commitment R are on the curve; such inputs make the circuit
+// unsatisfiable rather than returning 0. As in Verify, mixed-order public
+// keys are accepted.
 func IsValid(curve twistededwards.Curve, sig Signature, msg frontend.Variable, pubKey PublicKey, hash hash.FieldHasher) (frontend.Variable, error) {
 	// compute H(R, A, M)
 	hash.Write(sig.R.X)
@@ -65,6 +83,13 @@ func IsValid(curve twistededwards.Curve, sig Signature, msg frontend.Variable, p
 	isLess := cmp.IsLess(curve.API(), sig.S, curve.Params().Order)
 	curve.API().AssertIsEqual(isLess, 1)
 
+	// Assert that the public key A and the commitment R are on the curve. The
+	// group formulas below use unchecked divisions which are undefined for
+	// off-curve inputs, and off-curve points would bypass the small-order
+	// check on A.
+	curve.AssertIsOnCurve(pubKey.A)
+	curve.AssertIsOnCurve(sig.R)
+
 	//[S]G-[H(R,A,M)]*A
 	_A := curve.Neg(pubKey.A)
 	Q := curve.DoubleBaseScalarMul(base, _A, sig.S, hRAM)
@@ -74,23 +99,46 @@ func IsValid(curve twistededwards.Curve, sig Signature, msg frontend.Variable, p
 	Q = curve.Add(curve.Neg(Q), sig.R)
 
 	// [cofactor]*(lhs-rhs)
+	Q, err := clearCofactor(curve, Q)
+	if err != nil {
+		return 0, err
+	}
+
+	// Reject small-order public keys (including the identity). For such A the
+	// term [H(R,A,M)]A vanishes after cofactor clearing, so the equation can be
+	// satisfied for any message by anyone (e.g. S=1, R=G).
+	cA, err := clearCofactor(curve, pubKey.A)
+	if err != nil {
+		return 0, err
+	}
+
+	api := curve.API()
+	return api.And(
+		api.And(
+			api.IsZero(Q.X),
+			api.IsZero(api.Sub(Q.Y, 1)),
+		),
+		api.Sub(1, api.And(
+			api.IsZero(cA.X),
+			api.IsZero(api.Sub(cA.Y, 1)),
+		)),
+	), nil
+}
+
+// clearCofactor returns [cofactor]P.
+func clearCofactor(curve twistededwards.Curve, P twistededwards.Point) (twistededwards.Point, error) {
 	if !curve.Params().Cofactor.IsUint64() {
-		return 0, fmt.Errorf("invalid cofactor: %s", curve.Params().Cofactor.String())
+		return twistededwards.Point{}, fmt.Errorf("invalid cofactor: %s", curve.Params().Cofactor.String())
 	}
 	cofactor := curve.Params().Cofactor.Uint64()
 	switch cofactor {
 	case 4:
-		Q = curve.Double(curve.Double(Q))
+		return curve.Double(curve.Double(P)), nil
 	case 8:
-		Q = curve.Double(curve.Double(curve.Double(Q)))
+		return curve.Double(curve.Double(curve.Double(P))), nil
 	default:
-		return 0, fmt.Errorf("cofactor %d not implemented", cofactor)
+		return twistededwards.Point{}, fmt.Errorf("cofactor %d not implemented", cofactor)
 	}
-
-	return curve.API().And(
-		curve.API().IsZero(Q.X),
-		curve.API().IsZero(curve.API().Sub(Q.Y, 1)),
-	), nil
 }
 
 // Assign is a helper to assigned a compressed binary public key representation into its uncompressed form
