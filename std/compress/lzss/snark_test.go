@@ -196,15 +196,13 @@ func TestOutBufTooShort(t *testing.T) {
 	require.NoError(t, err)
 
 	circuit := decompressionLengthTestCircuit{
-		C: make([]frontend.Variable, len(c)+inputExtraBytes),
-		D: make([]frontend.Variable, len(d)-truncationAmount), // not enough room
-
+		C:    make([]frontend.Variable, len(c)+inputExtraBytes),
+		DLen: len(d) - truncationAmount, // not enough room
 	}
 
 	assignment := decompressionLengthTestCircuit{
 		C:               internal.ToVariableSlice(append(c, make([]byte, inputExtraBytes)...)),
 		CLength:         len(c),
-		D:               internal.ToVariableSlice(d[:len(d)-truncationAmount]),
 		ExpectedDLength: -1,
 	}
 
@@ -336,14 +334,18 @@ func getDictionary() []byte {
 }
 
 type decompressionLengthTestCircuit struct {
-	C, D            []frontend.Variable
+	C               []frontend.Variable
 	CLength         frontend.Variable
 	ExpectedDLength frontend.Variable
+	DLen            int // size of the decompression buffer
 }
 
 func (c *decompressionLengthTestCircuit) Define(api frontend.API) error {
 	dict := internal.ToVariableSlice(lzss.AugmentDict(nil))
-	if dLength, err := Decompress(api, c.C, c.CLength, c.D, dict); err != nil {
+	// Decompress writes its output into the buffer, so the buffer is allocated
+	// in-circuit instead of being declared as a witness
+	d := make([]frontend.Variable, c.DLen)
+	if dLength, err := Decompress(api, c.C, c.CLength, d, dict); err != nil {
 		return err
 	} else {
 		api.AssertIsEqual(dLength, c.ExpectedDLength)
@@ -353,8 +355,8 @@ func (c *decompressionLengthTestCircuit) Define(api frontend.API) error {
 
 func TestBuildDecompress1KBto7KB(t *testing.T) {
 	cs, err := frontend.Compile(ecc.BLS12_377.ScalarField(), scs.NewBuilder, &decompressionLengthTestCircuit{
-		C: make([]frontend.Variable, 1024),
-		D: make([]frontend.Variable, 7*1024),
+		C:    make([]frontend.Variable, 1024),
+		DLen: 7 * 1024,
 	})
 	assert.NoError(t, err)
 	fmt.Println(cs.GetNbConstraints())
@@ -362,8 +364,8 @@ func TestBuildDecompress1KBto7KB(t *testing.T) {
 
 func TestBuildDecompress1KBto9KB(t *testing.T) {
 	cs, err := frontend.Compile(ecc.BLS12_377.ScalarField(), scs.NewBuilder, &decompressionLengthTestCircuit{
-		C: make([]frontend.Variable, 1024),
-		D: make([]frontend.Variable, 9*1024),
+		C:    make([]frontend.Variable, 1024),
+		DLen: 9 * 1024,
 	})
 	assert.NoError(t, err)
 	fmt.Println(cs.GetNbConstraints())

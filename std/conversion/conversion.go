@@ -355,9 +355,13 @@ func assertBytesLeq(api frontend.API, b []uints.U8, bound *big.Int, disallowEqua
 
 	// for this, we first decompose the modulus into bytes
 	mBytes := bound.Bytes()
-	// if there are less bytes than the modulus, then we don't need to perform the check, it is always smaller
+	// if there are less bytes than the modulus, then the value is always
+	// smaller. We only need to ensure that the bytes are actually bytes.
 	if len(b) < len(mBytes) {
-		return nil // nothing to check
+		for i := range b {
+			bapi.Value(b[i])
+		}
+		return nil
 	}
 	// if there are more bytes than the modulus, then we need to check that the high bytes are zero
 	for i := 0; i < len(b)-len(mBytes); i++ {
