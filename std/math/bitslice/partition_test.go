@@ -39,3 +39,19 @@ func TestIssue1153(t *testing.T) {
 	assert := test.NewAssert(t)
 	assert.CheckCircuit(&partitionCircuit{Split: 8, nbDigitsOpt: 16}, test.WithInvalidAssignment(&partitionCircuit{ExpUpper: 0xff1, ExpLower: 0x21, In: 0xff121}))
 }
+
+// TestPartitionOutOfRange checks that Partition stays well-defined when split is
+// at or beyond the effective decomposition width, instead of panicking on a
+// slice bound or feeding a negative width to the range checker.
+func TestPartitionOutOfRange(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	// No bound set: split larger than the field width must return (v, 0).
+	assert.CheckCircuit(&partitionCircuit{Split: 300}, test.WithValidAssignment(&partitionCircuit{Split: 300, In: 0xffff1234, ExpLower: 0xffff1234, ExpUpper: 0}))
+
+	// WithNbDigits set: split larger than nbDigits must return (v, 0).
+	assert.CheckCircuit(&partitionCircuit{Split: 20, nbDigitsOpt: 16}, test.WithValidAssignment(&partitionCircuit{Split: 20, nbDigitsOpt: 16, In: 0x1234, ExpLower: 0x1234, ExpUpper: 0}))
+
+	// The declared input bound is still enforced.
+	assert.CheckCircuit(&partitionCircuit{Split: 20, nbDigitsOpt: 16}, test.WithInvalidAssignment(&partitionCircuit{Split: 20, nbDigitsOpt: 16, In: 0x1_2345, ExpLower: 0x1_2345, ExpUpper: 0}))
+}
