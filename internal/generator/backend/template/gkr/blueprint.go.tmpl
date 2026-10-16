@@ -79,7 +79,7 @@ func (b *BlueprintSolve) Reset() {
 	assignments := make(prover.WireAssignment, len(b.Circuit))
 	nbPaddedInstances := ecc.NextPowerOfTwo(uint64(b.NbInstances))
 	for i := range assignments {
-		assignments[i] = make(polynomial.MultiLin, nbPaddedInstances)
+		assignments[i] = make(polynomial.MultiLin{{ .ExtensionSuffix }}, nbPaddedInstances)
 	}
 	b.assignments = assignments
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -13,17 +14,23 @@ import (
 	_ "github.com/consensys/gnark-crypto/hash/all" // registers the hash benchmarkGkrMiMC uses
 	"{{ .FieldPackagePath }}"
 	"{{ .FieldPackagePath }}/polynomial"
+	{{- if .Mixed }}
+	"{{ .BaseFieldPackagePath }}"
+	{{- end }}
 	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/gkr"
+	"github.com/consensys/gnark/gkr/gkrapi"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var cache = gkrtesting.NewCache({{ .FieldDescription }})
 
 func TestNoGateTwoInstances(t *testing.T) {
 	// Testing a single instance is not possible because the sumcheck implementation doesn't cover the trivial 0-variate case
-	testNoGate(t, []{{ .ElementType }}{four, three})
+	testNoGate(t, []{{ .BaseElementType }}{four, three})
 }
 
 func TestNoGate(t *testing.T) {
@@ -66,7 +73,108 @@ func TestPoseidon2(t *testing.T) {
 	test(t, gkrtesting.Poseidon2Circuit(4, 2))
 }
 
-// proveAndVerify proves and verifies assignment against schedule, then asserts that: every wire of
+// TestEndToEndPoseidon2 compiles a circuit with gkrapi, then proves and verifies it with Poseidon2,
+// the proof being rebuilt by DeserializeProof from the elements of its Flatten, and checks that
+// tampering with the proof is rejected.
+func TestEndToEndPoseidon2(t *testing.T) {
+	const nbInstances = 16
+
+	api := gkrapi.New()
+	x := api.NewInput()
+	y := api.NewInput()
+	api.Export(api.Gate(gkrtesting.ConstantPositionsGate, x, y))
+	circuit, schedule, err := api.Compile({{ .FieldDescription }}, gkrapi.ConsolidateAll)
+	require.NoError(t, err)
+
+	assignment := make(WireAssignment, len(circuit))
+	for _, w := range []gkr.Variable{x, y} {
+		assignment[w] = make([]{{ .BaseElementType }}, nbInstances)
+		{{ .BaseFieldPackageName }}.Vector(assignment[w]).MustSetRandom()
+	}
+	// The output column is left nil: Prove computes it.
+
+	proof, proverClaims, err := Prove(circuit, schedule, assignment, gcHash.POSEIDON2_{{ .FieldID }}.New())
+	require.NoError(t, err)
+
+	var flattened []{{ .ElementType }}
+	for _, element := range proof.Flatten() {
+		flattened = append(flattened, *element)
+	}
+
+	verify := func(serialized []{{ .ElementType }}) (Claims, error) {
+		deserialized, err := DeserializeProof(circuit, schedule, serialized)
+		if err != nil {
+			return nil, err
+		}
+		claims, err := Verify(circuit, schedule, assignment.NumVars(), deserialized, gcHash.POSEIDON2_{{ .FieldID }}.New())
+		if err != nil {
+			return nil, err
+		}
+		return claims, claims.Check(assignment)
+	}
+
+	verifierClaims, err := verify(flattened)
+	require.NoError(t, err)
+	assert.Equal(t, proverClaims, verifierClaims)
+	{{- if .Mixed }}
+
+	outsideBaseField := false
+	for _, wireClaims := range verifierClaims {
+		for _, claim := range wireClaims {
+			outsideBaseField = outsideBaseField || claim.Evaluation.BigInt(nil) == nil
+		}
+	}
+	assert.True(t, outsideBaseField, "no claim is outside the base field: the challenges are not extension elements")
+	{{- end }}
+
+	tampered := slices.Clone(flattened)
+	tampered[0].Add(&tampered[0], &{{ if .Mixed }}oneExt{{ else }}one{{ end }})
+	_, err = verify(tampered)
+	assert.Error(t, err, "tampered proof accepted")
+}
+
+// TestCheckRejectsMismatchedLengths checks that Claims.Check rejects assignments of another size
+// than the claims', and ones missing a claimed wire.
+func TestCheckRejectsMismatchedLengths(t *testing.T) {
+	api := gkrapi.New()
+	x := api.NewInput()
+	y := api.NewInput()
+	z := api.Mul(x, y)
+	circuit, schedule, err := api.Compile({{ .FieldDescription }}, gkrapi.ConsolidateAll)
+	require.NoError(t, err)
+
+	elements := func(values ...uint64) []{{ .BaseElementType }} {
+		res := make([]{{ .BaseElementType }}, len(values))
+		for i, v := range values {
+			res[i] = {{ .BaseFieldPackageName }}.NewElement(v)
+		}
+		return res
+	}
+
+	// The prover proves instances 0 and 2 of the larger assignment below only.
+	proven := make(WireAssignment, len(circuit))
+	proven[x], proven[y] = elements(2, 4), elements(5, 6)
+	proof, _, err := Prove(circuit, schedule, proven, newMessageCounter(1, 1))
+	require.NoError(t, err)
+
+	claims, err := Verify(circuit, schedule, 1, proof, newMessageCounter(1, 1))
+	require.NoError(t, err)
+	assert.NoError(t, claims.Check(proven))
+
+	// Instances 1 and 3 of z are false.
+	larger := make(WireAssignment, len(circuit))
+	larger[x], larger[y], larger[z] = elements(2, 3, 4, 5), elements(5, 7, 6, 8), elements(10, 999, 24, 12345)
+	assert.Error(t, claims.Check(larger), "claims about 2 instances accepted against an assignment of 4")
+
+	inputsOnly := make(WireAssignment, len(circuit))
+	inputsOnly[x], inputsOnly[y] = elements(2, 4), elements(5, 6)
+	assert.NotPanics(t, func() {
+		assert.Error(t, claims.Check(inputsOnly), "claims on a wire accepted without an assignment")
+	})
+}
+
+// proveAndVerify proves assignment against schedule and verifies the proof rebuilt by
+// DeserializeProof from the elements of its Flatten, then asserts that: every wire of
 // schedule[0] has exactly one claim, and all of them share one point; the number of
 // elements in the proof, counted with proof.Flatten(), equals c.ProofSize(schedule, logNbInstances);
 // tampering instance 0 of any wire with claims makes Check fail; a bad hash makes Verify or Check
@@ -80,8 +188,15 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 	assert.NoError(t, err)
 	assert.NoError(t, proverClaims.Check(assignment))
 
+	var flattened []{{ .ElementType }}
+	for _, element := range proof.Flatten() {
+		flattened = append(flattened, *element)
+	}
+	deserialized, err := DeserializeProof(c, schedule, flattened)
+	assert.NoError(t, err)
+
 	logNbInstances := assignment.NumVars()
-	verifierClaims, err := Verify(c, schedule, logNbInstances, proof, newMessageCounter(1, 1))
+	verifierClaims, err := Verify(c, schedule, logNbInstances, deserialized, newMessageCounter(1, 1))
 	assert.NoError(t, err, "proof rejected")
 	assert.Equal(t, proverClaims, verifierClaims)
 	assert.NoError(t, verifierClaims.Check(assignment))
@@ -128,7 +243,7 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 			if len(target) == 0 {
 				continue
 			}
-			target[0].Add(&target[0], &one)
+			target[0].Add(&target[0], &{{ if .Mixed }}oneExt{{ else }}one{{ end }})
 			claims, err := Verify(c, schedule, logNbInstances, proof, newMessageCounter(1, 1))
 			if levelI < len(schedule) || !c.IsInput(c.Outputs()[0]) || consolidated[c.Outputs()[0]] {
 				assert.Error(t, err, "tampered proof accepted at level %d", levelI)
@@ -136,14 +251,21 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 				assert.NoError(t, err, "level %d: Verify should accept a tampered claim it cannot cross-check", levelI)
 				assert.Error(t, claims.Check(assignment), "level %d: tampered output claim accepted", levelI)
 			}
-			target[0].Sub(&target[0], &one)
+			target[0].Sub(&target[0], &{{ if .Mixed }}oneExt{{ else }}one{{ end }})
 		}
 	}
 }
 
-var one, two, three, four, five, six {{ .ElementType }}
+var one, two, three, four, five, six {{ .BaseElementType }}
+{{- if .Mixed }}
+
+var oneExt {{ .ElementType }}
+{{- end }}
 
 func init() {
+	{{- if .Mixed }}
+	oneExt.SetOne()
+	{{- end }}
 	one.SetOne()
 	two.Double(&one)
 	three.Add(&two, &one)
@@ -174,8 +296,8 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 	maxSize := 1 << gkrtesting.GetLogMaxInstances(t)
 
 	for i := range ins {
-		insAssignment[i] = make([]{{ .ElementType }}, maxSize)
-		{{ .FieldPackageName }}.Vector{{ .ExtensionSuffix }}(insAssignment[i]).MustSetRandom()
+		insAssignment[i] = make([]{{ .BaseElementType }}, maxSize)
+		{{ .BaseFieldPackageName }}.Vector(insAssignment[i]).MustSetRandom()
 	}
 
 	fullAssignment := make(WireAssignment, len(circuit))
@@ -192,7 +314,7 @@ func testWithSchedule(t *testing.T, circuit gkrcore.RawCircuit, schedule constra
 	}
 }
 
-func testNoGate(t *testing.T, inputAssignments ...[]{{ .ElementType }}) {
+func testNoGate(t *testing.T, inputAssignments ...[]{{ .BaseElementType }}) {
 	_, c := cache.Compile(t, gkrtesting.NoGateCircuit())
 
 	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
@@ -262,11 +384,11 @@ func proofEquals(expected Proof, seen Proof) error {
 				return fmt.Errorf("length mismatch %d ≠ %d", 0, len(seenFinalEval))
 			}
 		} else {
-			if err := sliceEquals(x.finalEvalProof, xSeen.finalEvalProof); err != nil {
+			if err := gkrtesting.SliceEquals(x.finalEvalProof, xSeen.finalEvalProof); err != nil {
 				return fmt.Errorf("final evaluation proof mismatch")
 			}
 		}
-		if err := polynomialSliceEquals(x.partialSumPolys, xSeen.partialSumPolys); err != nil {
+		if err := gkrtesting.PolynomialSliceEquals(gkrtesting.ToSlices(x.partialSumPolys), gkrtesting.ToSlices(xSeen.partialSumPolys)); err != nil {
 			return err
 		}
 	}
@@ -280,10 +402,10 @@ func benchmarkGkrMiMC(b *testing.B, nbInstances, mimcDepth int) {
 	schedule, err := gkrcore.DefaultProvingSchedule(c, gkrcore.ConsolidateNone)
 	assert.NoError(b, err)
 
-	in0 := make([]{{ .ElementType }}, nbInstances)
-	in1 := make([]{{ .ElementType }}, nbInstances)
-	{{ .FieldPackageName }}.Vector{{ .ExtensionSuffix }}(in0).MustSetRandom()
-	{{ .FieldPackageName }}.Vector{{ .ExtensionSuffix }}(in1).MustSetRandom()
+	in0 := make([]{{ .BaseElementType }}, nbInstances)
+	in1 := make([]{{ .BaseElementType }}, nbInstances)
+	{{ .BaseFieldPackageName }}.Vector(in0).MustSetRandom()
+	{{ .BaseFieldPackageName }}.Vector(in1).MustSetRandom()
 
 	fmt.Println("evaluating circuit")
 	start := time.Now().UnixMicro()

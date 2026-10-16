@@ -353,37 +353,6 @@ func (p Proof) Serialize() []frontend.Variable {
 	return res
 }
 
-// ComputeLogNbInstances derives n such that the number of instances is 2ⁿ
-// from the size of the proof and the circuit/schedule structure.
-func ComputeLogNbInstances(circuit Circuit, schedule constraint.GkrProvingSchedule, serializedProofLen int) int {
-	serializedProofLen -= len(circuit.Outputs())
-	identity := identityGate()
-	perVar := 0
-	for levelI, level := range schedule {
-		levelCircuit := circuit.LevelCircuit(schedule, levelI, identity)
-		nbUniqueInputs := len(levelCircuit.UniqueGateInputs(level))
-		switch level.(type) {
-		case *constraint.GkrSkipLevel:
-			serializedProofLen -= nbUniqueInputs * level.NbOutgoingEvalPoints()
-		default:
-			perVar += levelCircuit.ZeroCheckDegree(level)
-			serializedProofLen -= nbUniqueInputs
-		}
-	}
-	if perVar == 0 {
-		if serializedProofLen == 0 {
-			return -1
-		}
-	} else {
-		res := serializedProofLen / perVar
-		if res*perVar == serializedProofLen {
-			return res
-		}
-	}
-
-	panic("cannot compute logNbInstances")
-}
-
 type variablesReader []frontend.Variable
 
 func (r *variablesReader) nextN(n int) []frontend.Variable {
@@ -398,7 +367,10 @@ func (r *variablesReader) hasNextN(n int) bool {
 
 func DeserializeProof(circuit Circuit, schedule constraint.GkrProvingSchedule, serializedProof []frontend.Variable) (Proof, error) {
 	proof := make(Proof, len(schedule)+1)
-	logNbInstances := ComputeLogNbInstances(circuit, schedule, len(serializedProof))
+	logNbInstances, err := gkrcore.ComputeLogNbInstances(circuit, schedule, len(serializedProof), identityGate())
+	if err != nil && !errors.Is(err, gkrcore.ErrNbInstancesUndetermined) {
+		return nil, err
+	}
 
 	identity := identityGate()
 	reader := variablesReader(serializedProof)
