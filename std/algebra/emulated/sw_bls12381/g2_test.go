@@ -552,3 +552,57 @@ func TestScalarMulG2SubgroupBindingLive(t *testing.T) {
 	err = ccs.IsSolved(fullw, solver.OverrideHint(solver.GetHintID(scalarMulG2CofactorPreimageHint), bogusG2PreimageHint))
 	assert.Error(err, "a preimage that does not satisfy [c]S == R must be rejected")
 }
+
+type multiScalarMulFoldedTest struct {
+	Points  []G2Affine
+	Scalars []Scalar
+	Res     G2Affine
+}
+
+func (c *multiScalarMulFoldedTest) Define(api frontend.API) error {
+	g2, err := NewG2(api)
+	if err != nil {
+		return fmt.Errorf("new G2 struct: %w", err)
+	}
+	ps := make([]*G2Affine, len(c.Points))
+	for i := range c.Points {
+		ps[i] = &c.Points[i]
+	}
+	ss := make([]*Scalar, len(c.Scalars))
+	for i := range c.Scalars {
+		ss[i] = &c.Scalars[i]
+	}
+	res, err := g2.MultiScalarMul(ps, ss, algopts.WithFoldingScalarMul())
+	if err != nil {
+		return err
+	}
+	g2.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+// TestMultiScalarMulFoldedSinglePoint checks that folding a single point
+// returns the point itself (gamma^0 * P0).
+func TestMultiScalarMulFoldedSinglePoint(t *testing.T) {
+	assert := test.NewAssert(t)
+	var s, gamma fr_bls12381.Element
+	s.SetRandom()
+	gamma.SetRandom()
+	var p bls12381.G2Affine
+	p.ScalarMultiplicationBase(s.BigInt(new(big.Int)))
+	cp := G2Affine{
+		P: g2AffP{
+			X: fields_bls12381.E2{A0: emulated.ValueOf[emulated.BLS12381Fp](p.X.A0), A1: emulated.ValueOf[emulated.BLS12381Fp](p.X.A1)},
+			Y: fields_bls12381.E2{A0: emulated.ValueOf[emulated.BLS12381Fp](p.Y.A0), A1: emulated.ValueOf[emulated.BLS12381Fp](p.Y.A1)},
+		},
+	}
+	assignment := multiScalarMulFoldedTest{
+		Points:  []G2Affine{cp},
+		Scalars: []Scalar{emulated.ValueOf[emulated.BLS12381Fr](gamma)},
+		Res:     cp,
+	}
+	err := test.IsSolved(&multiScalarMulFoldedTest{
+		Points:  make([]G2Affine, 1),
+		Scalars: make([]Scalar, 1),
+	}, &assignment, ecc.BN254.ScalarField())
+	assert.NoError(err)
+}
