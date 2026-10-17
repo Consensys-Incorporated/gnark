@@ -259,8 +259,9 @@ type instance struct {
 	opt   *backend.ProverConfig
 
 	fs             *fiatshamir.Transcript
-	kzgFoldingHash hash.Hash // for KZG folding
-	htfFunc        hash.Hash // hash to field function
+	kzgFoldingHash hash.Hash  // for KZG folding
+	htfFunc        hash.Hash  // hash to field function
+	htfLock        sync.Mutex // bsb22Hint may be called concurrently by the solver
 
 	// polynomials
 	x                         []*iop.Polynomial // x stores tracks the polynomial we need
@@ -398,9 +399,11 @@ func (s *instance) bsb22Hint(_ *big.Int, ins, outs []*big.Int) error {
 		return err
 	}
 
+	s.htfLock.Lock()
 	s.htfFunc.Write(s.proof.Bsb22Commitments[commDepth].Marshal())
 	hashBts := s.htfFunc.Sum(nil)
 	s.htfFunc.Reset()
+	s.htfLock.Unlock()
 	nbBuf := fr.Bytes
 	if s.htfFunc.Size() < fr.Bytes {
 		nbBuf = s.htfFunc.Size()
