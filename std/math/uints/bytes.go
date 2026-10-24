@@ -183,21 +183,52 @@ func (bf *Bytes) twoArgFn(tbl *logderivprecomp.Precomputed, a ...U8) U8 {
 	if len(a) == 1 {
 		return a[0]
 	}
-	ret := tbl.Query(a[0].Val, a[1].Val)[0]
-	// NB! we cannot assume that the query result is in range even if the inputs
-	// are. The log-derivative lookup only constrains the packed value
-	// a + 2^8*b + 2^16*c, and a malicious prover could commit to an out-of-range
-	// c which makes the packed value collide with a valid table entry (e.g.
-	// Xor(1,0) = 1/256 since 1 + 2^8*0 + 2^16/256 = 257 = 0x000101 is the entry
-	// for Xor(1,0)=1). We therefore range check every intermediate result: an
-	// out-of-range intermediate could be consumed by a subsequent query in this
-	// same chain whose packed key collides, letting a forgery pass through.
-	bf.rchecker.Check(ret, 8)
+	ret := bf.queryOrFold(tbl, a[0].Val, a[1].Val)
 	for i := 2; i < len(a); i++ {
-		ret = tbl.Query(ret, a[i].Val)[0]
-		bf.rchecker.Check(ret, 8)
+		ret = bf.queryOrFold(tbl, ret, a[i].Val)
 	}
+	// every intermediate result is in range: lookup responses are range checked
+	// in [Bytes.queryOrFold] and folded results are computed natively from
+	// width-checked operands. Thus we set the internal flag to true.
 	return bf.packInternal(ret)
+}
+
+// queryOrFold evaluates the byte operation implemented by tbl natively when
+// both operands are compile-time constants, avoiding the lookup query and its
+// constraints. The operands are already width-checked ([Bytes.enforceWidth]
+// for the inputs, previous lookups or folds for the intermediates), but we
+// still guard on the width so that an out-of-range constant falls back to the
+// lookup path instead of being truncated silently. The folded result needs no
+// range check as it is computed natively from in-range uint8 operands.
+//
+// NB! we cannot assume that the query result is in range even if the inputs
+// are. The log-derivative lookup only constrains the packed value
+// a + 2^8*b + 2^16*c, and a malicious prover could commit to an out-of-range
+// c which makes the packed value collide with a valid table entry (e.g.
+// Xor(1,0) = 1/256 since 1 + 2^8*0 + 2^16/256 = 257 = 0x000101 is the entry
+// for Xor(1,0)=1). We therefore range check every lookup response: an
+// out-of-range intermediate could be consumed by a subsequent query in a
+// variadic chain whose packed key collides, letting a forgery pass through.
+func (bf *Bytes) queryOrFold(tbl *logderivprecomp.Precomputed, x, y frontend.Variable) frontend.Variable {
+	cx, xIsConst := bf.api.ConstantValue(x)
+	cy, yIsConst := bf.api.ConstantValue(y)
+	if xIsConst && yIsConst && cx.BitLen() <= 8 && cy.BitLen() <= 8 {
+		xb, yb := uint8(cx.Uint64()), uint8(cy.Uint64())
+		switch tbl {
+		case bf.xorT:
+			return xb ^ yb
+		case bf.andT:
+			return xb & yb
+		case bf.orT:
+			return xb | yb
+		}
+	}
+	// at least one operand is a variable (or the table is not a known bitwise
+	// table): use the lookup and range check the response, see the comment
+	// above.
+	ret := tbl.Query(x, y)[0]
+	bf.rchecker.Check(ret, 8)
+	return ret
 }
 
 func (bf *Bytes) Not(a U8) U8 {

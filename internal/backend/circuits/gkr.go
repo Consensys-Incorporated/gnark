@@ -3,8 +3,8 @@ package circuits
 import (
 	"github.com/consensys/gnark"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/std/gkrapi"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 	_ "github.com/consensys/gnark/std/hash/all" // register hash functions for GKR
 )
 
@@ -50,5 +50,5 @@ func init() {
 	good := &gkrCubeCircuit{X: []frontend.Variable{3, 5}, Square: []frontend.Variable{9, 25}, Cube: []frontend.Variable{27, 125}}
 	bad := &gkrCubeCircuit{X: []frontend.Variable{3, 5}, Square: []frontend.Variable{9, 25}, Cube: []frontend.Variable{27, 126}}
 
-	addEntry("gkr_cube", circuit, good, bad, gnark.Curves(), withU64Only())
+	addEntry("gkr_cube", circuit, good, bad, gnark.Curves(), withCurveOnly())
 }

@@ -22,6 +22,11 @@ var loopCounter = [64]int8{
 
 // MillerLoop computes the product of n miller loops (n can be 1)
 // ∏ᵢ { fᵢ_{x₀,Q}(P) }
+//
+// When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
+// and Qᵢ.P is never read: the lines are not constrained to correspond to the
+// point — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
 func MillerLoop(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 
 	// check input size match
@@ -59,7 +64,7 @@ func millerLoopLines(api frontend.API, P []G1Affine, lines []lineEvaluations) (G
 	yInv := make([]frontend.Variable, n)
 	xNegOverY := make([]frontend.Variable, n)
 	for k := 0; k < n; k++ {
-		yInv[k] = api.DivUnchecked(1, P[k].Y)
+		yInv[k] = invYWithInfinityGuard(api, P[k].Y)
 		xNegOverY[k] = api.Mul(P[k].X, yInv[k])
 		xNegOverY[k] = api.Neg(xNegOverY[k])
 	}
@@ -238,6 +243,14 @@ func FinalExponentiation(api frontend.API, e1 GT) GT {
 // ∏ᵢ e(Pᵢ, Qᵢ).
 //
 // This function doesn't check that the inputs are in the correct subgroup
+//
+// When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
+// and Qᵢ.P is never read: the lines are not constrained to correspond to the
+// point — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions. To assert a
+// pairing equation over untrusted G2 inputs, prefer [PairingCheck], which
+// binds the result to the point coordinates even when precomputed lines are
+// supplied.
 func Pair(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 	f, err := MillerLoop(api, P, Q)
 	if err != nil {
@@ -248,6 +261,11 @@ func Pair(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 
 // PairingCheck calculates the reduced pairing for a set of points and asserts if the result is One
 // ∏ᵢ e(Pᵢ, Qᵢ) =? 1
+//
+// The non-residue witness hint is computed from the point coordinates, so the
+// asserted equation binds the result to the coordinates of Qᵢ.P even when Qᵢ
+// carries precomputed lines: lines not corresponding to Qᵢ.P make the circuit
+// unsatisfiable.
 //
 // This function doesn't check that the inputs are in the correct subgroups.
 // It uses the classical E12-based Miller loop.
@@ -316,7 +334,7 @@ func PairingCheck(api frontend.API, P []G1Affine, Q []G2Affine) error {
 	yInv := make([]frontend.Variable, nP)
 	xNegOverY := make([]frontend.Variable, nP)
 	for k := 0; k < nP; k++ {
-		yInv[k] = api.DivUnchecked(1, P[k].Y)
+		yInv[k] = invYWithInfinityGuard(api, P[k].Y)
 		xNegOverY[k] = api.Mul(P[k].X, yInv[k])
 		xNegOverY[k] = api.Neg(xNegOverY[k])
 	}
@@ -510,4 +528,13 @@ func divE2WithZeroGuard(api frontend.API, n, d fields_bls12377.E2) fields_bls123
 	l.DivUnchecked(api, n, dSafe)
 	res.Select(api, dIsZero, zero, l)
 	return res
+}
+
+// invYWithInfinityGuard returns 1/y, or 0 when y is 0. The G1 point at infinity
+// is represented as (0,0) and setting yInv to 0 makes its line evaluations
+// equal to 1, so the point doesn't contribute to the Miller loop.
+func invYWithInfinityGuard(api frontend.API, y frontend.Variable) frontend.Variable {
+	isYZero := api.IsZero(y)
+	y = api.Select(isYZero, 1, y)
+	return api.Select(isYZero, 0, api.DivUnchecked(1, y))
 }

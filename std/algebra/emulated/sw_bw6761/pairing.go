@@ -145,6 +145,15 @@ func (pr *Pairing) AssertFinalExponentiationIsOne(x *GTEl) {
 		A5: *res[5],
 	}
 
+	// Constrain residueWitness to be invertible (non-zero). The check below,
+	// x == residueWitness^Λ, is homogeneous in the hint output, so for x == 0
+	// the all-zero residue witness would satisfy it: the exponentiation chain
+	// degenerates to 0 and DivUnchecked(0, 0) only enforces 0 = quotient·0,
+	// leaving the quotient free. But 0 is not in the multiplicative target
+	// group and its final exponentiation is not one. Inverse asserts
+	// residueWitness·residueWitness⁻¹ == 1, ruling that out.
+	pr.Ext6.Inverse(&residueWitness)
+
 	// Check that x == residueWitness^Λ
 	// where Λ = x₀+1+p(x₀³-x₀²-x₀) and residueWitness from the hint.
 
@@ -165,7 +174,16 @@ func (pr *Pairing) AssertFinalExponentiationIsOne(x *GTEl) {
 //
 // This function does not check that Pᵢ and Qᵢ are in the correct subgroup. See
 // AssertIsOnG1 and AssertIsOnG2. NB! This mismatches the interfaces of sw_bls12381 and
-// sw_bn254 packages where G2 membership check is performed automatically!
+// sw_bn254 packages where G2 membership check is performed automatically (when
+// the lines are computed in-circuit)!
+//
+// When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
+// and Qᵢ.P is never read: the lines are not constrained to correspond to the
+// point — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions. To assert a
+// pairing equation over untrusted G2 inputs, prefer [Pairing.PairingCheck],
+// which binds the result to the point coordinates even when precomputed lines
+// are supplied.
 func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 	f, err := pr.MillerLoop(P, Q)
 	if err != nil {
@@ -176,6 +194,11 @@ func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 
 // PairingCheck calculates the reduced pairing for a set of points and asserts if the result is One
 // ∏ᵢ e(Pᵢ, Qᵢ) =? 1
+//
+// The non-residue witness hint is computed from the point coordinates, so the
+// asserted equation binds the result to the coordinates of Qᵢ.P even when Qᵢ
+// carries precomputed lines: lines not corresponding to Qᵢ.P make the circuit
+// unsatisfiable.
 //
 // This function doesn't check that the inputs are in the correct subgroups.
 func (pr *Pairing) PairingCheck(P []*G1Affine, Q []*G2Affine) error {
@@ -415,7 +438,13 @@ var loopCounter2 = [190]int8{
 //
 // This function does not check that Pᵢ and Qᵢ are in the correct subgroup. See
 // AssertIsOnG1 and AssertIsOnG2. NB! This mismatches the interfaces of sw_bls12381 and
-// sw_bn254 packages where G2 membership check is performed automatically!
+// sw_bn254 packages where G2 membership check is performed automatically (when
+// the lines are computed in-circuit)!
+//
+// When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
+// and Qᵢ.P is never read: the lines are not constrained to correspond to the
+// point — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
 //
 // Alg.2 in https://eprint.iacr.org/2021/1359.pdf Eq. (6') in
 // https://hackmd.io/@gnark/BW6-761-changes
@@ -455,7 +484,11 @@ func (pr *Pairing) millerLoopLines(P []*G1Affine, lines []lineEvaluations, init 
 		// P are supposed to be on G1 respectively of prime order r.
 		// The point (x,0) is of order 2. But this function does not check
 		// subgroup membership.
-		yInv[k] = pr.curveF.Inverse(&P[k].Y)
+		// If we have point at infinity, we set yInv[k] to 0 manually to avoid
+		// undefined inversion of 0.
+		isYZero := pr.curveF.IsZero(&P[k].Y)
+		y := pr.curveF.Select(isYZero, pr.curveF.One(), &P[k].Y)
+		yInv[k] = pr.curveF.Select(isYZero, pr.curveF.Zero(), pr.curveF.Inverse(y))
 		xNegOverY[k] = pr.curveF.Mul(&P[k].X, yInv[k])
 		xNegOverY[k] = pr.curveF.Neg(xNegOverY[k])
 	}

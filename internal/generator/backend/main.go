@@ -50,6 +50,7 @@ func main() {
 	tiny_field := templateData{
 		RootPath:          "../../../internal/smallfields/tinyfield/",
 		CSPath:            "../../../constraint/tinyfield",
+		SmallField:        true,
 		Curve:             "tinyfield",
 		CurveID:           "UNKNOWN",
 		noBackend:         true,
@@ -59,6 +60,7 @@ func main() {
 	}
 	baby_bear_field := templateData{
 		CSPath:      "../../../constraint/babybear/",
+		SmallField:  true,
 		Curve:       "babybear",
 		CurveID:     "UNKNOWN",
 		OnlyField:   true,
@@ -68,12 +70,26 @@ func main() {
 	}
 	koala_bear_field := templateData{
 		CSPath:      "../../../constraint/koalabear/",
+		SmallField:  true,
 		Curve:       "koalabear",
 		CurveID:     "UNKNOWN",
 		OnlyField:   true,
 		noBackend:   true,
 		NoGKR:       true,
 		ElementType: "U32",
+	}
+	// mamabear is 49 bits, so unlike the 31-bit babybear and koalabear it does
+	// not fit U32. It still fits a single machine word, so it uses U64W1 rather
+	// than the six-limb U64 the curve scalar fields need.
+	mama_bear_field := templateData{
+		CSPath:      "../../../constraint/mamabear/",
+		SmallField:  true,
+		Curve:       "mamabear",
+		CurveID:     "UNKNOWN",
+		OnlyField:   true,
+		noBackend:   true,
+		NoGKR:       true,
+		ElementType: "U64W1",
 	}
 	grumpkin := templateData{
 		CSPath:      "../../../constraint/grumpkin/",
@@ -93,6 +109,7 @@ func main() {
 		tiny_field,
 		baby_bear_field,
 		koala_bear_field,
+		mama_bear_field,
 		grumpkin,
 	}
 
@@ -147,12 +164,13 @@ func main() {
 				curvePackageName := strings.ToLower(d.Curve)
 
 				cfg := gkrConfig{
-					ElementType:      "fr.Element",
-					FieldPackageName: "fr",
-					FieldPackagePath: "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
-					FieldID:          d.CurveID,
-					GkrPackageName:   curvePackageName,
-					CanUseFFT:        true,
+					ElementType:        "fr.Element",
+					FieldPackageName:   "fr",
+					FieldPackagePath:   "github.com/consensys/gnark-crypto/ecc/" + curvePackageName + "/fr",
+					FieldID:            d.CurveID,
+					FieldDescription:   "gkrcore.PrimeField(ecc." + d.CurveID + ".ScalarField())",
+					GkrPackageName:     curvePackageName,
+					EvaluatorQualifier: "evaluator.",
 				}
 
 				assertNoError(generateGkrBackend(cfg))
@@ -231,25 +249,24 @@ func main() {
 	wg.Add(1)
 	// GKR test vectors
 	go func() {
-		// generate gkr and sumcheck for small-rational
+		// generate gkr and sumcheck for rational
 		cfg := gkrConfig{
-			ElementType:         "small_rational.SmallRational",
-			FieldPackagePath:    "github.com/consensys/gnark/internal/small_rational",
-			FieldPackageName:    "small_rational",
-			GkrPackageName:      "small_rational",
-			CanUseFFT:           false,
+			ElementType:         "rational.Element",
+			FieldPackagePath:    "github.com/consensys/gnark/internal/rational",
+			FieldPackageName:    "rational",
+			GkrPackageName:      "rational",
 			NoGkrTests:          true,
 			GenerateTestVectors: true,
 		}
 		assertNoError(generateGkrBackend(cfg))
-
-		fmt.Println("generating test vectors for gkr and sumcheck")
-		testVectorsDir := filepath.Join("..", "..", "gkr", "test_vectors")
-		runCmdInDir(testVectorsDir, "go", "run", ".")
 		wg.Done()
 	}()
 
 	wg.Wait()
+
+	fmt.Println("generating test vectors for gkr and sumcheck")
+	testVectorsDir := filepath.Join("..", "..", "gkr", "test_vectors")
+	runCmdInDir(testVectorsDir, "go", "run", ".")
 
 	// run gofmt on whole directory
 	runCmd("gofmt", "-w", "../../../")
@@ -294,10 +311,30 @@ type templateData struct {
 	NoGKR             bool
 	NoTests           bool
 	ElementType       string
+	// SmallField marks a field that is not the scalar field of a curve.
+	// It is independent of ElementType: mamabear is a small field stored
+	// in a uint64 word, so the two must not be conflated.
+	SmallField bool
+}
+
+// ElementWordBits is the limb width of ElementType, 32 or 64. Templates branch
+// on it rather than on ElementType, which also encodes the number of limbs:
+// U64W1 and U64 differ in limb count but are both 64 bits wide.
+func (d templateData) ElementWordBits() int {
+	if d.ElementType == "U32" {
+		return 32
+	}
+	return 64
 }
 
 func generateGkrBackend(cfg gkrConfig) error {
-	packageDir := filepath.Join("../../../internal/gkr", cfg.GkrPackageName)
+	internalDir := filepath.Join("../../../internal/gkr", cfg.GkrPackageName)
+	// The prover, verifier and their tests live alongside the evaluators in internalDir for
+	// rational (test-vector generation), and in the public gkr/<field> package for curves.
+	proverDir := internalDir
+	if !cfg.GenerateTestVectors {
+		proverDir = filepath.Join("../../../gkr", cfg.GkrPackageName)
+	}
 
 	testVectorUtilsFileName := "test_vector_utils_test.go"
 	if cfg.GenerateTestVectors {
@@ -306,31 +343,37 @@ func generateGkrBackend(cfg gkrConfig) error {
 
 	// gkr backend
 	entries := []bavard.Entry{
-		{File: filepath.Join(packageDir, "gkr.go"), Templates: []string{"gkr.go.tmpl"}},
-		{File: filepath.Join(packageDir, "sumcheck.go"), Templates: []string{"sumcheck.go.tmpl"}},
-		{File: filepath.Join(packageDir, "sumcheck_test.go"), Templates: []string{"sumcheck.test.go.tmpl", "sumcheck.test.defs.go.tmpl"}},
-		{File: filepath.Join(packageDir, testVectorUtilsFileName), Templates: []string{"test_vector_utils.go.tmpl"}},
+		{File: filepath.Join(internalDir, "evaluator.go"), Templates: []string{"evaluator.go.tmpl"}},
+		{File: filepath.Join(proverDir, "gkr.go"), Templates: []string{"gkr.go.tmpl"}},
+		{File: filepath.Join(proverDir, "sumcheck.go"), Templates: []string{"sumcheck.go.tmpl"}},
+		{File: filepath.Join(proverDir, "sumcheck_test.go"), Templates: []string{"sumcheck.test.go.tmpl", "sumcheck.test.defs.go.tmpl"}},
+		{File: filepath.Join(proverDir, testVectorUtilsFileName), Templates: []string{"test_vector_utils.go.tmpl"}},
 	}
 
 	if !cfg.NoGkrTests {
 		entries = append(entries, bavard.Entry{
-			File: filepath.Join(packageDir, "gkr_test.go"), Templates: []string{"gkr.test.go.tmpl", "gkr.test.vectors.go.tmpl"},
+			File: filepath.Join(proverDir, "gkr_test.go"), Templates: []string{"gkr.test.go.tmpl", "gkr.test.vectors.go.tmpl"},
 		})
 	}
 
 	if cfg.GenerateTestVectors {
 		entries = append(entries, []bavard.Entry{
-			{File: filepath.Join(packageDir, "test_vector_gen.go"), Templates: []string{"gkr.test.vectors.gen.go.tmpl", "gkr.test.vectors.go.tmpl"}},
-			{File: filepath.Join(packageDir, "sumcheck_test_vector_gen.go"), Templates: []string{"sumcheck.test.vectors.gen.go.tmpl", "sumcheck.test.defs.go.tmpl"}},
-		}...)
-	} else {
-		entries = append(entries, []bavard.Entry{
-			{File: filepath.Join(packageDir, "blueprint.go"), Templates: []string{"blueprint.go.tmpl"}},
+			{File: filepath.Join(proverDir, "test_vector_gen.go"), Templates: []string{"gkr.test.vectors.gen.go.tmpl", "gkr.test.vectors.go.tmpl"}},
+			{File: filepath.Join(proverDir, "sumcheck_test_vector_gen.go"), Templates: []string{"sumcheck.test.vectors.gen.go.tmpl", "sumcheck.test.defs.go.tmpl"}},
 		}...)
 	}
 
 	if err := bgen.Generate(cfg, "gkr", "./template/gkr/", entries...); err != nil {
 		return err
+	}
+
+	if !cfg.GenerateTestVectors {
+		// The blueprints call the prover, which imports the evaluators; putting them in the
+		// evaluators' package would close an import cycle, so they get their own package.
+		blueprintEntry := bavard.Entry{File: filepath.Join(internalDir, "blueprints", "blueprint.go"), Templates: []string{"blueprint.go.tmpl"}}
+		if err := bgen.Generate(cfg, "blueprints", "./template/gkr/", blueprintEntry); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -342,9 +385,19 @@ type gkrConfig struct {
 	FieldPackageName    string
 	GkrPackageName      string // the GKR package, relative to the repo root
 	FieldID             string // e.g. BLS12_377, BABYBEAR, etc.
-	CanUseFFT           bool
 	GenerateTestVectors bool
 	NoGkrTests          bool
+	// EvaluatorQualifier prefixes references to the gate evaluator types, for fields whose prover
+	// package is not the evaluators' own package. Empty when they are the same package.
+	EvaluatorQualifier string
+	// ExtensionSuffix is the suffix gnark-crypto's extensions package appends to the names of an
+	// extension's types and constants (e.g. VectorE6, BytesE6). Empty for the curves and
+	// rational.
+	ExtensionSuffix string
+	// FieldDescription is the Go expression of the field's gkrcore.Field description, e.g.
+	// "gkrcore.PrimeField(ecc.BN254.ScalarField())". Used only where gkr.test.go.tmpl is
+	// generated (NoGkrTests false), so rational leaves it empty.
+	FieldDescription string
 }
 
 func assertNoError(err error) {

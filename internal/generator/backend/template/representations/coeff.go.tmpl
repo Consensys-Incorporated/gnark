@@ -36,9 +36,9 @@ func (ct *CoeffTable) toBytes() []byte {
 	buf = binary.LittleEndian.AppendUint64(buf, ctLen)
 	for _, c := range ct.Coefficients {
 		for _, w := range c {
-			{{- if eq .ElementType "U64" -}}
+			{{- if eq .ElementWordBits 64 -}}
 			buf = binary.LittleEndian.AppendUint64(buf, w)
-			{{- else if eq .ElementType "U32" -}}
+			{{- else -}}
 			buf = binary.LittleEndian.AppendUint32(buf, w)
 			{{- end -}}
 		}
@@ -62,9 +62,9 @@ func (ct *CoeffTable) fromBytes(buf []byte) error {
 		var c fr.Element
 		k := int(i) * fr.Bytes
 		for j := 0; j < fr.Limbs; j++ {
-			{{- if eq .ElementType "U64" -}}
+			{{- if eq .ElementWordBits 64 -}}
 			c[j] = binary.LittleEndian.Uint64(buf[k + j * 8 : k + (j+1)*8])
-			{{- else if eq .ElementType "U32" -}}
+			{{- else -}}
 			c[j] = binary.LittleEndian.Uint32(buf[k+j*4 : k+(j+1)*4])
 			{{- end -}}
 		}

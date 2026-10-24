@@ -21,6 +21,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/frontend"
 )
 
@@ -111,6 +112,13 @@ func NewExtension(api frontend.API, opts ...Option) (Field, error) {
 	// - if native is Koalabear and degree is not set or 4, then use the dedicated Koalabear extension
 	if api.Compiler().Field().Cmp(koalabear.Modulus()) == 0 && (cfg.degree == -1 || cfg.degree == defaultExtensionDegrees[koalabear.Modulus().String()]) {
 		return newKoalabearExt4(api), nil
+	}
+	// - if native is MamaBear and degree is not set or 3, then use the dedicated
+	//   MamaBear extension. It has to be dedicated: F_p3 is defined by
+	//   t^3 - t - 1, which is not a binomial, so the generic path below would
+	//   mis-reduce it.
+	if api.Compiler().Field().Cmp(mamabear.Modulus()) == 0 && (cfg.degree == -1 || cfg.degree == defaultExtensionDegrees[mamabear.Modulus().String()]) {
+		return newMamabearExt3(api), nil
 	}
 
 	// if the degree is not set, then we take the default extension for the given field

@@ -10,10 +10,10 @@ import (
 	bn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
 	bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/fr/mimc"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/internal/utils"
 	"github.com/consensys/gnark/std/gkrapi"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
 	"github.com/consensys/gnark/std/hash"
 )
 

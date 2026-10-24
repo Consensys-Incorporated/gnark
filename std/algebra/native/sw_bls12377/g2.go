@@ -19,6 +19,11 @@ type g2AffP struct {
 }
 
 // G2Affine point in affine coords
+//
+// When Lines is set, [MillerLoop] and [Pair] use the precomputed lines
+// directly and never read P: the lines are trusted input and are not
+// constrained to correspond to P. See [NewG2AffineFixedPlaceholder] for the
+// security assumptions.
 type G2Affine struct {
 	P     g2AffP
 	Lines *lineEvaluations

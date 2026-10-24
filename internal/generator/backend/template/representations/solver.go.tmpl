@@ -763,7 +763,7 @@ func elementToInt(v *fr.Element) (int, bool) {
 	return int(n), true
 }
 
-const elementWordBits = {{ if eq .ElementType "U32" }}32{{ else }}64{{ end }}
+const elementWordBits = {{ .ElementWordBits }}
 
 // elementBitWindow extracts `bitSize` bits from v starting at `bitOffset`.
 // Callers must keep bitSize in [1, 63]: a shift by 64 is undefined in Go.
@@ -1275,7 +1275,7 @@ func (s *scratch) byteKey(n int) []byte {
 
 func (s *scratch) bigInts(n int) []*big.Int {
 	s.inputValues, s.inputs = growBigInts(s.inputValues, s.inputs, n)
-	{{- if eq .ElementType "U64" }}
+	{{- if eq .ElementWordBits 64 }}
 	wordsLen := n * fr.Limbs
 	if cap(s.inputWords) < wordsLen {
 		s.inputWords = make([]big.Word, wordsLen)
@@ -1290,7 +1290,7 @@ func (s *scratch) bigInts(n int) []*big.Int {
 // we point the input's nat slice at our shared inputWords arena; on 32-bit
 // platforms the limb width mismatch forces a generic BigInt() call.
 func (s *scratch) setInput(dst *big.Int, v *fr.Element, i int) {
-	{{- if eq .ElementType "U32" }}
+	{{- if eq .ElementWordBits 32 }}
 	bits := v.Bits()
 	dst.SetUint64(uint64(bits[0]))
 	{{- else }}

@@ -4,8 +4,8 @@ import (
     "github.com/consensys/bavard"
     "github.com/consensys/gnark-crypto/ecc"
     "github.com/consensys/gnark/constraint"
-    "github.com/consensys/gnark/internal/small_rational"
-    "github.com/consensys/gnark/internal/small_rational/polynomial"
+    "github.com/consensys/gnark/internal/rational"
+    "github.com/consensys/gnark/internal/rational/polynomial"
     "github.com/consensys/gnark/internal/gkr/gkrtesting"
     "github.com/consensys/gnark/internal/gkr/gkrcore"
     "hash"
@@ -16,8 +16,8 @@ import (
 
 // The properties of test gates are expected to be the same across all relevant fields.
 // We can therefore use the gate testing functions for any curve rather than reimplementing
- // for small_rational.
-var cache = gkrtesting.NewCache(ecc.BN254.ScalarField())
+ // for rational.
+var cache = gkrtesting.NewCache(gkrcore.PrimeField(ecc.BN254.ScalarField()))
 
 func GenerateVectors() error {
     testDirPath, err := filepath.Abs("../../gkr/test_vectors")
@@ -57,9 +57,13 @@ func run(absPath string) error {
     }
 
 	var proof Proof
-    proof, err = Prove(testCase.Circuit, testCase.Schedule, testCase.FullAssignment, testCase.Hash)
+	var claims Claims
+    proof, claims, err = Prove(testCase.Circuit, testCase.Schedule, testCase.FullAssignment, testCase.Hash)
     if err != nil {
 		return err
+    }
+    if err = claims.Check(testCase.FullAssignment); err != nil {
+        return err
     }
 
     if testCase.Info.Proof, err = toPrintableProof(proof); err != nil {
@@ -79,8 +83,11 @@ func run(absPath string) error {
 		return err
     }
 
-    err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, proof, testCase.Hash)
+    claims, err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment.NumVars(), proof, testCase.Hash)
 	if err != nil {
+        return err
+    }
+    if err = claims.Check(testCase.InOutAssignment); err != nil {
         return err
     }
 
@@ -89,7 +96,10 @@ func run(absPath string) error {
         return err
     }
 
-    err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment, proof, newMessageCounter(2, 0))
+    claims, err = Verify(testCase.Circuit, testCase.Schedule, testCase.InOutAssignment.NumVars(), proof, newMessageCounter(2, 0))
+    if err == nil {
+        err = claims.Check(testCase.InOutAssignment)
+    }
     if err == nil {
 	    return fmt.Errorf("bad proof accepted")
     }

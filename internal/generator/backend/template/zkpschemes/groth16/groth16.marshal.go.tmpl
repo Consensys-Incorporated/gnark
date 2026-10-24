@@ -189,6 +189,7 @@ func (vk *VerifyingKey) readFrom(r io.Reader, raw bool) (int64, error) {
 	vk.PublicAndCommitmentCommitted = utils.Uint64SliceSliceToIntSliceSlice(publicCommitted)
 	
 	var n int64
+	vk.CommitmentKeys = nil
 	for i := 0; i < int(nbCommitments); i++ {
 		var (
 			m   int64
@@ -353,6 +354,7 @@ func (pk *ProvingKey) readFrom(r io.Reader, decOptions ...func(*curve.Decoder)) 
 	if err := dec.Decode(&nbCommitments); err != nil {
 		return n + dec.BytesRead(), fmt.Errorf("read nbCommitments: %w", err)
 	}
+	pk.CommitmentKeys = nil
 	for i := 0; i < int(nbCommitments); i++ {
 		cpkey := pedersen.ProvingKey{}
 		n2, err := cpkey.ReadFrom(r)
@@ -516,6 +518,7 @@ func (pk *ProvingKey) ReadDump(r io.Reader) error {
 		return fmt.Errorf("read G2.B: %w", err)
 	}
 
+	pk.CommitmentKeys = nil
 	for i := 0; i < int(nbCommitments); i++{
 		cpkey := pedersen.ProvingKey{}
 		cpkey.Basis, _, err = unsafe.ReadSlice[[]curve.G1Affine](r)

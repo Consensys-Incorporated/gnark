@@ -178,3 +178,65 @@ func TestSHA3FixedLengthSum(t *testing.T) {
 		}, fmt.Sprintf("hash=%s", name))
 	}
 }
+
+type sha3MultipleSumCircuit struct {
+	A, B      []uints.U8
+	ExpectedA []uints.U8
+	ExpectedB []uints.U8
+
+	hasher string
+}
+
+func (c *sha3MultipleSumCircuit) Define(api frontend.API) error {
+	h, err := testCases[c.hasher].zk(api)
+	if err != nil {
+		return err
+	}
+	uapi, err := uints.NewBytes(api)
+	if err != nil {
+		return err
+	}
+
+	// Sum doesn't change the state of the hasher, so we can keep writing
+	h.Write(c.A)
+	resA := h.Sum()
+	resA2 := h.Sum()
+	h.Write(c.B)
+	resAB := h.Sum()
+
+	for i := range c.ExpectedA {
+		uapi.AssertIsEqual(c.ExpectedA[i], resA[i])
+		uapi.AssertIsEqual(c.ExpectedA[i], resA2[i])
+		uapi.AssertIsEqual(c.ExpectedB[i], resAB[i])
+	}
+	return nil
+}
+
+func TestSHA3MultipleSum(t *testing.T) {
+	a := []byte("abc")
+	b := []byte("defgh")
+	for name, tc := range testCases {
+		assert := test.NewAssert(t)
+		h := tc.native()
+		h.Write(a)
+		expectedA := h.Sum(nil)
+		h.Write(b)
+		expectedAB := h.Sum(nil)
+
+		circuit := &sha3MultipleSumCircuit{
+			A:         make([]uints.U8, len(a)),
+			B:         make([]uints.U8, len(b)),
+			ExpectedA: make([]uints.U8, len(expectedA)),
+			ExpectedB: make([]uints.U8, len(expectedAB)),
+			hasher:    name,
+		}
+		witness := &sha3MultipleSumCircuit{
+			A:         uints.NewU8Array(a),
+			B:         uints.NewU8Array(b),
+			ExpectedA: uints.NewU8Array(expectedA),
+			ExpectedB: uints.NewU8Array(expectedAB),
+			hasher:    name,
+		}
+		assert.NoError(test.IsSolved(circuit, witness, ecc.BN254.ScalarField()), name)
+	}
+}

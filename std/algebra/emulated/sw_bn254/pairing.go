@@ -89,8 +89,17 @@ func NewPairing(api frontend.API) (*Pairing, error) {
 //
 //	∏ᵢ e(Pᵢ, Qᵢ).
 //
-// This function checks that the Qᵢ are in the correct subgroup, but does not
-// check Pᵢ. See AssertIsOnG1.
+// When Qᵢ does not carry precomputed lines (Qᵢ.Lines == nil), the lines are
+// computed in-circuit and Qᵢ is asserted to be on the curve and in the
+// correct subgroup. When Qᵢ carries precomputed lines, they are used directly
+// and Qᵢ.P is never read: the point is not checked and the lines are not
+// constrained to correspond to it — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
+//
+// This function does not check Pᵢ. See AssertIsOnG1. To assert a pairing
+// equation over untrusted G2 inputs, prefer [Pairing.PairingCheck], which
+// binds the result to the point coordinates even when precomputed lines are
+// supplied.
 func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 	res, err := pr.MillerLoop(P, Q)
 	if err != nil {
@@ -224,8 +233,14 @@ func (pr *Pairing) AssertFinalExponentiationIsOne(a *GTEl) {
 //
 //	∏ᵢ e(Pᵢ, Qᵢ) =? 1
 //
-// This function checks that the Qᵢ are in the correct subgroup, but does not
-// check Pᵢ. See AssertIsOnG1.
+// The non-residue witness hint is computed from the point coordinates, so the
+// asserted equation binds the result to the coordinates of Qᵢ.P even when Qᵢ
+// carries precomputed lines: lines not corresponding to Qᵢ.P make the circuit
+// unsatisfiable. When the lines are computed in-circuit (Qᵢ.Lines == nil),
+// Qᵢ is additionally asserted to be on the curve and in the correct subgroup;
+// with supplied lines no point checks are performed.
+//
+// This function doesn't check that the Pᵢ are in the correct subgroup.
 func (pr *Pairing) PairingCheck(P []*G1Affine, Q []*G2Affine) error {
 	// check input size match
 	nP := len(P)
@@ -530,8 +545,14 @@ var loopCounter = [66]int8{
 //
 //	∏ᵢ { fᵢ_{6x₀+2,Q}(P) · ℓᵢ_{[6x₀+2]Q,π(Q)}(P) · ℓᵢ_{[6x₀+2]Q+π(Q),-π²(Q)}(P) }
 //
-// This function checks that the Qᵢ are in the correct subgroup, but does not
-// check Pᵢ. See AssertIsOnG1.
+// When Qᵢ does not carry precomputed lines (Qᵢ.Lines == nil), the lines are
+// computed in-circuit and Qᵢ is asserted to be on the curve and in the
+// correct subgroup. When Qᵢ carries precomputed lines, they are used directly
+// and Qᵢ.P is never read: the point is not checked and the lines are not
+// constrained to correspond to it — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
+//
+// This function does not check Pᵢ. See AssertIsOnG1.
 func (pr *Pairing) MillerLoop(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 
 	// check input size match
@@ -904,12 +925,28 @@ func (pr *Pairing) MillerLoopAndMul(P *G1Affine, Q *G2Affine, previous *GTEl) (*
 }
 
 // millerLoopAndFinalExpResult computes the Miller loop between P and Q,
-// multiplies it in 𝔽p¹² by previous and returns the result.
-func (pr *Pairing) millerLoopAndFinalExpResult(P *G1Affine, Q *G2Affine, previous *GTEl) *GTEl {
+// multiplies it in 𝔽p¹² by previous and returns the result. It returns an
+// error if P and Q are empty or have different lengths.
+func (pr *Pairing) millerLoopAndFinalExpResult(P []*G1Affine, Q []*G2Affine, previous *GTEl) (*GTEl, error) {
 	tower := pr.ToTower(previous)
 
+	nP := len(P)
+	nQ := len(Q)
+	if nP == 0 || nP != nQ {
+		return nil, fmt.Errorf("mismatched number of P and Q points: got %d and %d, expected equal and non-zero", nP, nQ)
+	}
+
+	inputs := make([]*baseEl, 0, 2*nP+4*nQ+12)
+	for _, p := range P {
+		inputs = append(inputs, &p.X, &p.Y)
+	}
+	for _, q := range Q {
+		inputs = append(inputs, &q.P.X.A0, &q.P.X.A1, &q.P.Y.A0, &q.P.Y.A1)
+	}
+	inputs = append(inputs, tower[0], tower[1], tower[2], tower[3], tower[4], tower[5], tower[6], tower[7], tower[8], tower[9], tower[10], tower[11])
+
 	// hint the non-residue witness
-	hint, err := pr.curveF.NewHint(millerLoopAndCheckFinalExpHint, 18, &P.X, &P.Y, &Q.P.X.A0, &Q.P.X.A1, &Q.P.Y.A0, &Q.P.Y.A1, tower[0], tower[1], tower[2], tower[3], tower[4], tower[5], tower[6], tower[7], tower[8], tower[9], tower[10], tower[11])
+	hint, err := pr.curveF.NewHint(millerLoopAndCheckFinalExpHint, 18, inputs...)
 	if err != nil {
 		// err is non-nil only for invalid number of inputs
 		panic(err)
@@ -950,20 +987,23 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P *G1Affine, Q *G2Affine, previou
 	// residueWitnessInv = 1 / residueWitness
 	residueWitnessInv := pr.Ext12.Inverse(residueWitness)
 
-	if Q.Lines == nil {
-		Qlines := pr.computeLines(&Q.P)
-		Q.Lines = &Qlines
+	lines := make([]lineEvaluations, nQ)
+	for i := range Q {
+		if Q[i].Lines == nil {
+			Qlines := pr.computeLines(&Q[i].P)
+			Q[i].Lines = &Qlines
+		}
+		lines[i] = *Q[i].Lines
 	}
-	lines := *Q.Lines
 
 	res, err := pr.millerLoopLines(
-		[]*G1Affine{P},
-		[]lineEvaluations{lines},
+		P,
+		lines,
 		residueWitnessInv,
 		false,
 	)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("miller loop: %w", err)
 	}
 
 	// multiply by previous multi-Miller function
@@ -984,7 +1024,7 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P *G1Affine, Q *G2Affine, previou
 
 	t2 = pr.Ext12.Mul(t2, t1)
 
-	return t2
+	return t2, nil
 }
 
 // IsMillerLoopAndFinalExpOne computes the Miller loop between P and Q,
@@ -998,10 +1038,39 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P *G1Affine, Q *G2Affine, previou
 //
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
 func (pr *Pairing) IsMillerLoopAndFinalExpOne(P *G1Affine, Q *G2Affine, previous *GTEl) frontend.Variable {
-	t2 := pr.millerLoopAndFinalExpResult(P, Q, previous)
+	t2, err := pr.millerLoopAndFinalExpResult([]*G1Affine{P}, []*G2Affine{Q}, previous)
+	if err != nil {
+		// err is non-nil only for mismatched P and Q lengths, which cannot happen here
+		panic(err)
+	}
 
 	res := pr.IsEqual(t2, pr.Ext12.One())
 	return res
+}
+
+// AssertMultiMillerLoopAndFinalExpIsOne computes the Miller loops between
+// the pairs (P[i], Q[i]), multiplies their product in 𝔽p¹² by previous and
+// asserts that the result lies in the same equivalence class as the reduced
+// pairing purported to be 1. This check replaces the final exponentiation
+// step in-circuit and follows Section 4 of [On Proving Pairings] paper by
+// A. Novakovic and L. Eagen.
+//
+// This proves only the product ∏ e(Pᵢ,Qᵢ) · previous == 1, not the
+// individual pairings.
+//
+// When Qᵢ.Lines is supplied, the precomputed lines are used directly and are
+// not constrained to correspond to Qᵢ.P; they are trusted input.
+//
+// It returns an error if P and Q are empty or have different lengths.
+//
+// [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
+func (pr *Pairing) AssertMultiMillerLoopAndFinalExpIsOne(P []*G1Affine, Q []*G2Affine, previous *GTEl) error {
+	t2, err := pr.millerLoopAndFinalExpResult(P, Q, previous)
+	if err != nil {
+		return err
+	}
+	pr.AssertIsEqual(t2, pr.Ext12.One())
+	return nil
 }
 
 // AssertMillerLoopAndFinalExpIsOne computes the Miller loop between P and Q,
@@ -1014,6 +1083,10 @@ func (pr *Pairing) IsMillerLoopAndFinalExpOne(P *G1Affine, Q *G2Affine, previous
 //
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
 func (pr *Pairing) AssertMillerLoopAndFinalExpIsOne(P *G1Affine, Q *G2Affine, previous *GTEl) {
-	t2 := pr.millerLoopAndFinalExpResult(P, Q, previous)
+	t2, err := pr.millerLoopAndFinalExpResult([]*G1Affine{P}, []*G2Affine{Q}, previous)
+	if err != nil {
+		// err is non-nil only for mismatched P and Q lengths, which cannot happen here
+		panic(err)
+	}
 	pr.AssertIsEqual(t2, pr.Ext12.One())
 }
