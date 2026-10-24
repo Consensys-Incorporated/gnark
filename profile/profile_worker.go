@@ -77,10 +77,7 @@ func collectSample(pc []uintptr) {
 			break
 		}
 
-		if strings.HasSuffix(frame.Function, ".func1") {
-			// TODO @gbotrel filter anonymous func better
-			//
-			// ivokub: relevant comment - if we have many anonymous functions in package, then the name of the anonymous function has different suffices.
+		if isAnonymousFunc(frame.Function) {
 			continue
 		}
 
@@ -161,7 +158,7 @@ func collectOperationSample(pc []uintptr, count int64, name string) {
 			break
 		}
 
-		if strings.HasSuffix(frame.Function, ".func1") {
+		if isAnonymousFunc(frame.Function) {
 			continue
 		}
 
@@ -199,6 +196,32 @@ func collectOperationSample(pc []uintptr, count int64, name string) {
 
 	for i := 0; i < len(sessions); i++ {
 		sessions[i].pprof.Sample = append(sessions[i].pprof.Sample, samples[i])
+	}
+}
+
+func isAnonymousFunc(name string) bool {
+	const marker = ".func"
+	idx := strings.LastIndex(name, marker)
+	if idx == -1 {
+		return false
+	}
+	name = name[idx+len(marker):]
+
+	for {
+		start := len(name)
+		for start > 0 && name[start-1] >= '0' && name[start-1] <= '9' {
+			start--
+		}
+		if start == len(name) {
+			return false
+		}
+		if start == 0 {
+			return true
+		}
+		if name[start-1] != '.' {
+			return false
+		}
+		name = name[:start-1]
 	}
 }
 
