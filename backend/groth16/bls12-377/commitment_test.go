@@ -6,6 +6,7 @@
 package groth16_test
 
 import (
+	"bytes"
 	"fmt"
 	"math/big"
 	"testing"
@@ -248,4 +249,30 @@ func TestVerifyCommitmentCountInvariant(t *testing.T) {
 			}
 		})
 	}
+}
+
+// reading a key into an object that was already populated must replace its
+// commitment keys instead of appending to them.
+func TestReadFromReusedKeys(t *testing.T) {
+	_, pk, vk := setup(t, &singleSecretCommittedCircuit{})
+
+	var vkBuf, pkBuf, dumpBuf bytes.Buffer
+	_, err := vk.WriteTo(&vkBuf)
+	assert.NoError(t, err)
+	_, err = pk.WriteTo(&pkBuf)
+	assert.NoError(t, err)
+	assert.NoError(t, pk.WriteDump(&dumpBuf))
+
+	var vk2 bls12_377groth16.VerifyingKey
+	var pk2, pk3 bls12_377groth16.ProvingKey
+	for i := 0; i < 2; i++ {
+		_, err = vk2.ReadFrom(bytes.NewReader(vkBuf.Bytes()))
+		assert.NoError(t, err, "vk ReadFrom #%d", i)
+		_, err = pk2.ReadFrom(bytes.NewReader(pkBuf.Bytes()))
+		assert.NoError(t, err, "pk ReadFrom #%d", i)
+		assert.NoError(t, pk3.ReadDump(bytes.NewReader(dumpBuf.Bytes())), "pk ReadDump #%d", i)
+	}
+	assert.Len(t, vk2.CommitmentKeys, 1)
+	assert.Len(t, pk2.CommitmentKeys, 1)
+	assert.Len(t, pk3.CommitmentKeys, 1)
 }

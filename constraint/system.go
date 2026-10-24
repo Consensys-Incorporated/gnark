@@ -19,9 +19,15 @@ type ConstraintSystem = ConstraintSystemGeneric[U64]
 // exported for external use.
 type ConstraintSystemU32 = ConstraintSystemGeneric[U32]
 
+// ConstraintSystemU64W1 is an interface that all constraint systems implement.
+// This is the typed implementation for small fields which do not fit [U32] but
+// still fit a single uint64, such as mamabear. Like [ConstraintSystemU32] it is
+// not supported by pairing based backends.
+type ConstraintSystemU64W1 = ConstraintSystemGeneric[U64W1]
+
 // ConstraintSystemGeneric interface that all constraint systems implement. This is the
 // generic interface, see the aliased specific implementations
-// [ConstraintSystem] and [ConstraintSystemU32].
+// [ConstraintSystem], [ConstraintSystemU32] and [ConstraintSystemU64W1].
 type ConstraintSystemGeneric[E Element] interface {
 	io.WriterTo
 	io.ReaderFrom

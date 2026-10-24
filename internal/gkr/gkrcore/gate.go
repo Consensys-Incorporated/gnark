@@ -242,7 +242,7 @@ func (gc *gateCompiler) remapIndices() {
 // CompileGateFunction converts a gate function into a SerializableGate.
 // This consists of compiling into bytecode as well as computing gate metadata
 // such as degree and solvable var index for the given field.
-func CompileGateFunction(f gkr.GateFunction, nbInputs int, field *big.Int) (SerializableGate, error) {
+func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (SerializableGate, error) {
 	// Create compiling API
 	compiler := gateCompiler{
 		constantIndex: make(map[string]uint16),
@@ -291,7 +291,7 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field *big.Int) (Seri
 	}
 
 	// Compute degree and solvable variable
-	tester := gateTester{mod: field}
+	tester := gateTester{field: field}
 	tester.setGate(bytecode, nbInputs)
 
 	degree := len(tester.fitPoly(bytecode.EstimateDegree(nbInputs))) - 1
@@ -315,75 +315,190 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field *big.Int) (Seri
 	}, nil
 }
 
+// Field describes F_p[X]/(f), with f = Xⁿ + MinPoly[n-1]·Xⁿ⁻¹ + … + MinPoly[0] monic and
+// irreducible over F_p, n = len(MinPoly). Coefficients are in increasing degree: X is [0],
+// X² + 1 is [1, 0].
+type Field struct {
+	Modulus *big.Int
+	MinPoly []*big.Int
+}
+
+// PrimeField describes F_p itself, as F_p[X]/(X).
+func PrimeField(p *big.Int) Field {
+	return Field{Modulus: p, MinPoly: []*big.Int{big.NewInt(0)}}
+}
+
+// degree returns n, the extension degree of the field over F_p.
+func (f Field) degree() int {
+	return len(f.MinPoly)
+}
+
+// gateTester evaluates gate bytecode over a field F_p[X]/(f), to discover a gate's degree and
+// solvable variable. An element is a []*big.Int of length field.degree(), coefficient i the
+// coefficient of Xⁱ, each reduced mod p. For PrimeField, degree() is 1, and every operation below
+// reduces to arithmetic mod p.
 type gateTester struct {
-	mod  *big.Int
-	gate GateBytecode
-	vars []*big.Int
-	nbIn int
+	field Field
+	gate  GateBytecode
+	vars  [][]*big.Int
+	nbIn  int
+
+	invExponent *big.Int // pⁿ - 2, the exponent inverse raises to; computed once, on first use
 }
 
 func (t *gateTester) setGate(g GateBytecode, nbIn int) {
 	t.gate = g
-	t.vars = make([]*big.Int, g.NbConstants()+nbIn+len(g.Instructions))
 	t.nbIn = nbIn
-	copy(t.vars, g.Constants)
+	t.vars = make([][]*big.Int, g.NbConstants()+nbIn+len(g.Instructions))
+	for i, c := range g.Constants {
+		t.vars[i] = t.embed(c)
+	}
 }
 
-func (t *gateTester) isZero(a *big.Int) bool {
-	v := new(big.Int).Mod(a, t.mod)
-	return v.BitLen() == 0
-}
-
-func (t *gateTester) equal(a, b *big.Int) bool {
-	return a.Cmp(b) == 0
-}
-
-func (t *gateTester) add(a, b *big.Int) *big.Int {
-	res := new(big.Int).Add(a, b)
-	return res.Mod(res, t.mod)
-}
-
-func (t *gateTester) sub(a, b *big.Int) *big.Int {
-	res := new(big.Int).Sub(a, b)
-	return res.Mod(res, t.mod)
-}
-
-func (t *gateTester) mul(a, b *big.Int) *big.Int {
-	res := new(big.Int).Mul(a, b)
-	return res.Mod(res, t.mod)
-}
-
-func (t *gateTester) neg(a *big.Int) *big.Int {
-	res := new(big.Int).Neg(a)
-	return res.Mod(res, t.mod)
-}
-
-func (t *gateTester) inverse(a *big.Int) *big.Int {
-	return new(big.Int).ModInverse(a, t.mod)
-}
-
-func (t *gateTester) div(a, b *big.Int) *big.Int {
-	res := new(big.Int).ModInverse(b, t.mod)
-	return res.Mul(a, res).Mod(res, t.mod)
-}
-
-func (t *gateTester) randomElement() *big.Int {
-	res, err := rand.Int(rand.Reader, t.mod)
-	if err != nil {
-		panic(err)
+// embed returns c as the field element [c, 0, …, 0].
+func (t *gateTester) embed(c *big.Int) []*big.Int {
+	res := make([]*big.Int, t.field.degree())
+	res[0] = new(big.Int).Mod(c, t.field.Modulus)
+	for i := 1; i < len(res); i++ {
+		res[i] = new(big.Int)
 	}
 	return res
 }
 
-func (t *gateTester) randomElements(n int) []*big.Int {
-	res := make([]*big.Int, n)
+func (t *gateTester) zero() []*big.Int {
+	return t.embed(new(big.Int))
+}
+
+func (t *gateTester) one() []*big.Int {
+	return t.embed(big.NewInt(1))
+}
+
+func (t *gateTester) isZero(a []*big.Int) bool {
+	for _, ai := range a {
+		v := new(big.Int).Mod(ai, t.field.Modulus)
+		if v.BitLen() != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *gateTester) equal(a, b []*big.Int) bool {
+	for i := range a {
+		if a[i].Cmp(b[i]) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (t *gateTester) add(a, b []*big.Int) []*big.Int {
+	res := make([]*big.Int, len(a))
+	for i := range res {
+		res[i] = new(big.Int).Add(a[i], b[i])
+		res[i].Mod(res[i], t.field.Modulus)
+	}
+	return res
+}
+
+func (t *gateTester) sub(a, b []*big.Int) []*big.Int {
+	res := make([]*big.Int, len(a))
+	for i := range res {
+		res[i] = new(big.Int).Sub(a[i], b[i])
+		res[i].Mod(res[i], t.field.Modulus)
+	}
+	return res
+}
+
+func (t *gateTester) neg(a []*big.Int) []*big.Int {
+	res := make([]*big.Int, len(a))
+	for i := range res {
+		res[i] = new(big.Int).Neg(a[i])
+		res[i].Mod(res[i], t.field.Modulus)
+	}
+	return res
+}
+
+// mul multiplies a and b as polynomials, then reduces the product mod f, then mod p.
+func (t *gateTester) mul(a, b []*big.Int) []*big.Int {
+	n := t.field.degree()
+	prod := make([]*big.Int, 2*n-1)
+	for i := range prod {
+		prod[i] = new(big.Int)
+	}
+
+	var term big.Int // scratch for each product term, to avoid allocating one per multiplication
+	for i, ai := range a {
+		for j, bj := range b {
+			term.Mul(ai, bj)
+			prod[i+j].Add(prod[i+j], &term)
+		}
+	}
+
+	// Xⁿ ≡ -(MinPoly[n-1]Xⁿ⁻¹ + … + MinPoly[0]) (mod f); fold the coefficients at or above Xⁿ
+	// down, highest first, exactly as long division would.
+	for k := len(prod) - 1; k >= n; k-- {
+		coeff := prod[k]
+		for i := range n {
+			term.Mul(coeff, t.field.MinPoly[i])
+			prod[k-n+i].Sub(prod[k-n+i], &term)
+		}
+	}
+
+	res := prod[:n]
+	for i := range res {
+		res[i].Mod(res[i], t.field.Modulus)
+	}
+	return res
+}
+
+// pow raises a to the eᵗʰ power by square-and-multiply, e ≥ 0.
+func (t *gateTester) pow(a []*big.Int, e *big.Int) []*big.Int {
+	res := t.one()
+	for i := e.BitLen() - 1; i >= 0; i-- {
+		res = t.mul(res, res)
+		if e.Bit(i) == 1 {
+			res = t.mul(res, a)
+		}
+	}
+	return res
+}
+
+// inverse returns a⁻¹ = a^(pⁿ⁻²), which requires f irreducible.
+func (t *gateTester) inverse(a []*big.Int) []*big.Int {
+	if t.invExponent == nil {
+		n := big.NewInt(int64(t.field.degree()))
+		t.invExponent = new(big.Int).Exp(t.field.Modulus, n, nil)
+		t.invExponent.Sub(t.invExponent, big.NewInt(2))
+	}
+	return t.pow(a, t.invExponent)
+}
+
+func (t *gateTester) div(a, b []*big.Int) []*big.Int {
+	return t.mul(a, t.inverse(b))
+}
+
+func (t *gateTester) randomElement() []*big.Int {
+	res := make([]*big.Int, t.field.degree())
+	for i := range res {
+		v, err := rand.Int(rand.Reader, t.field.Modulus)
+		if err != nil {
+			panic(err)
+		}
+		res[i] = v
+	}
+	return res
+}
+
+func (t *gateTester) randomElements(n int) [][]*big.Int {
+	res := make([][]*big.Int, n)
 	for i := range res {
 		res[i] = t.randomElement()
 	}
 	return res
 }
 
-func (t *gateTester) evalPoly(p []*big.Int, x *big.Int) *big.Int {
+func (t *gateTester) evalPoly(p [][]*big.Int, x []*big.Int) []*big.Int {
 	res := p[len(p)-1]
 	for i := len(p) - 2; i >= 0; i-- {
 		res = t.mul(res, x)
@@ -393,7 +508,7 @@ func (t *gateTester) evalPoly(p []*big.Int, x *big.Int) *big.Int {
 }
 
 // evaluate executes the gate bytecode with the given inputs.
-func (t *gateTester) evaluate(inputs ...*big.Int) *big.Int {
+func (t *gateTester) evaluate(inputs ...[]*big.Int) []*big.Int {
 	frameSize := t.gate.NbConstants()
 
 	// Copy inputs into frame
@@ -403,44 +518,40 @@ func (t *gateTester) evaluate(inputs ...*big.Int) *big.Int {
 
 	// Execute instructions
 	for _, inst := range t.gate.Instructions {
-		dst := t.vars[frameSize]
-		if dst == nil {
-			dst = new(big.Int)
-			t.vars[frameSize] = dst
-		}
+		var dst []*big.Int
 		switch inst.Op {
 		case OpAdd:
-			dst.Set(t.vars[inst.Inputs[0]])
+			dst = t.vars[inst.Inputs[0]]
 			for _, idx := range inst.Inputs[1:] {
-				dst.Add(dst, t.vars[idx])
+				dst = t.add(dst, t.vars[idx])
 			}
 		case OpSub:
-			dst.Set(t.vars[inst.Inputs[0]])
+			dst = t.vars[inst.Inputs[0]]
 			for _, idx := range inst.Inputs[1:] {
-				dst.Sub(dst, t.vars[idx])
+				dst = t.sub(dst, t.vars[idx])
 			}
 		case OpMul:
-			dst.Set(t.vars[inst.Inputs[0]])
+			dst = t.vars[inst.Inputs[0]]
 			for _, idx := range inst.Inputs[1:] {
-				dst.Mul(dst, t.vars[idx])
+				dst = t.mul(dst, t.vars[idx])
 			}
 		case OpNeg:
-			dst.Neg(t.vars[inst.Inputs[0]])
+			dst = t.neg(t.vars[inst.Inputs[0]])
 		case OpMulAcc: // a + b*c
-			dst.Mul(t.vars[inst.Inputs[1]], t.vars[inst.Inputs[2]])
-			dst.Add(dst, t.vars[inst.Inputs[0]])
+			dst = t.mul(t.vars[inst.Inputs[1]], t.vars[inst.Inputs[2]])
+			dst = t.add(dst, t.vars[inst.Inputs[0]])
 		case OpSumExp17: // (a + b + c)^17
-			dst.Add(t.vars[inst.Inputs[0]], t.vars[inst.Inputs[1]])
-			dst.Add(dst, t.vars[inst.Inputs[2]])
-			dst.Exp(dst, big.NewInt(17), t.mod)
+			dst = t.add(t.vars[inst.Inputs[0]], t.vars[inst.Inputs[1]])
+			dst = t.add(dst, t.vars[inst.Inputs[2]])
+			dst = t.pow(dst, big.NewInt(17))
 		default:
 			panic("unknown operation")
 		}
-		dst.Mod(dst, t.mod)
+		t.vars[frameSize] = dst
 		frameSize++
 	}
 
-	return new(big.Int).Set(t.vars[frameSize-1])
+	return t.vars[frameSize-1]
 }
 
 // isAdditive returns whether xᵢ occurs only in a monomial of total degree 1
@@ -451,7 +562,7 @@ func (t *gateTester) isAdditive(i int) bool {
 	in[i] = x
 	y1 := t.evaluate(in...)
 
-	zero := new(big.Int)
+	zero := t.zero()
 	in[i] = zero
 	y0 := t.evaluate(in...)
 
@@ -483,14 +594,14 @@ func (t *gateTester) isAdditive(i int) bool {
 
 // fitPoly tries to fit a polynomial of degree no more than degreeBound to the gate.
 // It returns the polynomial if successful, nil otherwise.
-func (t *gateTester) fitPoly(maxDegree int) []*big.Int {
+func (t *gateTester) fitPoly(maxDegree int) [][]*big.Int {
 
 	// turn f univariate by defining p(x) as f(x, rx, ..., sx)
 	// where r, s, ... are random constants
-	fIn := make([]*big.Int, t.nbIn)
+	fIn := make([][]*big.Int, t.nbIn)
 	consts := t.randomElements(t.nbIn - 1)
 
-	p := make([]*big.Int, maxDegree+1)
+	p := make([][]*big.Int, maxDegree+1)
 
 	x := t.randomElements(maxDegree + 1)
 	for i := range x {
@@ -528,17 +639,17 @@ func (t *gateTester) fitPoly(maxDegree int) []*big.Int {
 
 // interpolate fits a polynomial of degree len(X) - 1 = len(Y) - 1 to the points (X[i], Y[i])
 // Note that the runtime is O(len(X)³)
-func (t *gateTester) interpolate(X, Y []*big.Int) ([]*big.Int, error) {
+func (t *gateTester) interpolate(X, Y [][]*big.Int) ([][]*big.Int, error) {
 	if len(X) != len(Y) {
 		return nil, errors.New("same length expected for X and Y")
 	}
 
-	one := big.NewInt(1)
+	one := t.one()
 
 	// solve the system of equations by Gaussian elimination
-	augmentedRows := make([][]*big.Int, len(X)) // the last column is the Y values
+	augmentedRows := make([][][]*big.Int, len(X)) // the last column is the Y values
 	for i := range augmentedRows {
-		augmentedRows[i] = make([]*big.Int, len(X)+1)
+		augmentedRows[i] = make([][]*big.Int, len(X)+1)
 		augmentedRows[i][0] = one
 		augmentedRows[i][1] = X[i]
 		for j := 2; j < len(augmentedRows[i])-1; j++ {
@@ -550,7 +661,7 @@ func (t *gateTester) interpolate(X, Y []*big.Int) ([]*big.Int, error) {
 	// make the upper triangle
 	for i := range len(augmentedRows) - 1 {
 		// use row i to eliminate the ith element in all rows below
-		var negInv *big.Int
+		var negInv []*big.Int
 		if t.isZero(augmentedRows[i][i]) {
 			return nil, errors.New("singular matrix")
 		}
@@ -567,7 +678,7 @@ func (t *gateTester) interpolate(X, Y []*big.Int) ([]*big.Int, error) {
 	}
 
 	// back substitution
-	res := make([]*big.Int, len(X))
+	res := make([][]*big.Int, len(X))
 	for i := len(augmentedRows) - 1; i >= 0; i-- {
 		res[i] = augmentedRows[i][len(augmentedRows[i])-1]
 		for j := i + 1; j < len(augmentedRows[i])-1; j++ {

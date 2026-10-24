@@ -354,4 +354,4 @@ func TestConstHash(t *testing.T) {
 	)
 }
 
-var cache = gkrtesting.NewCache(ecc.BN254.ScalarField())
+var cache = gkrtesting.NewCache(gkrcore.PrimeField(ecc.BN254.ScalarField()))

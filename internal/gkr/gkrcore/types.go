@@ -2,7 +2,6 @@ package gkrcore
 
 import (
 	"errors"
-	"math/big"
 	"slices"
 
 	"github.com/consensys/gnark/constraint"
@@ -196,7 +195,7 @@ type Blueprints struct {
 
 // Compile compiles a raw circuit into both a gadget circuit and a serializable circuit.
 // It computes all wire and gate metadata (Degree, SolvableVar).
-func (c RawCircuit) Compile(mod *big.Int) (GadgetCircuit, SerializableCircuit, error) {
+func (c RawCircuit) Compile(field Field) (GadgetCircuit, SerializableCircuit, error) {
 	gadget := make(GadgetCircuit, len(c))
 	serializable := make(SerializableCircuit, len(c))
 
@@ -215,7 +214,7 @@ func (c RawCircuit) Compile(mod *big.Int) (GadgetCircuit, SerializableCircuit, e
 		}
 
 		nbIn := len(c[i].Inputs)
-		compiledGate, err := CompileGateFunction(c[i].Gate, nbIn, mod)
+		compiledGate, err := CompileGateFunction(c[i].Gate, nbIn, field)
 		if err != nil {
 			return nil, nil, err
 		}

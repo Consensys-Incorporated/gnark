@@ -162,8 +162,14 @@ func Build(api frontend.API, table Table, queries Table) error {
 				}
 			} else {
 				leftQuotients = make([]frontend.Variable, len(table))
+				// fold the row's random linear combination into the denominator
+				// subtraction instead of materializing the intermediate accumulator
+				terms := make([]frontend.Variable, nbRow)
 				for i := range table {
-					leftQuotients[i] = api.DivUnchecked(exps[i], api.Sub(challenge, randLinearCombination(api, rowCoeffs, table[i])))
+					for j := range table[i] {
+						terms[j] = api.Mul(rowCoeffs[j], table[i][j])
+					}
+					leftQuotients[i] = api.DivUnchecked(exps[i], api.Sub(challenge, terms[0], terms[1:]...))
 				}
 			}
 

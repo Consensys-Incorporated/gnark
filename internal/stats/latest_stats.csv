@@ -47,6 +47,14 @@ hash/mimc,bn254,plonk,441,441
 hash/mimc,bls12_377,plonk,373,373
 hash/mimc,bls12_381,plonk,445,445
 hash/mimc,bw6_761,plonk,653,653
+lookup/logderivlookup/constant_table_16,bn254,groth16,352,370
+lookup/logderivlookup/constant_table_16,bls12_377,groth16,332,350
+lookup/logderivlookup/constant_table_16,bls12_381,groth16,355,373
+lookup/logderivlookup/constant_table_16,bw6_761,groth16,511,529
+lookup/logderivlookup/constant_table_16,bn254,plonk,519,516
+lookup/logderivlookup/constant_table_16,bls12_377,plonk,451,448
+lookup/logderivlookup/constant_table_16,bls12_381,plonk,523,520
+lookup/logderivlookup/constant_table_16,bw6_761,plonk,731,728
 maptocurve_increment/x_bn254,bn254,groth16,1168,2100
 maptocurve_increment/x_bn254,bn254,plonk,4526,4441
 maptocurve_increment/x_p256,bn254,groth16,1153,2079

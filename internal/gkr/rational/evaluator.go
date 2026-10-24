@@ -10,8 +10,8 @@ import (
 	"sync"
 
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
-	"github.com/consensys/gnark/internal/small_rational"
-	"github.com/consensys/gnark/internal/small_rational/polynomial"
+	"github.com/consensys/gnark/internal/rational"
+	"github.com/consensys/gnark/internal/rational/polynomial"
 )
 
 // GateEvaluator provides a high-level API for evaluating compiled gates efficiently.
@@ -19,7 +19,7 @@ import (
 // evaluate the same gate multiple times with different inputs.
 type GateEvaluator struct {
 	gate gkrcore.GateBytecode
-	vars []small_rational.SmallRational
+	vars []rational.Element
 	nbIn int              // number of inputs expected
 	pool *polynomial.Pool // pool vars was allocated from, if any
 }
@@ -35,7 +35,7 @@ func NewGateEvaluator(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polyn
 		e.pool = elementPool[0]
 		e.vars = e.pool.Make(gate.EvaluatorSize(nbIn))
 	} else {
-		e.vars = make([]small_rational.SmallRational, gate.EvaluatorSize(nbIn))
+		e.vars = make([]rational.Element, gate.EvaluatorSize(nbIn))
 	}
 	e.vars = e.vars[:gate.NbConstants()]
 	for i, constVal := range gate.Constants {
@@ -54,7 +54,7 @@ func (e *GateEvaluator) Dump() {
 
 // PushInput adds an input to the evaluator's input buffer.
 // Inputs must be added in order, and the number of inputs must match the gate's NbInputs.
-func (e *GateEvaluator) PushInput(input small_rational.SmallRational) {
+func (e *GateEvaluator) PushInput(input rational.Element) {
 	e.vars = append(e.vars, input)
 }
 
@@ -62,7 +62,7 @@ func (e *GateEvaluator) PushInput(input small_rational.SmallRational) {
 // The stack is automatically reset after evaluation,
 // making the evaluator ready for the next evaluation.
 // NB! The result is short-lived. It will be overwritten the next time Evaluate is called.
-func (e *GateEvaluator) Evaluate(top ...small_rational.SmallRational) *small_rational.SmallRational {
+func (e *GateEvaluator) Evaluate(top ...rational.Element) *rational.Element {
 	e.vars = append(e.vars, top...)
 
 	if len(e.vars) != e.nbIn+e.gate.NbConstants() {
@@ -97,12 +97,12 @@ func (e *GateEvaluator) Evaluate(top ...small_rational.SmallRational) *small_rat
 		case gkrcore.OpNeg:
 			dst.Neg(&e.vars[inst.Inputs[0]])
 		case gkrcore.OpMulAcc:
-			var prod small_rational.SmallRational
+			var prod rational.Element
 			prod.Mul(&e.vars[inst.Inputs[1]], &e.vars[inst.Inputs[2]])
 			dst.Add(&e.vars[inst.Inputs[0]], &prod)
 		case gkrcore.OpSumExp17:
 			// result = (x[0] + x[1] + x[2])^17
-			var sum small_rational.SmallRational
+			var sum rational.Element
 			sum.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			sum.Add(&sum, &e.vars[inst.Inputs[2]])
 			dst.Mul(&sum, &sum) // x²

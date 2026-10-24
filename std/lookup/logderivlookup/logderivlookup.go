@@ -70,6 +70,14 @@ func New(api frontend.API) Table {
 		t.bID = api.Compiler().AddBlueprint(&t.blueprint)
 		return t
 	}
+	if constraint.FitsElement[constraint.U64W1](api.Compiler().Field()) {
+		t := &table[constraint.U64W1]{api: api}
+		api.Compiler().Defer(t.commit)
+
+		// each table has a unique blueprint
+		t.bID = api.Compiler().AddBlueprint(&t.blueprint)
+		return t
+	}
 	if constraint.FitsElement[constraint.U64](api.Compiler().Field()) {
 		t := &table[constraint.U64]{api: api}
 		api.Compiler().Defer(t.commit)
@@ -181,5 +189,9 @@ func (t *table[E]) resultsTable() [][]frontend.Variable {
 }
 
 func (t *table[E]) commit(api frontend.API) error {
+	if len(t.results) == 0 {
+		// nothing was looked up, so there is nothing to prove
+		return nil
+	}
 	return logderivarg.Build(api, t.entryTable(), t.resultsTable())
 }

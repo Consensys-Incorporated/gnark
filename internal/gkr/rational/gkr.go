@@ -14,8 +14,8 @@ import (
 	"github.com/consensys/gnark-crypto/utils"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
-	"github.com/consensys/gnark/internal/small_rational"
-	"github.com/consensys/gnark/internal/small_rational/polynomial"
+	"github.com/consensys/gnark/internal/rational"
+	"github.com/consensys/gnark/internal/rational/polynomial"
 )
 
 // Type aliases for bytecode-based GKR types
@@ -33,7 +33,7 @@ type Proof []sumcheckProof // for each layer, for each wire, a sumcheck (for eac
 
 // EvaluationClaim is an assertion that a wire's multilinear extension evaluates to Evaluation at
 // EvaluationPoint.
-type EvaluationClaim = gkrcore.EvaluationClaim[small_rational.SmallRational]
+type EvaluationClaim = gkrcore.EvaluationClaim[rational.Element]
 
 // Claims are the evaluation claims on circuit inputs and outputs that Prove and Verify return, by
 // wire. The consumption order within a wire's slice is up to the caller.
@@ -56,14 +56,14 @@ type resources struct {
 	// outgoingEvalPoints[i][k] is the k-th outgoing evaluation point (evaluation challenge) produced at schedule level i.
 	// outgoingEvalPoints[len(schedule)][0] holds the initial challenge (firstChallenge / rho).
 	// SumcheckLevels produce one point (k=0). SkipLevels pass on all their evaluation points.
-	outgoingEvalPoints [][][]small_rational.SmallRational
+	outgoingEvalPoints [][][]rational.Element
 	nbVars             int
 	assignment         WireAssignment
 	memPool            polynomial.Pool
 	workers            *utils.WorkerPool
 	circuit            Circuit
 	schedule           constraint.GkrProvingSchedule
-	transcript         transcript
+	transcript         *transcript
 	claimValueIndices  [][]int // claimValueIndices[wI][claimI]: index of w's claimI-th claimed value in its source level's finalEvalProof
 	claims             Claims
 	consolidated       []bool // the wires of schedule[0], indexed by wire
@@ -79,11 +79,11 @@ func identityGate() gkrcore.SerializableGate {
 // creates no pools; Prove sets those up separately afterward, since Verify needs neither.
 func newResources(c Circuit, schedule constraint.GkrProvingSchedule, nbVars int, hasher hash.Hash) resources {
 	return resources{
-		outgoingEvalPoints: make([][][]small_rational.SmallRational, len(schedule)+1),
+		outgoingEvalPoints: make([][][]rational.Element, len(schedule)+1),
 		nbVars:             nbVars,
 		circuit:            c,
 		schedule:           schedule,
-		transcript:         transcript{h: hasher},
+		transcript:         gkrcore.NewHashTranscript[rational.Element](hasher),
 		claimValueIndices:  c.ClaimValueIndices(schedule),
 		claims:             make(Claims),
 		consolidated:       c.LevelWires(schedule[0]),
@@ -97,7 +97,7 @@ func (r *resources) proveSkipLevel(levelI int) sumcheckProof {
 	outPoints := gkrcore.CollectOutgoingEvalPoints(level, levelI, r.outgoingEvalPoints)
 
 	uniqueInputs := r.circuit.UniqueGateInputs(level)
-	evals := make([]small_rational.SmallRational, len(uniqueInputs)*len(outPoints))
+	evals := make([]rational.Element, len(uniqueInputs)*len(outPoints))
 	for uiI, inW := range uniqueInputs {
 		for k, point := range outPoints {
 			evals[level.FinalEvalProofIndex(uiI, k)] = r.assignment[inW].Evaluate(point, &r.memPool)
@@ -159,7 +159,7 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 		panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
 	}
 	bind, include := r.levelPredicates(levelI)
-	constraint.BindGkrFinalEvalProof(&r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	constraint.BindGkrFinalEvalProof(r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
 	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], entry.finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return entry
 }
@@ -183,7 +183,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	for wireI := range c {
 		if len(assignment[wireI]) == 0 {
 			const minBlockSize = 64
-			assignment[wireI] = make([]small_rational.SmallRational, nbInstances)
+			assignment[wireI] = make([]rational.Element, nbInstances)
 			r.workers.Submit(nbInstances, func(start, end int) {
 				gateEval := NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
 				for instanceI := start; instanceI < end; instanceI++ {
@@ -200,19 +200,19 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 	proof := make(Proof, len(schedule)+1)
 
 	// Derive the initial challenge point
-	firstChallenge := make([]small_rational.SmallRational, r.nbVars)
+	firstChallenge := make([]rational.Element, r.nbVars)
 	for j := range r.nbVars {
-		firstChallenge[j] = r.transcript.getChallenge()
+		firstChallenge[j] = r.transcript.Challenge()
 	}
-	r.outgoingEvalPoints[len(schedule)] = [][]small_rational.SmallRational{firstChallenge}
+	r.outgoingEvalPoints[len(schedule)] = [][]rational.Element{firstChallenge}
 
 	outputs := c.Outputs()
-	outputEvals := make([]small_rational.SmallRational, len(outputs))
+	outputEvals := make([]rational.Element, len(outputs))
 	for i, w := range outputs {
 		outputEvals[i] = r.assignment[w].Evaluate(firstChallenge, &r.memPool)
 	}
 	proof[len(schedule)] = sumcheckProof{finalEvalProof: outputEvals}
-	var boundOutputEvals []small_rational.SmallRational
+	var boundOutputEvals []rational.Element
 	for i, w := range outputs {
 		if r.consolidated[w] {
 			boundOutputEvals = append(boundOutputEvals, outputEvals[i])
@@ -247,7 +247,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 		return fmt.Errorf("level %d: %v", levelI, err)
 	}
 	bind, include := r.levelPredicates(levelI)
-	constraint.BindGkrFinalEvalProof(&r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	constraint.BindGkrFinalEvalProof(r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
 	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return nil
 }
@@ -292,12 +292,12 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 	}
 
 	// Derive the initial challenge point
-	firstChallenge := make([]small_rational.SmallRational, r.nbVars)
+	firstChallenge := make([]rational.Element, r.nbVars)
 	for j := range r.nbVars {
-		firstChallenge[j] = r.transcript.getChallenge()
+		firstChallenge[j] = r.transcript.Challenge()
 	}
-	r.outgoingEvalPoints[len(schedule)] = [][]small_rational.SmallRational{firstChallenge}
-	var boundOutputEvals []small_rational.SmallRational
+	r.outgoingEvalPoints[len(schedule)] = [][]rational.Element{firstChallenge}
+	var boundOutputEvals []rational.Element
 	for i, w := range c.Outputs() {
 		if r.consolidated[w] {
 			boundOutputEvals = append(boundOutputEvals, outputLevel.finalEvalProof[i])
@@ -326,7 +326,7 @@ func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 
 	for i := range circuit {
 		if len(a[i]) != nbInstances {
-			a[i] = make([]small_rational.SmallRational, nbInstances)
+			a[i] = make([]rational.Element, nbInstances)
 		}
 		if !circuit[i].IsInput() {
 			evaluators[i] = NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
@@ -365,7 +365,7 @@ func (a WireAssignment) NumVars() int {
 	panic("empty assignment")
 }
 
-func iterateElems(elems []small_rational.SmallRational, counter *int, yield func(int, *small_rational.SmallRational) bool) bool {
+func iterateElems(elems []rational.Element, counter *int, yield func(int, *rational.Element) bool) bool {
 	for i := range elems {
 		if !yield(*counter, &elems[i]) {
 			return false
@@ -375,8 +375,8 @@ func iterateElems(elems []small_rational.SmallRational, counter *int, yield func
 	return true
 }
 
-func (p Proof) Flatten() iter.Seq2[int, *small_rational.SmallRational] {
-	return func(yield func(int, *small_rational.SmallRational) bool) {
+func (p Proof) Flatten() iter.Seq2[int, *rational.Element] {
+	return func(yield func(int, *rational.Element) bool) {
 		var counter int
 		for i := range p {
 			for _, poly := range p[i].partialSumPolys {

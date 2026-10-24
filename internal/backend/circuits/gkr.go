@@ -50,5 +50,5 @@ func init() {
 	good := &gkrCubeCircuit{X: []frontend.Variable{3, 5}, Square: []frontend.Variable{9, 25}, Cube: []frontend.Variable{27, 125}}
 	bad := &gkrCubeCircuit{X: []frontend.Variable{3, 5}, Square: []frontend.Variable{9, 25}, Cube: []frontend.Variable{27, 126}}
 
-	addEntry("gkr_cube", circuit, good, bad, gnark.Curves(), withU64Only())
+	addEntry("gkr_cube", circuit, good, bad, gnark.Curves(), withCurveOnly())
 }
