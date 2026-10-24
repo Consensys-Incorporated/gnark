@@ -10,7 +10,11 @@ import (
 	"{{ .FieldPackagePath }}/polynomial"
 	"github.com/consensys/gnark-crypto/hash"
 	"github.com/consensys/gnark/constraint"
+	{{- if .EvaluatorQualifier }}
+	evaluator "github.com/consensys/gnark/internal/gkr/{{.GkrPackageName}}"
+	{{- end }}
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
+	prover "github.com/consensys/gnark/gkr/{{.GkrPackageName}}"
 )
 
 func init() {
@@ -20,7 +24,7 @@ func init() {
 
 // circuitEvaluator evaluates all gates in a circuit for one instance
 type circuitEvaluator struct {
-	evaluators []gateEvaluator // one evaluator per wire
+	evaluators []{{.EvaluatorQualifier}}GateEvaluator // one evaluator per wire
 }
 
 // BlueprintSolve is a {{.FieldID}}-specific blueprint for solving GKR circuit instances.
@@ -30,7 +34,7 @@ type BlueprintSolve struct {
 	NbInstances uint32
 
 	// Not serialized - recreated lazily at solve time
-	assignments    WireAssignment   `cbor:"-"`
+	assignments    prover.WireAssignment `cbor:"-"`
 	evaluatorPool  sync.Pool        `cbor:"-"` // pool of circuitEvaluator, lazy-initialized
 	outputWires    []int            `cbor:"-"`
 	maxOutputLevel constraint.Level `cbor:"-"` // highest output level across all solve instances
@@ -59,12 +63,12 @@ func (b *BlueprintSolve) Equal(other constraint.BlueprintComparable) bool {
 func (b *BlueprintSolve) Reset() {
 	b.evaluatorPool.New = func() interface{} {
 		ce := &circuitEvaluator{
-			evaluators: make([]gateEvaluator, len(b.Circuit)),
+			evaluators: make([]{{.EvaluatorQualifier}}GateEvaluator, len(b.Circuit)),
 		}
 		for wI := range b.Circuit {
 			w := &b.Circuit[wI]
 			if !w.IsInput() {
-				ce.evaluators[wI] = newGateEvaluator(w.Gate.Evaluate, len(w.Inputs))
+				ce.evaluators[wI] = {{.EvaluatorQualifier}}NewGateEvaluator(w.Gate.Evaluate, len(w.Inputs))
 			}
 		}
 		return ce
@@ -72,7 +76,7 @@ func (b *BlueprintSolve) Reset() {
 
 	b.outputWires = b.Circuit.Outputs()
 
-	assignments := make(WireAssignment, len(b.Circuit))
+	assignments := make(prover.WireAssignment, len(b.Circuit))
 	nbPaddedInstances := ecc.NextPowerOfTwo(uint64(b.NbInstances))
 	for i := range assignments {
 		assignments[i] = make(polynomial.MultiLin, nbPaddedInstances)
@@ -117,11 +121,11 @@ func (b *BlueprintSolve) Solve(s constraint.Solver[constraint.U64], inst constra
 
 			// Push gate inputs
 			for _, inWI := range w.Inputs {
-				evaluator.pushInput(b.assignments[inWI][instanceI])
+				evaluator.PushInput(b.assignments[inWI][instanceI])
 			}
 
 			// Evaluate the gate
-			b.assignments[wI][instanceI].Set(evaluator.evaluate())
+			b.assignments[wI][instanceI].Set(evaluator.Evaluate())
 		}
 	}
 
@@ -267,12 +271,12 @@ func (b *BlueprintProve) Solve(s constraint.Solver[constraint.U64], inst constra
 	}
 
 	// Call the {{.FieldID}}-specific Prove function (assignments already WireAssignment type)
-	proof, err := Prove(solveBlueprint.Circuit, b.Schedule, assignments, hsh)
+	proof, _, err := prover.Prove(solveBlueprint.Circuit, b.Schedule, assignments, hsh)
 	if err != nil {
 		return fmt.Errorf("{{.FieldID}} prove failed: %w", err)
 	}
 
-	for i, elem := range proof.flatten() {
+	for i, elem := range proof.Flatten() {
 		var val constraint.U64
 		copy(val[:], (*elem)[:])
 		s.SetValue(uint32(i+int(inst.WireOffset)), val)

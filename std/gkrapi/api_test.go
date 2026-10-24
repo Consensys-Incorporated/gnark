@@ -18,7 +18,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
-	"github.com/consensys/gnark/std/gkrapi/gkr"
+	"github.com/consensys/gnark/gkr"
 	stdHash "github.com/consensys/gnark/std/hash"
 	"github.com/consensys/gnark/test"
 	"github.com/stretchr/testify/require"

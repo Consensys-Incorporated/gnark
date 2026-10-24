@@ -13,7 +13,7 @@ import (
 
 	{{- if not .NoGKR }}
 	// imported to register GKR blueprint types for CBOR serialization
-	_ "github.com/consensys/gnark/internal/gkr/{{ toLower .Curve }}"
+	_ "github.com/consensys/gnark/internal/gkr/{{ toLower .Curve }}/blueprints"
 	{{- end }}
 )
 

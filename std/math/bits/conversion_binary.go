@@ -82,6 +82,17 @@ func toBinary(api frontend.API, v frontend.Variable, opts ...BaseConversionOptio
 			panic(err)
 		}
 	}
+	if cfg.upperBound != nil {
+		if cfg.omitModulusCheck {
+			panic("WithUpperBound and OmitModulusCheck are contradictory: one asks for a bound check, the other removes it")
+		}
+		// a bound at or above the modulus would readmit the multiple-decomposition
+		// case the check exists to prevent, so it is rejected rather than silently
+		// weakening the constraint.
+		if cfg.upperBound.Cmp(new(big.Int).Sub(api.Compiler().Field(), big.NewInt(1))) > 0 {
+			panic(fmt.Sprintf("WithUpperBound: bound has %d bits and exceeds the native modulus minus one", cfg.upperBound.BitLen()))
+		}
+	}
 	// handle the case when the input is constant separately to avoid creating any constraints
 	if constV, ok := api.Compiler().ConstantValue(v); ok {
 		// first we ensure that the constant value is mod reduced
@@ -94,6 +105,11 @@ func toBinary(api frontend.API, v frontend.Variable, opts ...BaseConversionOptio
 		if cfg.NbDigits > 0 && cfg.NbDigits < constV.BitLen() {
 			panic(fmt.Sprintf("constant input to ToBinary has more bits than requested by WithNbDigits option. Has %d bits, requested %d bits", constV.BitLen(), cfg.NbDigits))
 		}
+		// for a variable input an out-of-range value yields an unsatisfiable
+		// constraint; for a constant we can say so at compile time instead.
+		if cfg.upperBound != nil && constV.Cmp(cfg.upperBound) > 0 {
+			panic(fmt.Sprintf("constant input to ToBinary exceeds the bound set by WithUpperBound option. Value %s, bound %s", constV.String(), cfg.upperBound.String()))
+		}
 		res := make([]frontend.Variable, cfg.NbDigits)
 		for i := range cfg.NbDigits {
 			res[i] = constV.Bit(i)
@@ -104,7 +120,10 @@ func toBinary(api frontend.API, v frontend.Variable, opts ...BaseConversionOptio
 	// by default, we also check that the value to be decomposed is less than the
 	// modulus. However, we can omit the check when the number of bits we want
 	// to decompose to is less than the modulus, or it was strictly requested.
-	omitReducednessCheck := cfg.omitModulusCheck || cfg.NbDigits < api.Compiler().FieldBitLen()
+	// an explicitly requested bound is always enforced: the caller is asking for
+	// something the digit count alone does not imply.
+	omitReducednessCheck := cfg.upperBound == nil &&
+		(cfg.omitModulusCheck || cfg.NbDigits < api.Compiler().FieldBitLen())
 
 	// when cfg.NbDigits == 1, v itself has to be a binary digit. This if-clause
 	// saves one constraint.
@@ -141,7 +160,10 @@ func toBinary(api frontend.API, v frontend.Variable, opts ...BaseConversionOptio
 	api.AssertIsEqual(Σbi, v)
 	if !omitReducednessCheck {
 		if cmper, ok := api.Compiler().(bitsComparatorConstant); ok {
-			bound := new(big.Int).Sub(api.Compiler().Field(), big.NewInt(1))
+			bound := cfg.upperBound
+			if bound == nil {
+				bound = new(big.Int).Sub(api.Compiler().Field(), big.NewInt(1))
+			}
 			cmper.MustBeLessOrEqCst(bits, bound, v)
 		} else {
 			panic("builder does not expose comparison to constant")

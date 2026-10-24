@@ -327,13 +327,21 @@ func bytesArg(args []js.Value, index int) ([]byte, error) {
 	if len(args) <= index {
 		return nil, fmt.Errorf("missing bytes argument")
 	}
-	n := args[index].Get("byteLength")
+	v := args[index]
+	if v.Type() != js.TypeObject || !v.InstanceOf(js.Global().Get("Uint8Array")) {
+		return nil, fmt.Errorf("expected Uint8Array")
+	}
+	n := v.Get("byteLength")
 	if n.Type() != js.TypeNumber {
 		return nil, fmt.Errorf("expected Uint8Array")
 	}
-	out := make([]byte, n.Int())
+	size := n.Int()
+	if size < 0 {
+		return nil, fmt.Errorf("expected Uint8Array")
+	}
+	out := make([]byte, size)
 	if len(out) > 0 {
-		js.CopyBytesToGo(out, args[index])
+		js.CopyBytesToGo(out, v)
 	}
 	return out, nil
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/field/babybear"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/internal/smallfields/tinyfield"
 )
 
@@ -30,6 +31,7 @@ func IsSmallField(field *big.Int) bool {
 // Supported returns the list of supported small fields. Currently we support:
 // - babybear
 // - koalabear
+// - mamabear
 // - tinyfield -- experimental very small field for fuzzing purposes
 // The result is cached for performance.
 func Supported() []*big.Int {
@@ -37,6 +39,7 @@ func Supported() []*big.Int {
 		supportedFields = []*big.Int{
 			babybear.Modulus(),
 			koalabear.Modulus(),
+			mamabear.Modulus(),
 			tinyfield.Modulus(),
 		}
 	})

@@ -46,7 +46,7 @@ func TestSolverConsistency(t *testing.T) {
 	for name := range circuits.Circuits {
 		t.Run(name, func(t *testing.T) {
 			tc := circuits.Circuits[name]
-			if tc.U64Only {
+			if tc.CurveOnly {
 				t.Skip("circuit only supports U64 fields")
 			}
 			if name == "commit" {

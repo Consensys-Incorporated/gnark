@@ -402,6 +402,17 @@ func getTagSet() cbor.TagSet {
 	addType(reflect.TypeOf(&GkrSumcheckLevel{}))
 	addType(reflect.TypeOf(&GkrSingleSourceZeroCheckLevel{}))
 
+	// The tag numbers are assigned by position, so types added later must be
+	// appended here rather than grouped with the U32 and U64 ones above:
+	// inserting in the middle would renumber them and break reading back
+	// already serialized constraint systems.
+	addType(reflect.TypeOf(BlueprintGenericSparseR1C[U64W1]{}))
+	addType(reflect.TypeOf(BlueprintSparseR1CAdd[U64W1]{}))
+	addType(reflect.TypeOf(BlueprintSparseR1CMul[U64W1]{}))
+	addType(reflect.TypeOf(BlueprintSparseR1CBool[U64W1]{}))
+	addType(reflect.TypeOf(BlueprintLookupHint[U64W1]{}))
+	addType(reflect.TypeOf(BlueprintBatchInverse[U64W1]{}))
+
 	// Add types registered by external packages (e.g., GKR blueprints)
 	// These use explicit tag numbers to ensure stability regardless of init() order
 	for _, rt := range registeredBlueprintTypes {

@@ -239,17 +239,7 @@ func (p *Profile) Top() string {
 	if p.excludeConstraints {
 		return ""
 	}
-	r := report.NewDefault(&p.pprof, report.Options{
-		OutputFormat:  report.Tree,
-		CompactLabels: true,
-		NodeFraction:  0.005,
-		EdgeFraction:  0.001,
-		SampleValue:   func(v []int64) int64 { return v[0] },
-		SampleUnit:    "count",
-	})
-	var buf bytes.Buffer
-	report.Generate(&buf, r)
-	return buf.String()
+	return p.top(0)
 }
 
 // TopOperations return a similar output than pprof top command for operations (sample_index=1).
@@ -263,16 +253,26 @@ func (p *Profile) TopOperations() string {
 	if p.excludeConstraints {
 		idx = 0
 	}
-	r := report.NewDefault(&p.pprof, report.Options{
+	return p.top(idx)
+}
+
+// top renders the tree report for the sample type at index idx. We don't use
+// report.NewDefault as it always selects the last sample type.
+func (p *Profile) top(idx int) string {
+	o := &report.Options{
 		OutputFormat:  report.Tree,
 		CompactLabels: true,
 		NodeFraction:  0.005,
 		EdgeFraction:  0.001,
 		SampleValue:   func(v []int64) int64 { return v[idx] },
-		SampleUnit:    "count",
-	})
+		SampleType:    p.pprof.SampleType[idx].Type,
+		SampleUnit:    strings.ToLower(p.pprof.SampleType[idx].Unit),
+	}
+	if len(p.pprof.Mapping) > 0 && p.pprof.Mapping[0].File != "" {
+		o.Title = filepath.Base(p.pprof.Mapping[0].File)
+	}
 	var buf bytes.Buffer
-	report.Generate(&buf, r)
+	report.Generate(&buf, report.New(&p.pprof, o))
 	return buf.String()
 }
 

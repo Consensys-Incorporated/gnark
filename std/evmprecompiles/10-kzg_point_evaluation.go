@@ -146,6 +146,13 @@ var (
 // represent. The method performs decompression and all necessary checks. The
 // encoding is given by Appendix C of [PAIRING_FRIENDLY_CURVES].
 //
+// The method assumes that every limb of versionedHash, commitmentCompressed
+// and proofCompressed is already range checked to 128 bits by the caller
+// (e.g. the arithmetization). The method does not check this: it only uses the
+// low 16 bytes of each limb, so a limb with non-zero high bits is treated
+// the same as its low 16 bytes. Calling the method with limbs which are not
+// range checked does not bind the limbs to a unique precompile input.
+//
 // [KZG_POINT_EVALUATION]: https://github.com/ethereum/EIPs/blob/master/EIPS/eip-4844.md
 // [PAIRING_FRIENDLY_CURVES]: https://datatracker.ietf.org/doc/draft-irtf-cfrg-pairing-friendly-curves/
 func KzgPointEvaluation(
@@ -184,6 +191,13 @@ func KzgPointEvaluation(
 // They are given as compressed points, for which we use 24 native elements to
 // represent. The method performs decompression and all necessary checks. The
 // encoding is given by Appendix C of [PAIRING_FRIENDLY_CURVES].
+//
+// The method assumes that every limb of versionedHash, commitmentCompressed
+// and proofCompressed is already range checked to 16 bits by the caller
+// (e.g. the arithmetization). The method does not check this: it only uses the
+// low 2 bytes of each limb, so a limb with non-zero high bits is treated
+// the same as its low 2 bytes. Calling the method with limbs which are not
+// range checked does not bind the limbs to a unique precompile input.
 //
 // [KZG_POINT_EVALUATION]: https://github.com/ethereum/EIPs/blob/master/EIPS/eip-4844.md
 // [PAIRING_FRIENDLY_CURVES]: https://datatracker.ietf.org/doc/draft-irtf-cfrg-pairing-friendly-curves/
@@ -318,8 +332,9 @@ func kzgPointEvaluation(
 // method CAN NOT assert validity of valid inputs. The goal of the method is to
 // allow proving that the precompile call failed in EVM.
 //
-// For data encoding (particularly for compressed inputs), see
-// [KzgPointEvaluation] method documentation.
+// For data encoding (particularly for compressed inputs) and the range
+// assumptions on the input limbs, see [KzgPointEvaluation] method
+// documentation.
 //
 // The method checks that any of the following failure cases happen:
 //   - the versioned hash version is incorrect
@@ -360,8 +375,9 @@ func KzgPointEvaluationFailure(
 // method CAN NOT assert validity of valid inputs. The goal of the method is to
 // allow proving that the precompile call failed in EVM.
 //
-// For data encoding (particularly for compressed inputs), see
-// [KzgPointEvaluation16] method documentation.
+// For data encoding (particularly for compressed inputs) and the range
+// assumptions on the input limbs, see [KzgPointEvaluation16] method
+// documentation.
 //
 // The method checks that any of the following failure cases happen:
 //   - the versioned hash version is incorrect

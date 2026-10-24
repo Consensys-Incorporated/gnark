@@ -672,3 +672,64 @@ func TestBLS12InBW6InvalidProof(t *testing.T) {
 		assert.NoError(err)
 	}, "invalid=witness")
 }
+
+type innerCircuitNoPublic struct {
+	P, Q frontend.Variable
+}
+
+func (c *innerCircuitNoPublic) Define(api frontend.API) error {
+	api.AssertIsEqual(api.Mul(c.P, c.Q), 15)
+	return nil
+}
+
+// assertRecursiveGroth16 proves the inner circuit natively and checks that the
+// in-circuit verifier accepts the proof.
+func assertRecursiveGroth16[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.G2ElementT, GtEl algebra.GtElementT](assert *test.Assert, innerField, outerField *big.Int, inner, innerAssignment frontend.Circuit) {
+	ccs, err := frontend.Compile(innerField, r1cs.NewBuilder, inner)
+	assert.NoError(err)
+	pk, vk, err := groth16.Setup(ccs)
+	assert.NoError(err)
+	w, err := frontend.NewWitness(innerAssignment, innerField)
+	assert.NoError(err)
+	proof, err := groth16.Prove(ccs, pk, w)
+	assert.NoError(err)
+	pw, err := w.Public()
+	assert.NoError(err)
+	assert.NoError(groth16.Verify(proof, vk, pw))
+
+	cvk, err := ValueOfVerifyingKey[G1El, G2El, GtEl](vk)
+	assert.NoError(err)
+	cw, err := ValueOfWitness[FR](pw)
+	assert.NoError(err)
+	cp, err := ValueOfProof[G1El, G2El](proof)
+	assert.NoError(err)
+	outer := &OuterCircuit[FR, G1El, G2El, GtEl]{
+		Proof:        PlaceholderProof[G1El, G2El](ccs),
+		InnerWitness: PlaceholderWitness[FR](ccs),
+		VerifyingKey: PlaceholderVerifyingKey[G1El, G2El, GtEl](ccs),
+	}
+	assignment := &OuterCircuit[FR, G1El, G2El, GtEl]{
+		Proof:        cp,
+		InnerWitness: cw,
+		VerifyingKey: cvk,
+	}
+	assert.NoError(test.IsSolved(outer, assignment, outerField))
+}
+
+// TestZeroPublicInputs checks that proofs are accepted when the public inputs
+// contribute nothing to the MSM: no public inputs, or a public input equal to 0.
+func TestZeroPublicInputs(t *testing.T) {
+	assert := test.NewAssert(t)
+	assert.Run(func(assert *test.Assert) {
+		assertRecursiveGroth16[sw_bn254.ScalarField, sw_bn254.G1Affine, sw_bn254.G2Affine, sw_bn254.GTEl](assert, ecc.BN254.ScalarField(), ecc.BN254.ScalarField(),
+			&innerCircuitNoPublic{}, &innerCircuitNoPublic{P: 3, Q: 5})
+	}, "bn254/no-public")
+	assert.Run(func(assert *test.Assert) {
+		assertRecursiveGroth16[sw_bn254.ScalarField, sw_bn254.G1Affine, sw_bn254.G2Affine, sw_bn254.GTEl](assert, ecc.BN254.ScalarField(), ecc.BN254.ScalarField(),
+			&InnerCircuit{}, &InnerCircuit{P: 0, Q: 5, N: 0})
+	}, "bn254/zero-public")
+	assert.Run(func(assert *test.Assert) {
+		assertRecursiveGroth16[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine, sw_bls12377.GT](assert, ecc.BLS12_377.ScalarField(), ecc.BW6_761.ScalarField(),
+			&innerCircuitNoPublic{}, &innerCircuitNoPublic{P: 3, Q: 5})
+	}, "bls12377/no-public")
+}

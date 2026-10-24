@@ -24,6 +24,11 @@ type NewBuilder = NewBuilderGeneric[constraint.U64]
 // for a given small field modulus. See [NewBuilder] for more details.
 type NewBuilderU32 = NewBuilderGeneric[constraint.U32]
 
+// NewBuilderU64W1 is a function that creates a new constraint system builder
+// for a small field modulus too wide for [NewBuilderU32] but still fitting a
+// single uint64, such as mamabear. See [NewBuilder] for more details.
+type NewBuilderU64W1 = NewBuilderGeneric[constraint.U64W1]
+
 // NewBuilderGeneric is a generic function that creates a new constraint system
 // builder for a given field. See [NewBuilder] for more details.
 type NewBuilderGeneric[E constraint.Element] func(*big.Int, CompileConfig) (Builder[E], error)

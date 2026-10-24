@@ -760,6 +760,9 @@ func (e *engine) AddInstruction(bID constraint.BlueprintID, calldata []uint32) [
 	if constraint.FitsElement[constraint.U32](e.q) {
 		return addInstructionGeneric[constraint.U32](e, bID, calldata)
 	}
+	if constraint.FitsElement[constraint.U64W1](e.q) {
+		return addInstructionGeneric[constraint.U64W1](e, bID, calldata)
+	}
 	if constraint.FitsElement[constraint.U64](e.q) {
 		return addInstructionGeneric[constraint.U64](e, bID, calldata)
 	}
@@ -773,6 +776,11 @@ func (e *engine) AddBlueprint(b constraint.Blueprint) constraint.BlueprintID {
 			panic("unsupported blueprint in test engine")
 		}
 	}
+	if constraint.FitsElement[constraint.U64W1](e.q) {
+		if _, ok := b.(constraint.BlueprintSolvable[constraint.U64W1]); !ok {
+			panic("unsupported blueprint in test engine")
+		}
+	}
 	if constraint.FitsElement[constraint.U64](e.q) {
 		if _, ok := b.(constraint.BlueprintSolvable[constraint.U64]); !ok {
 			panic("unsupported blueprint in test engine")
@@ -782,6 +790,9 @@ func (e *engine) AddBlueprint(b constraint.Blueprint) constraint.BlueprintID {
 	e.blueprints = append(e.blueprints, b)
 
 	if stateful, ok := b.(constraint.BlueprintStateful[constraint.U32]); ok {
+		stateful.Reset()
+	}
+	if stateful, ok := b.(constraint.BlueprintStateful[constraint.U64W1]); ok {
 		stateful.Reset()
 	}
 	if stateful, ok := b.(constraint.BlueprintStateful[constraint.U64]); ok {
@@ -805,8 +816,11 @@ func (e *engine) InternalVariable(vID uint32) frontend.Variable {
 // this is used in custom blueprints to return a variable than can be encoded in blueprints
 func (e *engine) ToCanonicalVariable(v frontend.Variable) frontend.CanonicalVariable {
 	r := e.toBigInt(v)
-	if smallfields.IsSmallField(e.q) {
+	if constraint.FitsElement[constraint.U32](e.q) {
 		return wrappedBigInt[constraint.U32]{Int: r, modulus: newModulus[constraint.U32](e.q)}
+	}
+	if constraint.FitsElement[constraint.U64W1](e.q) {
+		return wrappedBigInt[constraint.U64W1]{Int: r, modulus: newModulus[constraint.U64W1](e.q)}
 	}
 	return wrappedBigInt[constraint.U64]{Int: r, modulus: newModulus[constraint.U64](e.q)}
 }

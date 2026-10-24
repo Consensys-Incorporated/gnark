@@ -286,9 +286,17 @@ func ValueOfVerifyingKey[G1El algebra.G1ElementT, G2El algebra.G2ElementT, GtEl 
 	return ret, nil
 }
 
-// ValueOfVerifyingKey initializes witness from the given Groth16 verifying key.
-// It returns an error if there is a mismatch between the type parameters and
-// the provided native verifying key.
+// ValueOfVerifyingKeyFixed initializes witness from the given Groth16
+// verifying key, with precomputed line evaluations for the G2 points for
+// efficient in-circuit pairing computation. It returns an error if there is a
+// mismatch between the type parameters and the provided native verifying key.
+//
+// The precomputed lines are not constrained to correspond to the point
+// coordinates when the verifying key is provided as a witness — the value is
+// intended to be embedded as a compile-time circuit constant (e.g. with the
+// `gnark:"-"` struct tag). For witness-provided verifying keys, use
+// [ValueOfVerifyingKey] so that the lines are computed in-circuit from the
+// constrained coordinates.
 func ValueOfVerifyingKeyFixed[G1El algebra.G1ElementT, G2El algebra.G2ElementT, GtEl algebra.GtElementT](vk groth16.VerifyingKey) (VerifyingKey[G1El, G2El, GtEl], error) {
 	var ret VerifyingKey[G1El, G2El, GtEl]
 	switch s := any(&ret).(type) {
@@ -596,7 +604,9 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) IsValidProof(vk VerifyingKey[G1El, G2El
 	if err != nil {
 		return 0, fmt.Errorf("multi scalar mul: %w", err)
 	}
-	kSum = v.curve.Add(kSum, &vk.G1.K[0])
+	// kSum is the point at infinity when there are no public inputs or when all
+	// of them are zero, so we need complete addition here.
+	kSum = v.curve.AddUnified(kSum, &vk.G1.K[0])
 
 	for i := range proof.Commitments {
 		kSum = v.curve.Add(kSum, &proof.Commitments[i].G1El)

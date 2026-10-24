@@ -82,9 +82,25 @@ type Curve[FR emulated.FieldParams, G1El G1ElementT] interface {
 // Pairing allows to compute the bi-linear pairing of G1 and G2 elements.
 // Additionally, the interface provides steps used in pairing computation and a
 // dedicated optimised pairing check.
+//
+// Security note: input validation semantics are implementation-defined and
+// additionally depend on whether the G2 inputs carry precomputed line
+// evaluations (e.g. G2Affine.Lines). Implementations may skip on-curve and
+// subgroup checks on the pairing inputs, and precomputed lines are consumed
+// without being constrained to the point coordinates. Do not rely on the
+// pairing methods for input validation — use AssertIsOnG1 and AssertIsOnG2
+// for explicit checks, and prefer PairingCheck over Pair followed by
+// AssertIsEqual for untrusted inputs. See the concrete implementations for
+// details.
 type Pairing[G1El G1ElementT, G2El G2ElementT, GtEl GtElementT] interface {
 	// MillerLoop computes the Miller loop of the input pairs. It returns error
-	// when the inputs are of mismatching length. It does not modify the inputs.
+	// when the inputs are of mismatching length. Implementations may cache
+	// computed line evaluations into the G2 inputs.
+	//
+	// Precomputed line evaluations carried by the G2 inputs are used directly
+	// and are trusted input: they are not constrained to correspond to the
+	// point coordinates. See the concrete implementations for the input
+	// validation performed.
 	MillerLoop([]*G1El, []*G2El) (*GtEl, error)
 
 	// FinalExponentiation computes the final step in the pairing. It does not
@@ -93,19 +109,30 @@ type Pairing[G1El G1ElementT, G2El G2ElementT, GtEl GtElementT] interface {
 
 	// Pair computes the full pairing of the input pairs. It returns error when
 	// the inputs are of mismatching length. It does not modify the inputs.
+	//
+	// See MillerLoop for the security assumptions on precomputed G2 line
+	// evaluations.
 	Pair([]*G1El, []*G2El) (*GtEl, error)
 
 	// PairingCheck asserts that the pairing result is 1. It returns an error
 	// when the inputs are of mismatching length. It does not modify the inputs.
+	//
+	// Implementations bind the asserted equation to the point coordinates of
+	// the inputs even when they carry precomputed line evaluations, so this
+	// method is preferred over Pair followed by AssertIsEqual for untrusted
+	// inputs. Curve and subgroup validation of the inputs is
+	// implementation-defined — see the interface security note.
 	PairingCheck([]*G1El, []*G2El) error
 
 	// AssertIsEqual asserts the equality of the inputs.
 	AssertIsEqual(*GtEl, *GtEl)
 
-	// AssertIsOnG1 asserts that the input is on the G1 curve.
+	// AssertIsOnG1 asserts that the input is on the G1 curve and in the
+	// correct subgroup.
 	AssertIsOnG1(*G1El)
 
-	// AssertIsOnG2 asserts that the input is on the G2 curve.
+	// AssertIsOnG2 asserts that the input is on the G2 curve and in the
+	// correct subgroup.
 	AssertIsOnG2(*G2El)
 
 	// MuxG2 performs a lookup from the G2 inputs and returns inputs[sel]. It is
