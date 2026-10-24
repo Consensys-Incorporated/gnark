@@ -9,18 +9,19 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/consensys/gnark/gkr"
+
 	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions/polynomial"
 	basePolynomial "github.com/consensys/gnark-crypto/field/koalabear/polynomial"
-	"github.com/consensys/gnark/internal/gkr/gkrcore"
 )
 
 // GateEvaluator provides a high-level API for evaluating compiled gates efficiently.
 // It manages the stack internally and handles input buffering, making it easy to
 // evaluate the same gate multiple times with different inputs.
 type GateEvaluator struct {
-	gate gkrcore.GateBytecode
+	gate gkr.GateBytecode
 	vars []koalabear.Element
 	nbIn int                  // number of inputs expected
 	pool *basePolynomial.Pool // pool vars was allocated from, if any
@@ -28,7 +29,7 @@ type GateEvaluator struct {
 
 // NewGateEvaluator creates an evaluator for the given compiled gate.
 // The stack is preloaded with constants and ready for evaluation.
-func NewGateEvaluator(gate gkrcore.GateBytecode, nbIn int, elementPool ...*basePolynomial.Pool) GateEvaluator {
+func NewGateEvaluator(gate gkr.GateBytecode, nbIn int, elementPool ...*basePolynomial.Pool) GateEvaluator {
 	e := GateEvaluator{
 		gate: gate,
 		nbIn: nbIn,
@@ -81,28 +82,28 @@ func (e *GateEvaluator) Evaluate(top ...koalabear.Element) *koalabear.Element {
 
 		// Use switch instead of function pointer for better inlining
 		switch inst.Op {
-		case gkrcore.OpAdd:
+		case gkr.OpAdd:
 			dst.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Add(dst, &e.vars[inst.Inputs[j]])
 			}
-		case gkrcore.OpMul:
+		case gkr.OpMul:
 			dst.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Mul(dst, &e.vars[inst.Inputs[j]])
 			}
-		case gkrcore.OpSub:
+		case gkr.OpSub:
 			dst.Sub(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Sub(dst, &e.vars[inst.Inputs[j]])
 			}
-		case gkrcore.OpNeg:
+		case gkr.OpNeg:
 			dst.Neg(&e.vars[inst.Inputs[0]])
-		case gkrcore.OpMulAcc:
+		case gkr.OpMulAcc:
 			var prod koalabear.Element
 			prod.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			dst.Add(&prod, &e.vars[inst.Inputs[2]])
-		case gkrcore.OpSumExp17:
+		case gkr.OpSumExp17:
 			// result = (x[0] + x[1] + x[2])^17
 			var sum koalabear.Element
 			sum.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
@@ -128,14 +129,14 @@ func (e *GateEvaluator) Evaluate(top ...koalabear.Element) *koalabear.Element {
 // GateEvaluatorPool manages a pool of gate evaluators for a specific gate type.
 // The evaluators allocate their element slices from the polynomial.Pool the pool was given, if any.
 type GateEvaluatorPool struct {
-	gate        gkrcore.GateBytecode
+	gate        gkr.GateBytecode
 	nbIn        int
 	lock        sync.Mutex
 	available   []*GateEvaluator
 	elementPool []*basePolynomial.Pool
 }
 
-func NewGateEvaluatorPool(gate gkrcore.GateBytecode, nbIn int, elementPool ...*basePolynomial.Pool) *GateEvaluatorPool {
+func NewGateEvaluatorPool(gate gkr.GateBytecode, nbIn int, elementPool ...*basePolynomial.Pool) *GateEvaluatorPool {
 	return &GateEvaluatorPool{
 		gate:        gate,
 		nbIn:        nbIn,
@@ -178,7 +179,7 @@ func (gep *GateEvaluatorPool) DumpAll() {
 // It manages the stack internally and handles input buffering, making it easy to
 // evaluate the same gate multiple times with different inputs.
 type GateEvaluatorMixed struct {
-	gate   gkrcore.GateBytecode
+	gate   gkr.GateBytecode
 	vars   []extensions.E6
 	consts []koalabear.Element // the gate's constants in the base field, for the extension's methods taking a base field element
 	nbIn   int                 // number of inputs expected
@@ -187,7 +188,7 @@ type GateEvaluatorMixed struct {
 
 // NewGateEvaluatorMixed creates an evaluator for the given compiled gate.
 // The stack is preloaded with constants and ready for evaluation.
-func NewGateEvaluatorMixed(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polynomial.PoolE6) GateEvaluatorMixed {
+func NewGateEvaluatorMixed(gate gkr.GateBytecode, nbIn int, elementPool ...*polynomial.PoolE6) GateEvaluatorMixed {
 	e := GateEvaluatorMixed{
 		gate: gate,
 		nbIn: nbIn,
@@ -224,7 +225,7 @@ func (e *GateEvaluatorMixed) PushInput(input extensions.E6) {
 }
 
 // isInputConstant returns whether the instruction's inputI-th input is one of the gate's constants.
-func (e *GateEvaluatorMixed) isInputConstant(inst *gkrcore.GateInstruction, inputI int) bool {
+func (e *GateEvaluatorMixed) isInputConstant(inst *gkr.GateInstruction, inputI int) bool {
 	return int(inst.Inputs[inputI]) < e.gate.NbConstants()
 }
 
@@ -249,7 +250,7 @@ func (e *GateEvaluatorMixed) Evaluate(top ...extensions.E6) *extensions.E6 {
 
 		// Use switch instead of function pointer for better inlining
 		switch inst.Op {
-		case gkrcore.OpAdd:
+		case gkr.OpAdd:
 			if e.isInputConstant(inst, 0) {
 				dst.AddElement(&e.vars[inst.Inputs[1]], &e.consts[inst.Inputs[0]])
 			} else {
@@ -258,7 +259,7 @@ func (e *GateEvaluatorMixed) Evaluate(top ...extensions.E6) *extensions.E6 {
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Add(dst, &e.vars[inst.Inputs[j]])
 			}
-		case gkrcore.OpMul:
+		case gkr.OpMul:
 			if e.isInputConstant(inst, 0) {
 				dst.MulByElement(&e.vars[inst.Inputs[1]], &e.consts[inst.Inputs[0]])
 			} else {
@@ -267,7 +268,7 @@ func (e *GateEvaluatorMixed) Evaluate(top ...extensions.E6) *extensions.E6 {
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Mul(dst, &e.vars[inst.Inputs[j]])
 			}
-		case gkrcore.OpSub:
+		case gkr.OpSub:
 			if e.isInputConstant(inst, 0) {
 				dst.SubFromElement(&e.consts[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			} else {
@@ -276,9 +277,9 @@ func (e *GateEvaluatorMixed) Evaluate(top ...extensions.E6) *extensions.E6 {
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Sub(dst, &e.vars[inst.Inputs[j]])
 			}
-		case gkrcore.OpNeg:
+		case gkr.OpNeg:
 			dst.Neg(&e.vars[inst.Inputs[0]])
-		case gkrcore.OpMulAcc:
+		case gkr.OpMulAcc:
 			var prod extensions.E6
 			if e.isInputConstant(inst, 0) {
 				prod.MulByElement(&e.vars[inst.Inputs[1]], &e.consts[inst.Inputs[0]])
@@ -286,7 +287,7 @@ func (e *GateEvaluatorMixed) Evaluate(top ...extensions.E6) *extensions.E6 {
 				prod.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			}
 			dst.Add(&prod, &e.vars[inst.Inputs[2]])
-		case gkrcore.OpSumExp17:
+		case gkr.OpSumExp17:
 			// result = (x[0] + x[1] + x[2])^17
 			var sum extensions.E6
 			if e.isInputConstant(inst, 0) {
@@ -316,14 +317,14 @@ func (e *GateEvaluatorMixed) Evaluate(top ...extensions.E6) *extensions.E6 {
 // GateEvaluatorMixedPool manages a pool of gate evaluators for a specific gate type.
 // The evaluators allocate their element slices from the polynomial.Pool the pool was given, if any.
 type GateEvaluatorMixedPool struct {
-	gate        gkrcore.GateBytecode
+	gate        gkr.GateBytecode
 	nbIn        int
 	lock        sync.Mutex
 	available   []*GateEvaluatorMixed
 	elementPool []*polynomial.PoolE6
 }
 
-func NewGateEvaluatorMixedPool(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polynomial.PoolE6) *GateEvaluatorMixedPool {
+func NewGateEvaluatorMixedPool(gate gkr.GateBytecode, nbIn int, elementPool ...*polynomial.PoolE6) *GateEvaluatorMixedPool {
 	return &GateEvaluatorMixedPool{
 		gate:        gate,
 		nbIn:        nbIn,

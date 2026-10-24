@@ -1,0 +1,144 @@
+import (
+	"testing"
+
+	"{{ .BaseFieldPackagePath }}"
+	"{{ .BaseFieldPackagePath }}/poseidon2"
+	extensionsHash "{{ .FieldPackagePath }}/hash"
+	"github.com/consensys/gnark/gkr"
+	"github.com/consensys/gnark/gkr/gkrapi"
+	"github.com/consensys/gnark/gkr/{{ .GkrPackageName }}"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// randomHalves returns nbInstances random instances as the columns Assignment takes.
+func randomHalves(width, nbInstances int) (left, right [][]{{ .BaseElementType }}) {
+	columns := func() [][]{{ .BaseElementType }} {
+		res := make([][]{{ .BaseElementType }}, width/2)
+		for i := range res {
+			res[i] = make([]{{ .BaseElementType }}, nbInstances)
+			{{ .BaseFieldPackageName }}.Vector(res[i]).MustSetRandom()
+		}
+		return res
+	}
+	return columns(), columns()
+}
+
+// newHasher returns a hasher for the gadget's proofs.
+func newHasher() *extensionsHash.BaseFieldHashAdapter{{ .ExtensionSuffix }} {
+	return extensionsHash.NewBaseFieldHashAdapter{{ .ExtensionSuffix }}(poseidon2.NewMerkleDamgardHasher())
+}
+
+// TestAffineGateFewTerms checks affine gates whose sum has fewer than two terms.
+func TestAffineGateFewTerms(t *testing.T) {
+	var one, two {{ .BaseElementType }}
+	one.SetOne()
+	two.SetUint64(2)
+
+	for _, tc := range []struct {
+		name         string
+		coefficients []{{ .BaseElementType }}
+	}{
+		{"one term of coefficient 1", []{{ .BaseElementType }}{one}},
+		{"one term of another coefficient", []{{ .BaseElementType }}{two}},
+		{"zero coefficients are omitted", []{{ .BaseElementType }}{ {}, one}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := gkrapi.New()
+			inputs := make([]gkr.Variable, len(tc.coefficients))
+			for i := range inputs {
+				inputs[i] = api.NewInput()
+			}
+			out := api.Gate(affineGate(nil, tc.coefficients), inputs...)
+			api.Export(out)
+			circuit, _, err := api.Compile({{ .FieldDescription }}, gkrapi.ConsolidateAll)
+			require.NoError(t, err)
+
+			assignment := make({{ .PackageName }}.WireAssignment, len(circuit))
+			var expected [2]{{ .BaseElementType }}
+			for i, input := range inputs {
+				assignment[input] = make([]{{ .BaseElementType }}, 2)
+				{{ .BaseFieldPackageName }}.Vector(assignment[input]).MustSetRandom()
+				for instanceI := range expected {
+					var term {{ .BaseElementType }}
+					term.Mul(&tc.coefficients[i], &assignment[input][instanceI])
+					expected[instanceI].Add(&expected[instanceI], &term)
+				}
+			}
+			assignment.Complete(circuit)
+			for instanceI := range expected {
+				assert.True(t, expected[instanceI].Equal(&assignment[out][instanceI]), "instance %d", instanceI)
+			}
+		})
+	}
+}
+
+// TestCompressor proves and verifies 2⁶ random instances with the default parameters, and checks
+// the circuit's outputs against gnark-crypto's compression function.
+func TestCompressor(t *testing.T) {
+	const logNbInstances = 6
+
+	params := poseidon2.GetDefaultParameters()
+	compressor, err := NewCompressor(params)
+	require.NoError(t, err)
+
+	left, right := randomHalves(params.Width, 1<<logNbInstances)
+	assignment := compressor.Assignment(left, right)
+
+	proof, proverClaims, err := {{ .PackageName }}.Prove(compressor.Circuit, compressor.Schedule, assignment, newHasher())
+	require.NoError(t, err)
+	require.NoError(t, proverClaims.Check(assignment))
+
+	// Prove has computed the outputs.
+	reference := poseidon2.NewCompressor(poseidon2.NewDefaultPermutation())
+	half := params.Width / 2
+	leftRow := make([]{{ .BaseElementType }}, half)
+	rightRow := make([]{{ .BaseElementType }}, half)
+	expected := make([]{{ .BaseElementType }}, half)
+	for instanceI := range 1 << logNbInstances {
+		for i := range half {
+			leftRow[i] = left[i][instanceI]
+			rightRow[i] = right[i][instanceI]
+		}
+		reference.CompressField(expected, leftRow, rightRow)
+		for i := range half {
+			assert.True(t, expected[i].Equal(&assignment[compressor.Out[i]][instanceI]), "instance %d, output %d", instanceI, i)
+		}
+	}
+
+	verifierClaims, err := {{ .PackageName }}.Verify(compressor.Circuit, compressor.Schedule, logNbInstances, proof, newHasher())
+	require.NoError(t, err)
+	require.NoError(t, verifierClaims.Check(assignment))
+
+	var one {{ .BaseElementType }}
+	one.SetOne()
+	assignment[compressor.Out[0]][0].Add(&assignment[compressor.Out[0]][0], &one)
+	require.Error(t, verifierClaims.Check(assignment))
+
+	{{- if eq .FieldID "KOALABEAR" }}
+
+	// The size of the proof for the default parameters, 836 + 104n elements for 2ⁿ instances, pins
+	// down the shape of the circuit and of its schedule.
+	nbElements := 0
+	for range proof.Flatten() {
+		nbElements++
+	}
+	assert.Equal(t, 836+104*logNbInstances, nbElements)
+	{{- end }}
+}
+
+func BenchmarkCompressor(b *testing.B) {
+	const nbInstances = 1 << 16
+
+	params := poseidon2.GetDefaultParameters()
+	compressor, err := NewCompressor(params)
+	require.NoError(b, err)
+
+	left, right := randomHalves(params.Width, nbInstances)
+
+	b.ResetTimer()
+	for range b.N {
+		_, _, err = {{ .PackageName }}.Prove(compressor.Circuit, compressor.Schedule, compressor.Assignment(left, right), newHasher())
+		require.NoError(b, err)
+	}
+}
