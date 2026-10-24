@@ -1,4 +1,4 @@
-// Copyright 2020-2026 Consensys Software Inc.
+// Copyright 2020-2026 Consensys Incorporated
 // Licensed under the Apache License, Version 2.0. See the LICENSE file for details.
 
 package sw_bls12377
