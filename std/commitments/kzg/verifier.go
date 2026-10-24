@@ -609,11 +609,11 @@ func (v *Verifier[FR, G1El, G2El, GTEl]) FoldProof(digests []Commitment[G1El], b
 		foldedEvaluations = v.scalarApi.Add(foldedEvaluations, tmp)
 	}
 	return OpeningProof[FR, G1El]{
-			Quotient:     batchOpeningProof.Quotient,
-			ClaimedValue: *foldedEvaluations,
-		}, Commitment[G1El]{
-			G1El: *foldedDigests,
-		}, nil
+		Quotient:     batchOpeningProof.Quotient,
+		ClaimedValue: *foldedEvaluations,
+	}, Commitment[G1El]{
+		G1El: *foldedDigests,
+	}, nil
 
 }
 

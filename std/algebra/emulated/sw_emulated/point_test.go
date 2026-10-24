@@ -2715,6 +2715,164 @@ func TestScalarMulGLVAndFakeGLV_TrivialDecompositionRegression(t *testing.T) {
 	}
 }
 
+// TestMultiScalarMulFoldedSinglePoint checks that folding a single point
+// returns the point itself (gamma^0 * P0).
+func TestMultiScalarMulFoldedSinglePoint(t *testing.T) {
+	assert := test.NewAssert(t)
+	var s, gamma fr_bw6761.Element
+	s.SetRandom()
+	gamma.SetRandom()
+	var p bw6761.G1Affine
+	p.ScalarMultiplicationBase(s.BigInt(new(big.Int)))
+	cp := AffinePoint[emparams.BW6761Fp]{
+		X: emulated.ValueOf[emparams.BW6761Fp](p.X),
+		Y: emulated.ValueOf[emparams.BW6761Fp](p.Y),
+	}
+	assignment := MultiScalarMulFoldedEdgeCasesTest[emparams.BW6761Fp, emparams.BW6761Fr]{
+		Points:  []AffinePoint[emparams.BW6761Fp]{cp},
+		Scalars: []emulated.Element[emparams.BW6761Fr]{emulated.ValueOf[emparams.BW6761Fr](gamma)},
+		Res:     cp,
+	}
+	err := test.IsSolved(&MultiScalarMulFoldedEdgeCasesTest[emparams.BW6761Fp, emparams.BW6761Fr]{
+		Points:  make([]AffinePoint[emparams.BW6761Fp], 1),
+		Scalars: make([]emulated.Element[emparams.BW6761Fr], 1),
+	}, &assignment, ecc.BN254.ScalarField())
+	assert.NoError(err)
+}
+
+// forgedRationalReconstruct returns the degenerate decomposition sign = 0,
+// s1 = s2 = σ (σ = 0x5555…55, 128 bits). For s = −1 mod r it meets every
+// constraint the circuit puts on the decomposition — s1 + s·s2 ≡ 0, s2 ≠ 0,
+// both below 2^128 — without coming from the honest lattice reduction.
+func forgedRationalReconstruct(mod *big.Int, in, out []*big.Int) error {
+	sigma, _ := new(big.Int).SetString("55555555555555555555555555555555", 16)
+	return emulated.UnwrapHintContext(mod, in, out, func(hc emulated.HintContext) error {
+		m := hc.EmulatedModuli()
+		_, nOut := hc.NativeInputsOutputs()
+		_, eOut := hc.InputsOutputs(m[0])
+		nOut[0].SetUint64(0)
+		eOut[0].Set(sigma)
+		eOut[1].Set(sigma)
+		return nil
+	})
+}
+
+// forgedScalarMulHint replaces the honest scalarMulHint with a fixed point,
+// which the caller chooses to be off the curve.
+func forgedScalarMulHint(x, y *big.Int) solver.Hint {
+	return func(mod *big.Int, in, out []*big.Int) error {
+		return emulated.UnwrapHintContext(mod, in, out, func(hc emulated.HintContext) error {
+			m := hc.EmulatedModuli()
+			_, bOut := hc.InputsOutputs(m[0])
+			bOut[0].Set(x)
+			bOut[1].Set(y)
+			return nil
+		})
+	}
+}
+
+// TestScalarMulFakeGLV_OffCurveHintRegression is a regression for a soundness
+// issue in scalarMulFakeGLV on curves without an efficient endomorphism
+// (P-256, P-384, STARK). The hinted R = [s]Q was never constrained to the
+// curve, and the closing identity [s1]Q + [s2]R + [3]R == [3]R is a group-law
+// argument that silently assumes it is. Overriding both prover-controlled
+// hints — rationalReconstruct to the degenerate s1 = s2 = σ, scalarMulHint to
+// (x_R, −Q.y) with x_R free — collapses the accumulator to O at every step
+// for s = −1, so the identity holds for ANY x_R and the routine returns a
+// prover-chosen off-curve point. Over P-256 ECDSA that is a full forgery.
+func TestScalarMulFakeGLV_OffCurveHintRegression(t *testing.T) {
+	hx := func(s string) *big.Int { v, _ := new(big.Int).SetString(s, 16); return v }
+
+	// A genuine P-256 public key, and the off-curve point the forgery feeds in
+	// for [−1]Q: y is the honest −Q.y, x is free (here a root of the quartic
+	// that drives the enclosing ECDSA check to a chosen r).
+	qx := hx("696d724d9ca18306d21e5849dd0b45cdbdad0a5878e8ee1f9679d49d1b524d54")
+	qy := hx("bfc64470f942da1519a5fb5dc6ad02f74ef14871c50069c912356f661336fac7")
+	rx := hx("9f7d513fd5597ad572ded15526dc54ee5e7f82907e239275ee6aa681c9ec1534")
+	ry := hx("4039bb8e06bd25ebe65a04a23952fd08b10eb78f3aff9636edca9099ecc90538")
+
+	var fr emulated.P256Fr
+	s := new(big.Int).Sub(fr.Modulus(), big.NewInt(1)) // s = −1 mod n
+
+	circuit := ScalarMulFakeGLVEdgeCasesTest[emulated.P256Fp, emulated.P256Fr]{}
+	witness := ScalarMulFakeGLVEdgeCasesTest[emulated.P256Fp, emulated.P256Fr]{
+		S: emulated.ValueOf[emulated.P256Fr](s),
+		P: AffinePoint[emulated.P256Fp]{
+			X: emulated.ValueOf[emulated.P256Fp](qx),
+			Y: emulated.ValueOf[emulated.P256Fp](qy),
+		},
+		// the prover-chosen off-curve point the gadget used to return
+		R: AffinePoint[emulated.P256Fp]{
+			X: emulated.ValueOf[emulated.P256Fp](rx),
+			Y: emulated.ValueOf[emulated.P256Fp](ry),
+		},
+	}
+
+	err := test.IsSolved(&circuit, &witness, testCurve.ScalarField(),
+		test.WithReplacementHint(solver.GetHintID(rationalReconstruct), forgedRationalReconstruct),
+		test.WithReplacementHint(solver.GetHintID(scalarMulHint), forgedScalarMulHint(rx, ry)),
+	)
+	if err == nil {
+		t.Fatal("off-curve scalarMulHint output was accepted — soundness break")
+	}
+}
+
+type addUnifiedYSumZeroTest[T, S emulated.FieldParams] struct {
+	P, Q, R AffinePoint[T]
+}
+
+func (c *addUnifiedYSumZeroTest[T, S]) Define(api frontend.API) error {
+	cr, err := New[T, S](api, GetCurveParams[T]())
+	if err != nil {
+		return err
+	}
+	cr.AssertIsOnCurve(&c.P)
+	cr.AssertIsOnCurve(&c.Q)
+	cr.AssertIsEqual(cr.AddUnified(&c.P, &c.Q), &c.R)
+	return nil
+}
+
+// TestAddUnifiedYSumZeroDistinctX is a regression for the j≠0 branch of
+// AddUnified, which used to read a vanishing Brier-Joye denominator
+// (p.Y + q.Y = 0) as "q = −p" and return O. That inference is false:
+// y₁ = −y₂ only forces y₁² = y₂², so x₁ and x₂ need only be two of the three
+// roots of X³ + aX + b − y₁². Below are two genuine on-curve P-256 points
+// with x₁ ≠ x₂ and y₁ = −y₂ for which AddUnified returned (0,0) instead of
+// the correct sum — no malicious hint, reachable from an honest witness.
+func TestAddUnifiedYSumZeroDistinctX(t *testing.T) {
+	hx := func(s string) *big.Int { v, _ := new(big.Int).SetString(s, 16); return v }
+
+	px := hx("a8c7357fefa197e46d4483a78452cd5c74c99edcb9f7017acffc9ea53a15e99c")
+	py := hx("7ae869fa4bd2daf0adc819fc3c3361645beeb23eca1ed9b33df921e546a6c545")
+	qx := hx("6675dd879c37fa037520148c715e969366a43a090f903aec24dc94bf96bff9e6")
+	qy := hx("85179604b42d25105237e603c3cc9e9ba4114dc235e1264cc206de1ab9593aba")
+	// the true sum, computed off-circuit
+	sx := hx("f1ba6bf11fa8ac9fd4c772ea479b2c643b43667c6015d0beaa9e58a3d63448d6")
+	sy := hx("436d0bd0cac13f0930e6b2e96be2a6e3b0170f276fed72afe80ee7d9a01d35bd")
+
+	mk := func(rx, ry *big.Int) addUnifiedYSumZeroTest[emulated.P256Fp, emulated.P256Fr] {
+		return addUnifiedYSumZeroTest[emulated.P256Fp, emulated.P256Fr]{
+			P: AffinePoint[emulated.P256Fp]{X: emulated.ValueOf[emulated.P256Fp](px), Y: emulated.ValueOf[emulated.P256Fp](py)},
+			Q: AffinePoint[emulated.P256Fp]{X: emulated.ValueOf[emulated.P256Fp](qx), Y: emulated.ValueOf[emulated.P256Fp](qy)},
+			R: AffinePoint[emulated.P256Fp]{X: emulated.ValueOf[emulated.P256Fp](rx), Y: emulated.ValueOf[emulated.P256Fp](ry)},
+		}
+	}
+
+	circuit := addUnifiedYSumZeroTest[emulated.P256Fp, emulated.P256Fr]{}
+
+	// the correct sum must be accepted
+	good := mk(sx, sy)
+	if err := test.IsSolved(&circuit, &good, testCurve.ScalarField()); err != nil {
+		t.Fatalf("AddUnified returned the wrong sum for y₁ = −y₂ with x₁ ≠ x₂: %v", err)
+	}
+
+	// the spurious point at infinity must be rejected
+	bad := mk(big.NewInt(0), big.NewInt(0))
+	if err := test.IsSolved(&circuit, &bad, testCurve.ScalarField()); err == nil {
+		t.Fatal("AddUnified accepted (0,0) for a pair whose sum is finite — soundness break")
+	}
+}
+
 // TestBLS12381CofactorClearingConstant pins the arithmetic facts that make the
 // 64-bit constant c = |x-1| sound and complete in place of the 126-bit full
 // cofactor h = (x-1)^2/3:

@@ -9,11 +9,11 @@ import (
 	"sync"
 
 	"github.com/consensys/gnark-crypto/utils"
-	"github.com/consensys/gnark/internal/small_rational"
+	"github.com/consensys/gnark/internal/rational"
 )
 
 // Polynomial represented by coefficients in the field.
-type Polynomial []small_rational.SmallRational
+type Polynomial []rational.Element
 
 // Degree returns the degree of the polynomial, which is the length of Data.
 func (p *Polynomial) Degree() uint64 {
@@ -21,8 +21,8 @@ func (p *Polynomial) Degree() uint64 {
 }
 
 // Eval evaluates p at v
-// returns a small_rational.SmallRational
-func (p *Polynomial) Eval(v *small_rational.SmallRational) small_rational.SmallRational {
+// returns a rational.Element
+func (p *Polynomial) Eval(v *rational.Element) rational.Element {
 
 	res := (*p)[len(*p)-1]
 	for i := len(*p) - 2; i >= 0; i-- {
@@ -53,28 +53,28 @@ func (p *Polynomial) Set(p1 Polynomial) {
 }
 
 // AddConstantInPlace adds a constant to the polynomial, modifying p
-func (p *Polynomial) AddConstantInPlace(c *small_rational.SmallRational) {
+func (p *Polynomial) AddConstantInPlace(c *rational.Element) {
 	for i := 0; i < len(*p); i++ {
 		(*p)[i].Add(&(*p)[i], c)
 	}
 }
 
 // SubConstantInPlace subs a constant to the polynomial, modifying p
-func (p *Polynomial) SubConstantInPlace(c *small_rational.SmallRational) {
+func (p *Polynomial) SubConstantInPlace(c *rational.Element) {
 	for i := 0; i < len(*p); i++ {
 		(*p)[i].Sub(&(*p)[i], c)
 	}
 }
 
 // ScaleInPlace multiplies p by v, modifying p
-func (p *Polynomial) ScaleInPlace(c *small_rational.SmallRational) {
+func (p *Polynomial) ScaleInPlace(c *rational.Element) {
 	for i := 0; i < len(*p); i++ {
 		(*p)[i].Mul(&(*p)[i], c)
 	}
 }
 
 // Scale multiplies p0 by v, storing the result in p
-func (p *Polynomial) Scale(c *small_rational.SmallRational, p0 Polynomial) {
+func (p *Polynomial) Scale(c *rational.Element, p0 Polynomial) {
 	if len(*p) != len(p0) {
 		*p = make(Polynomial, len(p0))
 	}
@@ -211,7 +211,7 @@ func (p Polynomial) Text(base int) string {
 // InterpolateOnRange maps vector v to polynomial f
 // such that f(i) = v[i] for 0 ≤ i < len(v).
 // len(f) = len(v) and deg(f) ≤ len(v) - 1
-func InterpolateOnRange(v []small_rational.SmallRational) Polynomial {
+func InterpolateOnRange(v []rational.Element) Polynomial {
 	nEvals := uint8(len(v))
 	if int(nEvals) != len(v) {
 		panic("interpolation method too inefficient for nEvals > 255")
@@ -244,7 +244,7 @@ func getLagrangeBasis(domainSize uint8) []Polynomial {
 	if domainSize >= 2 {
 		res = computeLagrangeBasis(domainSize)
 	} else if domainSize == 1 {
-		var oneCoeff small_rational.SmallRational
+		var oneCoeff rational.Element
 		oneCoeff.SetOne()
 		res = []Polynomial{{oneCoeff}}
 	}
@@ -258,7 +258,7 @@ func getLagrangeBasis(domainSize uint8) []Polynomial {
 // Note that pₗ(l) = 1 and pₗ(n) = 0 if 0 ≤ l < domainSize, n ≠ l
 func computeLagrangeBasis(domainSize uint8) []Polynomial {
 
-	constTerms := make([]small_rational.SmallRational, domainSize)
+	constTerms := make([]rational.Element, domainSize)
 	for i := uint8(0); i < domainSize; i++ {
 		constTerms[i].SetInt64(-int64(i))
 	}
@@ -300,7 +300,7 @@ func computeLagrangeBasis(domainSize uint8) []Polynomial {
 		constTerms[l].Neg(&constTerms[l])
 		constTerms[l] = res[l].Eval(&constTerms[l])
 	}
-	constTerms = small_rational.BatchInvert(constTerms)
+	constTerms = rational.BatchInvert(constTerms)
 	for l := uint8(0); l < domainSize; l++ {
 		res[l].ScaleInPlace(&constTerms[l])
 	}

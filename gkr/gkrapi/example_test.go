@@ -21,7 +21,7 @@ func Example() {
 	z := api.Mul(x, y)
 	api.Export(z)
 
-	circuit, schedule, err := api.Compile(ecc.BN254.ScalarField(), gkrapi.ConsolidateAll)
+	circuit, schedule, err := api.Compile(gkrapi.PrimeField(ecc.BN254.ScalarField()), gkrapi.ConsolidateAll)
 	assertNoError(err)
 
 	assignment := make(bn254.WireAssignment, len(circuit))

@@ -8,7 +8,7 @@ package gkr
 import (
 	"fmt"
 	"hash"
-	"strings"
+	"math/big"
 
 	"github.com/consensys/gnark-crypto/ecc/bw6-761/fr"
 	"github.com/consensys/gnark-crypto/ecc/bw6-761/fr/polynomial"
@@ -39,6 +39,9 @@ func hashFromDescription(d gkrtesting.HashDescription) (hash.Hash, error) {
 	return nil, fmt.Errorf("hash description missing type")
 }
 
+// messageCounterBlockSize is the length of an element's Marshal().
+const messageCounterBlockSize = fr.Bytes
+
 // messageCounter is a stand-in hash whose state depends only on the number of field-element
 // blocks written to it, not on their values.
 type messageCounter struct {
@@ -48,18 +51,17 @@ type messageCounter struct {
 }
 
 func (m *messageCounter) Write(p []byte) (n int, err error) {
-	inputBlockSize := (len(p)-1)/fr.Bytes + 1
+	inputBlockSize := (len(p)-1)/messageCounterBlockSize + 1
 	m.state += int64(inputBlockSize) * m.step
 	return len(p), nil
 }
 
 func (m *messageCounter) Sum(b []byte) []byte {
-	inputBlockSize := (len(b)-1)/fr.Bytes + 1
+	inputBlockSize := (len(b)-1)/messageCounterBlockSize + 1
 	resI := m.state + int64(inputBlockSize)*m.step
 	var res fr.Element
 	res.SetInt64(int64(resI))
-	resBytes := res.Bytes()
-	return resBytes[:]
+	return (&res).Marshal()
 }
 
 func (m *messageCounter) Reset() {
@@ -67,11 +69,11 @@ func (m *messageCounter) Reset() {
 }
 
 func (m *messageCounter) Size() int {
-	return fr.Bytes
+	return messageCounterBlockSize
 }
 
 func (m *messageCounter) BlockSize() int {
-	return fr.Bytes
+	return messageCounterBlockSize
 }
 
 func newMessageCounter(startState, step int) hash.Hash {
@@ -85,35 +87,31 @@ func newMessageCounterGenerator(startState, step int) func() hash.Hash {
 	}
 }
 
+// setElement parses value — a decimal or "num/den" string, or a JSON number — into a big.Rat,
+// then sets z to its numerator divided by its denominator, via SetBigInt, Inverse and Mul.
 func setElement(z *fr.Element, value interface{}) (*fr.Element, error) {
-
-	// TODO: Put this in element.SetString?
+	var r big.Rat
 	switch v := value.(type) {
 	case string:
-
-		if sep := strings.Split(v, "/"); len(sep) == 2 {
-			var denom fr.Element
-			if _, err := z.SetString(sep[0]); err != nil {
-				return nil, err
-			}
-			if _, err := denom.SetString(sep[1]); err != nil {
-				return nil, err
-			}
-			denom.Inverse(&denom)
-			z.Mul(z, &denom)
-			return z, nil
+		if _, ok := r.SetString(v); !ok {
+			return nil, fmt.Errorf("cannot parse %q", v)
 		}
-
 	case float64:
 		asInt := int64(v)
 		if float64(asInt) != v {
 			return nil, fmt.Errorf("cannot currently parse float")
 		}
-		z.SetInt64(asInt)
-		return z, nil
+		r.SetFloat64(v)
+	default:
+		return nil, fmt.Errorf("cannot parse value of type %T", value)
 	}
 
-	return z.SetInterface(value)
+	var denom fr.Element
+	z.SetBigInt(r.Num())
+	denom.SetBigInt(r.Denom())
+	denom.Inverse(&denom)
+	z.Mul(z, &denom)
+	return z, nil
 }
 
 func sliceToElementSlice[T any](slice []T) ([]fr.Element, error) {

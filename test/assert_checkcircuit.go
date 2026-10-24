@@ -4,7 +4,9 @@ import (
 	"math/big"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/field/babybear"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/backend/plonk"
@@ -30,7 +32,7 @@ import (
 //   - the circuit can be solved with the constraint system solver
 //   - the circuit can be solved with the prover
 //   - the circuit can be verified with the verifier
-//   - the circuit can be verified with gnark-solidity-checker
+//   - the circuit can be verified with the exported Solidity verifier (see package test/solcheck)
 //   - the circuit, witness, proving and verifying keys can be serialized and deserialized
 func (assert *Assert) CheckCircuit(circuit frontend.Circuit, opts ...TestingOption) {
 	// get the testing configuration
@@ -133,7 +135,7 @@ func (assert *Assert) CheckCircuit(circuit frontend.Circuit, opts ...TestingOpti
 										Msg("skipping solidity check, too many commitments")
 								}
 								checkSolidity = checkSolidity && (len(ccs.GetCommitments().CommitmentIndexes()) <= 1)
-								// set the default hash function in case of	custom hash function not set. This is to ensure that the proof can be verified by gnark-solidity-checker
+								// set the default hash function in case of	custom hash function not set. This is to ensure that the proof can be verified by the Solidity verifier
 								proverOpts = append([]backend.ProverOption{solidity.WithProverTargetSolidityVerifier(b)}, opt.proverOpts...)
 								verifierOpts = append([]backend.VerifierOption{solidity.WithVerifierTargetSolidityVerifier(b)}, opt.verifierOpts...)
 							}
@@ -144,7 +146,7 @@ func (assert *Assert) CheckCircuit(circuit frontend.Circuit, opts ...TestingOpti
 							assert.noError(curve.ScalarField(), err, &w)
 
 							if checkSolidity {
-								// check that the proof can be verified by gnark-solidity-checker
+								// check that the proof can be verified by the exported Solidity verifier
 								if _vk, ok := vk.(solidity.VerifyingKey); ok {
 									assert.Run(func(assert *Assert) {
 										assert.solidityVerification(b, curve, _vk, proof, w.public, opt.solidityOpts)
@@ -177,52 +179,58 @@ func (assert *Assert) CheckCircuit(circuit frontend.Circuit, opts ...TestingOpti
 		}, curve.String())
 	}
 	if opt.checkSmallField {
-		smf := koalabear.Modulus()
-		smfName := "koalabear"
-		assert.Run(func(assert *Assert) {
-			var invalidWitnesses, validWitnesses []_witness
-			for _, a := range opt.validAssignments {
-				w := assert.parseAssignment(circuit, a, smf, smfName, opt.checkSerialization)
-				validWitnesses = append(validWitnesses, w)
+		smallFields := opt.smallFields
+		if len(smallFields) == 0 {
+			smallFields = []*big.Int{koalabear.Modulus()}
+		}
+		for _, smf := range smallFields {
+			smf := smf
+			smfName := smallFieldName(smf)
+			assert.Run(func(assert *Assert) {
+				var invalidWitnesses, validWitnesses []_witness
+				for _, a := range opt.validAssignments {
+					w := assert.parseAssignment(circuit, a, smf, smfName, opt.checkSerialization)
+					validWitnesses = append(validWitnesses, w)
 
-				// check that the assignment is valid with the test engine
-				if !opt.skipTestEngine {
-					err := IsSolved(circuit, w.assignment, smf)
-					assert.noError(smf, err, &w)
+					// check that the assignment is valid with the test engine
+					if !opt.skipTestEngine {
+						err := IsSolved(circuit, w.assignment, smf)
+						assert.noError(smf, err, &w)
+					}
 				}
-			}
 
-			for _, a := range opt.invalidAssignments {
-				w := assert.parseAssignment(circuit, a, smf, smfName, opt.checkSerialization)
-				invalidWitnesses = append(invalidWitnesses, w)
+				for _, a := range opt.invalidAssignments {
+					w := assert.parseAssignment(circuit, a, smf, smfName, opt.checkSerialization)
+					invalidWitnesses = append(invalidWitnesses, w)
 
-				// check that the assignment is invalid with the test engine
-				if !opt.skipTestEngine {
-					err := IsSolved(circuit, w.assignment, smf)
-					assert.error(smf, err, &w)
+					// check that the assignment is invalid with the test engine
+					if !opt.skipTestEngine {
+						err := IsSolved(circuit, w.assignment, smf)
+						assert.error(smf, err, &w)
+					}
 				}
-			}
-			// test that the circuit compiles and is deterministic
-			ccs, err := assert.compileU32(circuit, smf, opt.compileOpts)
-			assert.NoError(err, "compile in small field")
+				// test that the circuit compiles and is deterministic
+				ccs, err := assert.compileSmallField(circuit, smf, opt.compileOpts)
+				assert.NoError(err, "compile in small field")
 
-			for _, w := range invalidWitnesses {
-				w := w
-				assert.Run(func(assert *Assert) {
-					_, err = ccs.Solve(w.full, opt.solverOpts...)
-					assert.error(smf, err, &w)
-				}, "invalid_witness")
-			}
+				for _, w := range invalidWitnesses {
+					w := w
+					assert.Run(func(assert *Assert) {
+						_, err = ccs.Solve(w.full, opt.solverOpts...)
+						assert.error(smf, err, &w)
+					}, "invalid_witness")
+				}
 
-			for _, w := range validWitnesses {
-				w := w
-				assert.Run(func(assert *Assert) {
-					_, err = ccs.Solve(w.full, opt.solverOpts...)
-					assert.noError(smf, err, &w)
-				}, "valid_witness")
-			}
+				for _, w := range validWitnesses {
+					w := w
+					assert.Run(func(assert *Assert) {
+						_, err = ccs.Solve(w.full, opt.solverOpts...)
+						assert.noError(smf, err, &w)
+					}, "valid_witness")
+				}
 
-		}, smfName)
+			}, smfName)
+		}
 	}
 
 	// TODO @gbotrel revisit this.
@@ -333,3 +341,17 @@ var (
 		},
 	}
 )
+
+// smallFieldName gives a readable subtest name for a small field modulus.
+func smallFieldName(modulus *big.Int) string {
+	switch {
+	case modulus.Cmp(babybear.Modulus()) == 0:
+		return "babybear"
+	case modulus.Cmp(koalabear.Modulus()) == 0:
+		return "koalabear"
+	case modulus.Cmp(mamabear.Modulus()) == 0:
+		return "mamabear"
+	default:
+		return "smallfield_" + modulus.String()
+	}
+}

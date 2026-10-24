@@ -13,7 +13,7 @@ type TestCircuit struct {
 	ValidAssignments, InvalidAssignments []frontend.Circuit // good and bad witness for the prover + public verifier data
 	HintFunctions                        []solver.Hint
 	Curves                               []ecc.ID
-	U64Only                              bool // if true, circuit only works with U64 element types (not small fields)
+	CurveOnly                            bool // if true, circuit only works over curve scalar fields, not small fields
 }
 
 // Circuits are used for test purposes (backend.Groth16 and gnark/integration_test.go)
@@ -21,9 +21,9 @@ var Circuits map[string]TestCircuit
 
 type entryOption func(*TestCircuit)
 
-func withU64Only() entryOption {
+func withCurveOnly() entryOption {
 	return func(tc *TestCircuit) {
-		tc.U64Only = true
+		tc.CurveOnly = true
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/field/babybear"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/debug"
 	"github.com/consensys/gnark/frontend"
@@ -30,6 +31,7 @@ import (
 	bw6761r1cs "github.com/consensys/gnark/constraint/bw6-761"
 	grumpkinr1cs "github.com/consensys/gnark/constraint/grumpkin"
 	koalabearr1cs "github.com/consensys/gnark/constraint/koalabear"
+	mamabearr1cs "github.com/consensys/gnark/constraint/mamabear"
 	"github.com/consensys/gnark/constraint/solver"
 	tinyfieldr1cs "github.com/consensys/gnark/constraint/tinyfield"
 )
@@ -98,6 +100,15 @@ func newBuilder[E constraint.Element](field *big.Int, config frontend.CompileCon
 		default:
 			if field.Cmp(ecc.GRUMPKIN.ScalarField()) == 0 {
 				bT.cs = grumpkinr1cs.NewSparseR1CS(config.Capacity)
+				break
+			}
+			panic("not implemented")
+		}
+	case *builder[constraint.U64W1]:
+		switch curve {
+		default:
+			if field.Cmp(mamabear.Modulus()) == 0 {
+				bT.cs = mamabearr1cs.NewSparseR1CS(config.Capacity)
 				break
 			}
 			panic("not implemented")
@@ -530,7 +541,9 @@ func (builder *builder[E]) addConstraintExist(a, b expr.Term[E], k E) (expr.Term
 				// compute n, the coefficient for the output wire
 				q2, ok = builder.cs.Inverse(q2)
 				if !ok {
-					panic("div by 0") // shouldn't happen
+					// q2 is zero when a term cancelled out in reduce (e.g. x + y - y),
+					// we can't compute n from it so we just add a new constraint.
+					return expr.Term[E]{}, false
 				}
 				q2 = builder.cs.Mul(q2, q4)
 				return expr.NewTerm(int(c.XC), q2), true

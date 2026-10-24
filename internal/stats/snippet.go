@@ -17,6 +17,7 @@ import (
 	sw_bls12377_maptocurve "github.com/consensys/gnark/std/algebra/native/sw_bls12377/maptocurve_increment"
 	sw_grumpkin_maptocurve "github.com/consensys/gnark/std/algebra/native/sw_grumpkin/maptocurve_increment"
 	"github.com/consensys/gnark/std/hash/mimc"
+	"github.com/consensys/gnark/std/lookup/logderivlookup"
 	"github.com/consensys/gnark/std/math/bits"
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/selector"
@@ -84,6 +85,13 @@ func initSnippets() {
 		mimc, _ := mimc.NewMiMC(api)
 		mimc.Write(newVariable())
 		_ = mimc.Sum()
+	})
+	registerSnippet("lookup/logderivlookup/constant_table_16", func(api frontend.API, newVariable func() frontend.Variable) {
+		table := logderivlookup.New(api)
+		for i := range 16 {
+			table.Insert(i)
+		}
+		table.Lookup(newVariable(), newVariable())
 	})
 	registerSnippet("math/emulated/secp256k1_64", func(api frontend.API, newVariable func() frontend.Variable) {
 		secp256k1, _ := emulated.NewField[emulated.Secp256k1Fp](api)

@@ -11,7 +11,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func field() *big.Int { return ecc.BN254.ScalarField() }
+func bn254() Field { return PrimeField(ecc.BN254.ScalarField()) }
+
+// koalabearE6 describes KoalaBear's degree-6 extension E6, whose tower generator v has minimal
+// polynomial X⁶ - 2X³ - 2. It is test data only here, not a public description of the field.
+func koalabearE6() Field {
+	return Field{
+		Modulus: big.NewInt(2130706433), // 2^31 - 2^24 + 1
+		MinPoly: []*big.Int{big.NewInt(-2), big.NewInt(0), big.NewInt(0), big.NewInt(-2), big.NewInt(0), big.NewInt(0)},
+	}
+}
+
+// testFields runs under bn254() and under the KoalaBear E6 description, to check that both
+// agree on every gate's metadata.
+func testFields() []Field {
+	return []Field{bn254(), koalabearE6()}
+}
 
 // test gate functions
 
@@ -76,7 +91,7 @@ func TestConstants(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			compiled, err := CompileGateFunction(tt.f, tt.nbIn, field())
+			compiled, err := CompileGateFunction(tt.f, tt.nbIn, bn254())
 			require.NoError(t, err)
 
 			assert.Equal(t, len(tt.constants), len(compiled.Evaluate.Constants))
@@ -114,7 +129,7 @@ func TestCompileGateFunction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			compiled, err := CompileGateFunction(tt.f, tt.nbIn, field())
+			compiled, err := CompileGateFunction(tt.f, tt.nbIn, bn254())
 			require.NoError(t, err)
 			assert.Equal(t, tt.nbIn, compiled.NbIn)
 			assert.Equal(t, tt.degree, compiled.Degree)
@@ -125,11 +140,13 @@ func TestCompileGateFunction(t *testing.T) {
 
 func testFitPoly(t *testing.T, name string, f gkr.GateFunction, nbIn, degree, maxDegree int) {
 	t.Run(name, func(t *testing.T) {
-		tester := gateTester{mod: field()}
-		g, err := CompileGateFunction(f, nbIn, field())
+		g, err := CompileGateFunction(f, nbIn, bn254())
 		require.NoError(t, err)
-		tester.setGate(g.Evaluate, nbIn)
-		require.Equal(t, degree, len(tester.fitPoly(maxDegree))-1)
+		for _, fd := range testFields() {
+			tester := gateTester{field: fd}
+			tester.setGate(g.Evaluate, nbIn)
+			require.Equal(t, degree, len(tester.fitPoly(maxDegree))-1)
+		}
 	})
 }
 
@@ -145,12 +162,14 @@ func TestFitPoly(t *testing.T) {
 
 func testIsAdditive(t *testing.T, name string, f gkr.GateFunction, isAdditive ...bool) {
 	t.Run(name, func(t *testing.T) {
-		tester := gateTester{mod: field()}
-		g, err := CompileGateFunction(f, len(isAdditive), field())
+		g, err := CompileGateFunction(f, len(isAdditive), bn254())
 		require.NoError(t, err)
-		tester.setGate(g.Evaluate, len(isAdditive))
-		for i := range isAdditive {
-			assert.Equal(t, isAdditive[i], tester.isAdditive(i))
+		for _, fd := range testFields() {
+			tester := gateTester{field: fd}
+			tester.setGate(g.Evaluate, len(isAdditive))
+			for i := range isAdditive {
+				assert.Equal(t, isAdditive[i], tester.isAdditive(i))
+			}
 		}
 	})
 }
@@ -162,4 +181,16 @@ func TestIsAdditive(t *testing.T) {
 	testIsAdditive(t, "x+y*z", addMul2, true, false, false)
 	testIsAdditive(t, "x²+2y", sqrAdd2, false, true)
 	testIsAdditive(t, "x*y+y", mulAdd, false, false)
+}
+
+// TestExtensionDefiningRelation checks mul's reduction against KoalaBear's E6 tower generator's
+// defining relation, X⁶ = 2X³ + 2 (from its minimal polynomial X⁶ - 2X³ - 2).
+func TestExtensionDefiningRelation(t *testing.T) {
+	tester := gateTester{field: koalabearE6()}
+
+	x := []*big.Int{big.NewInt(0), big.NewInt(1), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0)}
+	x6 := tester.pow(x, big.NewInt(6))
+	x3 := tester.pow(x, big.NewInt(3))
+	want := tester.add(tester.mul(tester.embed(big.NewInt(2)), x3), tester.embed(big.NewInt(2)))
+	require.True(t, tester.equal(x6, want))
 }

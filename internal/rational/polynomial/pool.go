@@ -4,7 +4,7 @@
 package polynomial
 
 import (
-	"github.com/consensys/gnark/internal/small_rational"
+	"github.com/consensys/gnark/internal/rational"
 )
 
 // Do as little as possible to instantiate the interface
@@ -15,14 +15,14 @@ func NewPool(...int) (pool Pool) {
 	return Pool{}
 }
 
-func (p *Pool) Make(n int) []small_rational.SmallRational {
-	return make([]small_rational.SmallRational, n)
+func (p *Pool) Make(n int) []rational.Element {
+	return make([]rational.Element, n)
 }
 
-func (p *Pool) Dump(...[]small_rational.SmallRational) {
+func (p *Pool) Dump(...[]rational.Element) {
 }
 
-func (p *Pool) Clone(slice []small_rational.SmallRational) []small_rational.SmallRational {
+func (p *Pool) Clone(slice []rational.Element) []rational.Element {
 	res := p.Make(len(slice))
 	copy(res, slice)
 	return res
