@@ -1,8 +1,8 @@
 import (
 	"fmt"
-	"hash"
 	"{{ .FieldPackagePath }}/polynomial"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
+	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
 	{{ if not .GenerateTestVectors}}
 	"{{ .FieldPackagePath }}"
@@ -12,8 +12,8 @@ import (
 	"testing"
 )
 
-func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() hash.Hash) error {
-	poly := make(polynomial.MultiLin, len(polyInt))
+func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() fieldHasher) error {
+	poly := make(polynomial.MultiLin{{ .ExtensionSuffix }}, len(polyInt))
 	for i, n := range polyInt {
 		poly[i].SetUint64(n)
 	}
@@ -42,7 +42,7 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() hash
 		return err
 	}
 
-	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], toElement(1))
+	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], gkrtesting.ToElement[{{ .ElementType }}](1))
 	lazyClaim = singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
 	t = gkrcore.NewHashTranscript[{{ .ElementType }}](hashGenerator())
 	if sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t) == nil {
@@ -61,7 +61,7 @@ func TestSumcheckDeterministicHashSingleClaimMultilin(t *testing.T) {
 
 	const MaxStep = 4
 	const MaxStart = 4
-	hashGens := make([]func() hash.Hash, 0, MaxStart*MaxStep)
+	hashGens := make([]func() fieldHasher, 0, MaxStart*MaxStep)
 
 	for step := 0; step < MaxStep; step++ {
 		for startState := 0; startState < MaxStart; startState++ {

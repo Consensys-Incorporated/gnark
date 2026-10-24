@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/consensys/gnark"
 	"github.com/consensys/gnark-crypto/ecc"
+	frbls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
+	frbls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+	frbn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	frbw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/fr"
 	gcHash "github.com/consensys/gnark-crypto/hash"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/frontend"
@@ -596,6 +599,34 @@ func newConstBytesPseudoHash(c int64, mod *big.Int) constBytesPseudoHash {
 	return b
 }
 
+// constFieldPseudoHash is a constant "hash" over the elements of F: it is both a hash.Hash, as
+// RegisterCustomHash requires, and a gnark-crypto hash.FieldHasher, as the GKR blueprints require.
+type constFieldPseudoHash[F any] struct {
+	constBytesPseudoHash
+	digest F
+}
+
+func (h constFieldPseudoHash[F]) WriteField(...F) {}
+
+func (h constFieldPseudoHash[F]) PadBlock() {}
+
+func (h constFieldPseudoHash[F]) SumField() F {
+	return h.digest
+}
+
+// registerConstPseudoHash registers the constant hash v, over the scalar field of curve, as
+// name_CURVE.
+func registerConstPseudoHash[F any, PF interface {
+	*F
+	SetBigInt(*big.Int) *F
+}](name string, v int64, curve ecc.ID) {
+	h := constFieldPseudoHash[F]{constBytesPseudoHash: newConstBytesPseudoHash(v, curve.ScalarField())}
+	PF(&h.digest).SetBigInt(big.NewInt(v))
+	gcHash.RegisterCustomHash(name+"_"+strings.ToUpper(curve.String()), func() hash.Hash {
+		return h
+	})
+}
+
 func init() {
 	// Register custom (constant) "hash" functions
 	for _, v := range []int64{-1, -20} {
@@ -603,12 +634,10 @@ func init() {
 		stdHash.RegisterCustomHash(name, func(api frontend.API) (stdHash.FieldHasher, error) {
 			return constPseudoHash(v), nil
 		})
-		for _, curve := range gnark.Curves() {
-			h := newConstBytesPseudoHash(v, curve.ScalarField())
-			gcHash.RegisterCustomHash(name+"_"+strings.ToUpper(curve.String()), func() hash.Hash {
-				return h
-			})
-		}
+		registerConstPseudoHash[frbn254.Element](name, v, ecc.BN254)
+		registerConstPseudoHash[frbls12377.Element](name, v, ecc.BLS12_377)
+		registerConstPseudoHash[frbls12381.Element](name, v, ecc.BLS12_381)
+		registerConstPseudoHash[frbw6761.Element](name, v, ecc.BW6_761)
 	}
 }
 

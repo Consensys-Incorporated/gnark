@@ -24,27 +24,27 @@ type sumcheckProof struct {
 }
 
 // transcript is a Fiat-Shamir transcript backed by a running hash.
-// Field elements are written via Bind; challenges are derived via getChallenge.
+// Absorb writes field elements; Squeeze derives challenges from them.
 // The hash is never reset — all previous data is implicitly part of future challenges.
 type transcript struct {
-	h     hash.FieldHasher
-	bound bool
+	h        hash.FieldHasher
+	absorbed bool
 }
 
-func (t *transcript) Bind(elements ...frontend.Variable) {
+func (t *transcript) Absorb(elements ...frontend.Variable) {
 	if len(elements) == 0 {
 		return
 	}
 	t.h.Write(elements...)
-	t.bound = true
+	t.absorbed = true
 }
 
-func (t *transcript) getChallenge(bindings ...frontend.Variable) frontend.Variable {
-	t.Bind(bindings...)
-	if !t.bound {
+func (t *transcript) Squeeze(elements ...frontend.Variable) frontend.Variable {
+	t.Absorb(elements...)
+	if !t.absorbed {
 		t.h.Write(0) // separator to prevent repeated values
 	}
-	t.bound = false
+	t.absorbed = false
 	return t.h.Sum()
 }
 
@@ -62,7 +62,7 @@ func verifySumcheck(api frontend.API, claims sumcheckLazyClaims, proof sumcheckP
 		copy(gJ[1:], partialSumPoly)
 		gJ[0] = api.Sub(gJR, partialSumPoly[0]) // Requirement that gⱼ(0) + gⱼ(1) = gⱼ₋₁(r)
 
-		r[j] = t.getChallenge(proof.PartialSumPolys[j]...)
+		r[j] = t.Squeeze(proof.PartialSumPolys[j]...)
 
 		gJR = polynomial.InterpolateLDE(api, r[j], gJ[:(degree+1)])
 	}

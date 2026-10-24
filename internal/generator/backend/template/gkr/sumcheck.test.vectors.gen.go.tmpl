@@ -1,7 +1,6 @@
 import (
 	"encoding/json"
 	"fmt"
-	"hash"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/rational"
 	"github.com/consensys/gnark/internal/rational/polynomial"
@@ -15,14 +14,14 @@ import (
 func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 
 	var poly polynomial.MultiLin
-	if v, err := sliceToElementSlice(testCaseInfo.Values); err == nil {
+	if v, err := gkrtesting.SliceToElementSlice[{{ .ElementType }}](testCaseInfo.Values); err == nil {
 		poly = v
 	} else {
 		return err
 	}
 
 	var (
-		hsh hash.Hash
+		hsh fieldHasher
 		err error
 	)
 
@@ -36,7 +35,7 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	testCaseInfo.Proof = sumcheckToPrintableProof(proof)
 
 	// Verification
-	if v, _err := sliceToElementSlice(testCaseInfo.Values); _err == nil {
+	if v, _err := gkrtesting.SliceToElementSlice[{{ .ElementType }}](testCaseInfo.Values); _err == nil {
 		poly = v
 	} else {
 		return _err
@@ -54,7 +53,7 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 		return fmt.Errorf("proof rejected: %v", err)
 	}
 
-	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], toElement(1))
+	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], gkrtesting.ToElement[{{ .ElementType }}](1))
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}

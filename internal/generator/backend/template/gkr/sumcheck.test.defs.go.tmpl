@@ -1,7 +1,7 @@
 {{ define "sumcheckTestDefs" }}
 
 type singleMultilinClaim struct {
-	g polynomial.MultiLin
+	g polynomial.MultiLin{{ .ExtensionSuffix }}
 }
 
 func (c *singleMultilinClaim) proveFinalEval(r []{{ .ElementType }}) []{{ .ElementType }} {
@@ -12,7 +12,7 @@ func (c *singleMultilinClaim) varsNum() int {
 	return bits.TrailingZeros(uint(len(c.g)))
 }
 
-func sumForX1One(g polynomial.MultiLin) polynomial.Polynomial {
+func sumForX1One(g polynomial.MultiLin{{ .ExtensionSuffix }}) polynomial.Polynomial{{ .ExtensionSuffix }} {
 	sum := g[len(g)/2]
 	for i := len(g)/2 + 1; i < len(g); i++ {
 		sum.Add(&sum, &g[i])
@@ -20,7 +20,7 @@ func sumForX1One(g polynomial.MultiLin) polynomial.Polynomial {
 	return []{{ .ElementType }}{sum}
 }
 
-func (c *singleMultilinClaim) roundPolynomial() polynomial.Polynomial {
+func (c *singleMultilinClaim) roundPolynomial() polynomial.Polynomial{{ .ExtensionSuffix }} {
 	return sumForX1One(c.g)
 }
 
@@ -29,7 +29,7 @@ func (c *singleMultilinClaim) roundFold(r {{ .ElementType }}) {
 }
 
 type singleMultilinLazyClaim struct {
-	g          polynomial.MultiLin
+	g          polynomial.MultiLin{{ .ExtensionSuffix }}
 	claimedSum {{ .ElementType }}
 }
 
