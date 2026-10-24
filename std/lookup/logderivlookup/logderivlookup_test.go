@@ -106,6 +106,8 @@ func (c *tableWithoutQueries) Define(api frontend.API) error {
 	}
 	t.Lookup()
 	api.AssertIsEqual(c.X, 1)
+	// the table adds no constraints and PLONK setup needs at least two
+	api.AssertIsEqual(api.Mul(c.X, c.X), 1)
 	return nil
 }
 
@@ -116,6 +118,8 @@ type emptyUnusedTable struct {
 func (c *emptyUnusedTable) Define(api frontend.API) error {
 	New(api)
 	api.AssertIsEqual(c.X, 1)
+	// the table adds no constraints and PLONK setup needs at least two
+	api.AssertIsEqual(api.Mul(c.X, c.X), 1)
 	return nil
 }
 
