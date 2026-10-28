@@ -1,6 +1,7 @@
 package polynomial
 
 import (
+	"math/big"
 	"math/bits"
 
 	"github.com/consensys/gnark/frontend"
@@ -87,13 +88,12 @@ func (p Polynomial) Eval(api frontend.API, at frontend.Variable) (pAt frontend.V
 	return
 }
 
-// negFactorial returns (-n)(-n+1)...(-2)(-1) for n ≥ 1, and -n otherwise.
+// negFactorial returns (-n)(-n+1)...(-2)(-1) for n ≥ 1, and 1 for n = 0.
 // This is not asymptotically efficient, but works for small values.
-func negFactorial(n int) int {
-	n = -n
-	result := n
-	for n++; n <= -1; n++ {
-		result *= n
+func negFactorial(n int) *big.Int {
+	result := big.NewInt(1)
+	for k := 1; k <= n; k++ {
+		result.Mul(result, big.NewInt(int64(-k)))
 	}
 	return result
 }
