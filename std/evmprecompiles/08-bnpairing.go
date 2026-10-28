@@ -32,7 +32,7 @@ func ECPair(api frontend.API, P []*sw_bn254.G1Affine, Q []*sw_bn254.G2Affine) {
 	if len(P) != len(Q) {
 		panic("P and Q length mismatch")
 	}
-	if len(P) < 2 {
+	if len(P) < 1 {
 		panic("invalid multipairing size bound")
 	}
 	n := len(P)

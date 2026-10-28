@@ -274,6 +274,36 @@ func TestECPairBLSBLSMulBatch(t *testing.T) {
 	}
 }
 
+type ecPairBLSSingleCircuit struct {
+	P sw_bls12381.G1Affine
+	Q sw_bls12381.G2Affine
+}
+
+func (c *ecPairBLSSingleCircuit) Define(api frontend.API) error {
+	ECPairBLS(api, []*sw_bls12381.G1Affine{&c.P}, []*sw_bls12381.G2Affine{&c.Q})
+	return nil
+}
+
+// a single pair is a valid input for the precompile. e(0, Q) == 1 so the check
+// must pass for P at infinity, and fail for a non-trivial pair.
+func TestECPairBLSSinglePair(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, p, q := bls12381.Generators()
+	var inf bls12381.G1Affine
+
+	err := test.IsSolved(&ecPairBLSSingleCircuit{}, &ecPairBLSSingleCircuit{
+		P: sw_bls12381.NewG1Affine(inf),
+		Q: sw_bls12381.NewG2Affine(q),
+	}, ecc.BLS12_377.ScalarField())
+	assert.NoError(err)
+
+	err = test.IsSolved(&ecPairBLSSingleCircuit{}, &ecPairBLSSingleCircuit{
+		P: sw_bls12381.NewG1Affine(p),
+		Q: sw_bls12381.NewG2Affine(q),
+	}, ecc.BLS12_377.ScalarField())
+	assert.Error(err)
+}
+
 // 16: mapToG1 check
 type eCMapToG1BLSCircuit struct {
 	A emulated.Element[emulated.BLS12381Fp]

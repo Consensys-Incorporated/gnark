@@ -180,3 +180,33 @@ func TestECPairMulBatch(t *testing.T) {
 		assert.NoError(err)
 	}
 }
+
+type ecPairSingleCircuit struct {
+	P sw_bn254.G1Affine
+	Q sw_bn254.G2Affine
+}
+
+func (c *ecPairSingleCircuit) Define(api frontend.API) error {
+	ECPair(api, []*sw_emulated.AffinePoint[emulated.BN254Fp]{&c.P}, []*sw_bn254.G2Affine{&c.Q})
+	return nil
+}
+
+// a single pair is a valid input for the precompile. e(0, Q) == 1 so the check
+// must pass for P at infinity, and fail for a non-trivial pair.
+func TestECPairSinglePair(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, p, q := bn254.Generators()
+	var inf bn254.G1Affine
+
+	err := test.IsSolved(&ecPairSingleCircuit{}, &ecPairSingleCircuit{
+		P: sw_bn254.NewG1Affine(inf),
+		Q: sw_bn254.NewG2Affine(q),
+	}, ecc.BN254.ScalarField())
+	assert.NoError(err)
+
+	err = test.IsSolved(&ecPairSingleCircuit{}, &ecPairSingleCircuit{
+		P: sw_bn254.NewG1Affine(p),
+		Q: sw_bn254.NewG2Affine(q),
+	}, ecc.BN254.ScalarField())
+	assert.Error(err)
+}
