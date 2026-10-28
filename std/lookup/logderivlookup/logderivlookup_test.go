@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
+	"sync"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -131,4 +133,87 @@ func TestTableWithoutQueries(t *testing.T) {
 	assert.CheckCircuit(&emptyUnusedTable{},
 		test.WithValidAssignment(&emptyUnusedTable{X: 1}),
 		test.WithInvalidAssignment(&emptyUnusedTable{X: 2}))
+}
+
+type concurrentLookupCircuit struct {
+	Entries  [32]frontend.Variable
+	Queries  [32]frontend.Variable
+	Expected [32]frontend.Variable
+}
+
+func (c *concurrentLookupCircuit) Define(api frontend.API) error {
+	t := New(api)
+	// interleave inserts and lookups so that several lookup instructions share
+	// the same table at different sizes.
+	for i := 0; i < len(c.Entries)/2; i++ {
+		t.Insert(c.Entries[i])
+	}
+	first := t.Lookup(c.Queries[:len(c.Queries)/2]...)
+	for i := len(c.Entries) / 2; i < len(c.Entries); i++ {
+		t.Insert(c.Entries[i])
+	}
+	second := t.Lookup(c.Queries[len(c.Queries)/2:]...)
+	results := append(first, second...)
+	for i := range results {
+		api.AssertIsEqual(results[i], c.Expected[i])
+	}
+	return nil
+}
+
+// TestConcurrentSolve checks that solving the same compiled constraint system
+// from several goroutines (each with a different witness) is safe.
+func TestConcurrentSolve(t *testing.T) {
+	field := ecc.BN254.ScalarField()
+	compilers := map[string]func() (constraint.ConstraintSystem, error){
+		"r1cs": func() (constraint.ConstraintSystem, error) {
+			return frontend.Compile(field, r1cs.NewBuilder, &concurrentLookupCircuit{})
+		},
+		"scs": func() (constraint.ConstraintSystem, error) {
+			return frontend.Compile(field, scs.NewBuilder, &concurrentLookupCircuit{})
+		},
+	}
+	for name, compile := range compilers {
+		t.Run(name, func(t *testing.T) {
+			ccs, err := compile()
+			if err != nil {
+				t.Fatal(err)
+			}
+			const nbGoroutines, nbIterations = 8, 50
+			errs := make(chan error, nbGoroutines)
+			var wg sync.WaitGroup
+			for g := 1; g <= nbGoroutines; g++ {
+				wg.Add(1)
+				go func(seed int) {
+					defer wg.Done()
+					var a concurrentLookupCircuit
+					for i := range a.Entries {
+						a.Entries[i] = seed*1000 + i
+						// the first half of the queries only sees half of the table
+						size := len(a.Entries)
+						if i < len(a.Queries)/2 {
+							size /= 2
+						}
+						a.Queries[i] = (i * 7) % size
+						a.Expected[i] = seed*1000 + (i*7)%size
+					}
+					w, err := frontend.NewWitness(&a, field)
+					if err != nil {
+						errs <- err
+						return
+					}
+					for it := 0; it < nbIterations; it++ {
+						if _, err := ccs.Solve(w); err != nil {
+							errs <- fmt.Errorf("seed %d iteration %d: %w", seed, it, err)
+							return
+						}
+					}
+				}(g)
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				t.Error(err)
+			}
+		})
+	}
 }
