@@ -113,10 +113,9 @@ func (pk PublicKey[T, S]) prepareVerification(api frontend.API, params sw_emulat
 	// inputsValid.
 	q := cr.JointScalarMulBase(&pkpt, rsInv, msInv, opts...)
 	// Q.x is a base field element in [0, p), which may be larger than the
-	// scalar field modulus n. Reinterpret its canonical bits as a scalar field
-	// element; comparing it with r in the scalar field is then a comparison of
-	// Q.x mod n with r.
-	qx := baseApi.Reduce(&q.X)
-	qxBits := baseApi.ToBits(qx)
+	// scalar field modulus n. Take its canonical bits (ToBits alone could also
+	// return the bits of Q.x+p) and reinterpret them as a scalar field element;
+	// comparing it with r in the scalar field then compares Q.x mod n with r.
+	qxBits := baseApi.ToBitsCanonical(&q.X)
 	return scalarApi.FromBits(qxBits...), inputsValid
 }
