@@ -194,3 +194,26 @@ func TestExtensionDefiningRelation(t *testing.T) {
 	want := tester.add(tester.mul(tester.embed(big.NewInt(2)), x3), tester.embed(big.NewInt(2)))
 	require.True(t, tester.equal(x6, want))
 }
+
+func TestCompileGateFunctionOutputIsEarlierInput(t *testing.T) {
+	// the output mirrors an input that is not the last one, so the bytecode cannot return it
+	for _, tt := range []struct {
+		name string
+		f    gkr.GateFunction
+	}{
+		{"unused-product", func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
+			_ = api.Mul(in[1], in[2])
+			return in[0]
+		}},
+		{"no-operations", func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
+			return in[0]
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NotPanics(t, func() {
+				_, err := CompileGateFunction(tt.f, 3, bn254())
+				require.Error(t, err)
+			})
+		})
+	}
+}
