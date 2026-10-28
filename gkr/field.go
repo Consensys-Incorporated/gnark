@@ -28,3 +28,12 @@ func KoalaBearE6() Field {
 		MinPoly: []*big.Int{big.NewInt(-2), big.NewInt(0), big.NewInt(0), big.NewInt(-2), big.NewInt(0), big.NewInt(0)},
 	}
 }
+
+// MamaBearE3 describes MamaBear's degree-3 extension E3, whose tower generator t satisfies
+// t³ = t + 1.
+func MamaBearE3() Field {
+	return Field{
+		Modulus: big.NewInt(562932773552129), // 0x1fffc00000001
+		MinPoly: []*big.Int{big.NewInt(-1), big.NewInt(-1), big.NewInt(0)},
+	}
+}

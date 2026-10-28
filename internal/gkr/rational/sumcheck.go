@@ -121,6 +121,11 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []rational.Element, purportedVal
 	var claimedEvals polynomial.Polynomial
 	levelWireI := 0
 	for _, group := range level.ClaimGroups() {
+		eqs := make([]rational.Element, len(group.ClaimSources))
+		for k, src := range group.ClaimSources {
+			eqs[k] = polynomial.EvalEq(e.resources.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], r)
+		}
+
 		for _, wI := range group.Wires {
 			wire := e.resources.circuit[wI]
 
@@ -130,10 +135,9 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []rational.Element, purportedVal
 			}
 			gateEval := evaluator.Evaluate()
 
-			for _, src := range group.ClaimSources {
-				eq := polynomial.EvalEq(e.resources.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], r)
+			for k := range group.ClaimSources {
 				var term rational.Element
-				term.Mul(&eq, gateEval)
+				term.Mul(&eqs[k], gateEval)
 				claimedEvals = append(claimedEvals, term)
 			}
 			levelWireI++

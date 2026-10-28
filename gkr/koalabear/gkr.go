@@ -23,7 +23,7 @@ import (
 )
 
 // Circuit is a circuit as compiled by gkrapi.API.Compile.
-type Circuit = gkrcore.SerializableCircuit
+type Circuit = gkr.SerializableCircuit
 
 // WireAssignment is the assignment of values to the same wire across many instances of the
 // circuit: WireAssignment[wireI][instanceI] is the value of wire wireI at instance instanceI. The
@@ -96,10 +96,10 @@ func (r *resources) evaluateBase(col basePolynomial.MultiLin, point []extensions
 	return eval
 }
 
-// identityGate is the identity gate LevelCircuit and ConsolidationView use to build level 0's
+// identityGate is the identity gate LevelCircuit and consolidationView use to build level 0's
 // view of the circuit.
-func identityGate() gkrcore.SerializableGate {
-	return gkrcore.SerializableGate{Evaluate: gkrcore.IdentityBytecode(), NbIn: 1, Degree: 1}
+func identityGate() gkr.SerializableGate {
+	return gkr.SerializableGate{Evaluate: gkr.IdentityBytecode(), NbIn: 1, Degree: 1}
 }
 
 // newResources builds the resources shared by Prove and Verify. It takes no assignment and
@@ -113,7 +113,7 @@ func newResources(c Circuit, schedule constraint.GkrProvingSchedule, nbVars int,
 		transcript:         gkrcore.NewHashTranscript[extensions.E6](hasher),
 		claimValueIndices:  c.ClaimValueIndices(schedule),
 		claims:             make(Claims),
-		consolidated:       c.LevelWires(schedule[0]),
+		consolidated:       gkrcore.LevelWires(c, schedule[0]),
 	}
 }
 
@@ -123,13 +123,17 @@ func (r *resources) proveSkipLevel(levelI int) sumcheckProof {
 	level := r.schedule[levelI].(*constraint.GkrSkipLevel)
 	outPoints := gkrcore.CollectOutgoingEvalPoints(level, levelI, r.outgoingEvalPoints)
 
-	uniqueInputs := r.circuit.UniqueGateInputs(level)
+	uniqueInputs := gkrcore.UniqueGateInputs(r.circuit, level)
 	evals := make([]extensions.E6, len(uniqueInputs)*len(outPoints))
-	for uiI, inW := range uniqueInputs {
-		for k, point := range outPoints {
-			evals[level.FinalEvalProofIndex(uiI, k)] = r.evaluateBase(r.assignment[inW], point)
+	// One block of evaluations per worker, each block reusing one scratch table.
+	blockSize := (len(evals) + r.workers.NbWorkers() - 1) / r.workers.NbWorkers()
+	r.workers.Submit(len(evals), func(start, end int) {
+		var scratch polynomial.MultiLinE6
+		for i := start; i < end; i++ {
+			uiI, k := i/len(outPoints), i%len(outPoints)
+			evals[level.FinalEvalProofIndex(uiI, k)] = scratch.EvaluateBase(r.assignment[uniqueInputs[uiI]], outPoints[k])
 		}
-	}
+	}, max(blockSize, 1)).Wait()
 	return sumcheckProof{finalEvalProof: evals}
 }
 
@@ -187,7 +191,7 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 		panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
 	}
 	absorb, include := r.levelPredicates(levelI)
-	constraint.AbsorbGkrFinalEvalProof(r.transcript, entry.finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), absorb, r.schedule[levelI])
+	constraint.AbsorbGkrFinalEvalProof(r.transcript, entry.finalEvalProof, gkrcore.UniqueGateInputs(r.circuit, r.schedule[levelI]), absorb, r.schedule[levelI])
 	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], entry.finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return entry
 }
@@ -279,7 +283,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 		return fmt.Errorf("level %d: %v", levelI, err)
 	}
 	absorb, include := r.levelPredicates(levelI)
-	constraint.AbsorbGkrFinalEvalProof(r.transcript, proof[levelI].finalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), absorb, r.schedule[levelI])
+	constraint.AbsorbGkrFinalEvalProof(r.transcript, proof[levelI].finalEvalProof, gkrcore.UniqueGateInputs(r.circuit, r.schedule[levelI]), absorb, r.schedule[levelI])
 	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return nil
 }
@@ -320,7 +324,7 @@ func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances in
 		if levelI == 0 {
 			levelCircuit = view
 		}
-		nbUniqueInputs := len(levelCircuit.UniqueGateInputs(level))
+		nbUniqueInputs := len(gkrcore.UniqueGateInputs(levelCircuit, level))
 		wantFinalEvalLen := nbUniqueInputs * level.NbOutgoingEvalPoints()
 		if len(proof[levelI].finalEvalProof) != wantFinalEvalLen {
 			return nil, fmt.Errorf("level %d: got %d final evaluations, expected %d", levelI, len(proof[levelI].finalEvalProof), wantFinalEvalLen)
@@ -458,7 +462,7 @@ func DeserializeProof(c Circuit, schedule constraint.GkrProvingSchedule, seriali
 	proof := make(Proof, len(schedule)+1)
 	for levelI, level := range schedule {
 		levelCircuit := c.LevelCircuit(schedule, levelI, identity)
-		nbUniqueInputs := len(levelCircuit.UniqueGateInputs(level))
+		nbUniqueInputs := len(gkrcore.UniqueGateInputs(levelCircuit, level))
 		if _, isSkip := level.(*constraint.GkrSkipLevel); isSkip {
 			proof[levelI].finalEvalProof = next(nbUniqueInputs * level.NbOutgoingEvalPoints())
 		} else {

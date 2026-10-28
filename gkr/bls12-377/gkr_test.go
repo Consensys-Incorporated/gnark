@@ -172,7 +172,7 @@ func TestCheckRejectsMismatchedLengths(t *testing.T) {
 // proveAndVerify proves assignment against schedule and verifies the proof rebuilt by
 // DeserializeProof from the elements of its Flatten, then asserts that: every wire of
 // schedule[0] has exactly one claim, and all of them share one point; the number of
-// elements in the proof, counted with proof.Flatten(), equals c.ProofSize(schedule, logNbInstances);
+// elements in the proof, counted with proof.Flatten(), equals gkrcore.ProofSize(c, schedule, logNbInstances);
 // tampering instance 0 of any wire with claims makes Check fail; a bad hash makes Verify or Check
 // fail; and tampering the first element of any finalEvalProof or partial sum polynomial in the
 // proof, the output entry included, makes Verify reject it — except for the claimed evaluation of
@@ -197,7 +197,7 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 	assert.Equal(t, proverClaims, verifierClaims)
 	assert.NoError(t, verifierClaims.Check(assignment))
 
-	consolidated := c.LevelWires(schedule[0])
+	consolidated := gkrcore.LevelWires(c, schedule[0])
 	var consolidationPoint []fr.Element
 	for wI, isConsolidated := range consolidated {
 		if !isConsolidated {
@@ -216,7 +216,7 @@ func proveAndVerify(t *testing.T, c Circuit, schedule constraint.GkrProvingSched
 	for range proof.Flatten() {
 		nbProofElems++
 	}
-	assert.Equal(t, c.ProofSize(schedule, logNbInstances), nbProofElems)
+	assert.Equal(t, gkrcore.ProofSize(c, schedule, logNbInstances), nbProofElems)
 
 	for wI := range verifierClaims {
 		assignment[wI][0].Add(&assignment[wI][0], &one)
@@ -579,7 +579,7 @@ func unmarshalProof(printable gkrtesting.PrintableProof) (Proof, error) {
 }
 
 type TestCase struct {
-	Circuit         gkrcore.SerializableCircuit
+	Circuit         gkr.SerializableCircuit
 	Hash            fieldHasher
 	Proof           Proof
 	FullAssignment  WireAssignment
