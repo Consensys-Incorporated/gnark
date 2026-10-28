@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/ecc/secp256k1"
 	"github.com/consensys/gnark-crypto/ecc/secp256k1/ecdsa"
+	fp_secp256k1 "github.com/consensys/gnark-crypto/ecc/secp256k1/fp"
 	fr_secp256k1 "github.com/consensys/gnark-crypto/ecc/secp256k1/fr"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
@@ -383,4 +385,96 @@ func TestEcdsaPublicKeyIsValid(t *testing.T) {
 		err = test.IsSolved(&circuit, &witness, ecc.BN254.ScalarField())
 		assert.NoError(err, "solving failed")
 	}, "case=invalid-pub")
+}
+
+// TestEcdsaNonceXAboveOrder checks the case where the x-coordinate of the nonce
+// point R is in [n, p). ECDSA defines r = R.x mod n, so such a signature carries
+// r = R.x - n and must be accepted.
+func TestEcdsaNonceXAboveOrder(t *testing.T) {
+	assert := test.NewAssert(t)
+	n := fr_secp256k1.Modulus()
+	_, g := secp256k1.Generators()
+
+	// find a curve point R with x = n + k < p
+	var R secp256k1.G1Affine
+	for k := int64(1); ; k++ {
+		var X, Y, rhs fp_secp256k1.Element
+		X.SetBigInt(new(big.Int).Add(n, big.NewInt(k)))
+		rhs.Square(&X).Mul(&rhs, &X).Add(&rhs, new(fp_secp256k1.Element).SetUint64(7))
+		if Y.Sqrt(&rhs) == nil {
+			continue
+		}
+		R.X, R.Y = X, Y
+		break
+	}
+	var rx big.Int
+	R.X.BigInt(&rx)
+	assert.True(rx.Cmp(n) >= 0, "R.x must be larger than the group order")
+	r := new(big.Int).Sub(&rx, n) // r = R.x mod n
+	s := big.NewInt(12345)
+	msg := []byte("testing ECDSA with R.x >= n")
+	hash := ecdsa.HashToInt(msg)
+
+	// public key Q = r^{-1} (s*R - m*G), so that s^{-1}(m*G + r*Q) = R
+	var sR, mG, Q secp256k1.G1Affine
+	sR.ScalarMultiplication(&R, s)
+	mG.ScalarMultiplication(&g, hash)
+	mG.Neg(&mG)
+	Q.Add(&sR, &mG)
+	Q.ScalarMultiplication(&Q, new(big.Int).ModInverse(r, n))
+
+	// the native implementation accepts the signature
+	var sig ecdsa.Signature
+	r.FillBytes(sig.R[:])
+	s.FillBytes(sig.S[:])
+	flag, err := (&ecdsa.PublicKey{A: Q}).Verify(sig.Bytes(), msg, nil)
+	assert.NoError(err, "failed to verify signature")
+	assert.True(flag, "can't verify signature")
+
+	pub := PublicKey[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{
+		X: emulated.ValueOf[emulated.Secp256k1Fp](Q.X),
+		Y: emulated.ValueOf[emulated.Secp256k1Fp](Q.Y),
+	}
+	witnessSig := func(r *big.Int) Signature[emulated.Secp256k1Fr] {
+		return Signature[emulated.Secp256k1Fr]{
+			R: emulated.ValueOf[emulated.Secp256k1Fr](r),
+			S: emulated.ValueOf[emulated.Secp256k1Fr](s),
+		}
+	}
+
+	assert.Run(func(assert *test.Assert) {
+		circuit := EcdsaCircuit[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{}
+		witness := EcdsaCircuit[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{
+			Sig: witnessSig(r),
+			Msg: emulated.ValueOf[emulated.Secp256k1Fr](hash),
+			Pub: pub,
+		}
+		err := test.IsSolved(&circuit, &witness, ecc.BN254.ScalarField())
+		assert.NoError(err, "valid signature rejected by Verify")
+	}, "verify")
+
+	assert.Run(func(assert *test.Assert) {
+		circuit := EcdsaIsValidCircuit[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{}
+		witness := EcdsaIsValidCircuit[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{
+			Sig:     witnessSig(r),
+			Msg:     emulated.ValueOf[emulated.Secp256k1Fr](hash),
+			Pub:     pub,
+			IsValid: 1,
+		}
+		err := test.IsSolved(&circuit, &witness, ecc.BN254.ScalarField())
+		assert.NoError(err, "valid signature rejected by IsValid")
+	}, "isvalid")
+
+	assert.Run(func(assert *test.Assert) {
+		// a different r must still be rejected
+		circuit := EcdsaIsValidCircuit[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{}
+		witness := EcdsaIsValidCircuit[emulated.Secp256k1Fp, emulated.Secp256k1Fr]{
+			Sig:     witnessSig(new(big.Int).Add(r, big.NewInt(1))),
+			Msg:     emulated.ValueOf[emulated.Secp256k1Fr](hash),
+			Pub:     pub,
+			IsValid: 0,
+		}
+		err := test.IsSolved(&circuit, &witness, ecc.BN254.ScalarField())
+		assert.NoError(err, "wrong r must be reported as invalid")
+	}, "wrong-r")
 }
