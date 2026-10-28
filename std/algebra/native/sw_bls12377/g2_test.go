@@ -219,6 +219,38 @@ func TestConstantScalarMulG2EdgeCases(t *testing.T) {
 
 }
 
+type g2constantScalarMulOrder struct {
+	A g2AffP
+	R *big.Int
+}
+
+func (circuit *g2constantScalarMulOrder) Define(api frontend.API) error {
+	var res g2AffP
+	zero := fields_bls12377.E2{A0: 0, A1: 0}
+	infinity := g2AffP{X: zero, Y: zero}
+	res.constScalarMul(api, circuit.A, circuit.R)
+	res.AssertIsEqual(api, infinity)
+	return nil
+}
+
+// a constant scalar which is a multiple of the group order must give the
+// point at infinity.
+func TestConstantScalarMulG2Order(t *testing.T) {
+	_a := randomPointG2()
+	var a bls12377.G2Affine
+	a.FromJacobian(&_a)
+
+	r := ecc.BLS12_377.ScalarField()
+	for _, s := range []*big.Int{r, new(big.Int).Lsh(r, 1)} {
+		var circuit, witness g2constantScalarMulOrder
+		witness.A.Assign(&a)
+		circuit.R = new(big.Int).Set(s)
+
+		assert := test.NewAssert(t)
+		assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
+	}
+}
+
 type g2varScalarMul struct {
 	A g2AffP
 	C g2AffP `gnark:",public"`
