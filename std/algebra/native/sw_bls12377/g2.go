@@ -383,6 +383,10 @@ func (p *g2AffP) constScalarMul(api frontend.API, Q g2AffP, s *big.Int, opts ...
 	if err != nil {
 		panic(err)
 	}
+	cc := getInnerCurveConfig(api.Compiler().Field())
+	// reduce first so that multiples of the group order are handled by the
+	// zero scalar case below
+	s = new(big.Int).Mod(s, cc.fr)
 	if s.BitLen() == 0 {
 		zero := fields_bls12377.E2{A0: 0, A1: 0}
 		p.X = zero
@@ -393,8 +397,6 @@ func (p *g2AffP) constScalarMul(api frontend.API, Q g2AffP, s *big.Int, opts ...
 	// bits are constant and here it makes sense to use the table in the main
 	// loop.
 	var Acc, negQ, negPhiQ, phiQ g2AffP
-	cc := getInnerCurveConfig(api.Compiler().Field())
-	s.Mod(s, cc.fr)
 	cc.phi2(api, &phiQ, &Q)
 
 	k := ecc.SplitScalar(s, cc.glvBasis)
