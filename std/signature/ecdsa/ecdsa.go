@@ -31,11 +31,13 @@ type PublicKey[Base, Scalar emulated.FieldParams] sw_emulated.AffinePoint[Base]
 // [sw_emulated.Curve.JointScalarMulBase] for more details. To use incomplete
 // arithmetic, pass [algopts.WithIncompleteArithmetic] as an option.
 func (pk PublicKey[T, S]) Verify(api frontend.API, params sw_emulated.CurveParams, msg *emulated.Element[S], sig *Signature[S], opts ...algopts.AlgebraOption) {
-	qxBits, rbits, inputsValid := pk.prepareVerification(api, params, msg, sig, opts...)
+	qx, inputsValid := pk.prepareVerification(api, params, msg, sig, opts...)
 	api.AssertIsEqual(inputsValid, 1)
-	for i := range rbits {
-		api.AssertIsEqual(rbits[i], qxBits[i])
+	scalarApi, err := emulated.NewField[S](api)
+	if err != nil {
+		panic(err)
 	}
+	scalarApi.AssertIsEqual(qx, &sig.R)
 }
 
 // IsValid returns a boolean indicating if the signature sig is valid for public
@@ -58,18 +60,20 @@ func (pk PublicKey[T, S]) Verify(api frontend.API, params sw_emulated.CurveParam
 // [sw_emulated.Curve.JointScalarMulBase] for more details. To use incomplete
 // arithmetic, pass [algopts.WithIncompleteArithmetic] as an option.
 func (pk PublicKey[T, S]) IsValid(api frontend.API, params sw_emulated.CurveParams, msg *emulated.Element[S], sig *Signature[S], opts ...algopts.AlgebraOption) frontend.Variable {
-	qxBits, rbits, inputsValid := pk.prepareVerification(api, params, msg, sig, opts...)
-	verified := frontend.Variable(1)
-	for i := range rbits {
-		res := api.IsZero(api.Sub(rbits[i], qxBits[i]))
-		verified = api.And(verified, res)
+	qx, inputsValid := pk.prepareVerification(api, params, msg, sig, opts...)
+	scalarApi, err := emulated.NewField[S](api)
+	if err != nil {
+		panic(err)
 	}
+	verified := scalarApi.IsZero(scalarApi.Sub(qx, &sig.R))
 	return api.And(verified, inputsValid)
 }
 
-// prepareVerification computes Q = [r/s]PK + [m/s]G and returns the bits of Q.x,
-// the bits of r, and a boolean that is 1 iff r != 0, s != 0, and pk != O.
-func (pk PublicKey[T, S]) prepareVerification(api frontend.API, params sw_emulated.CurveParams, msg *emulated.Element[S], sig *Signature[S], opts ...algopts.AlgebraOption) ([]frontend.Variable, []frontend.Variable, frontend.Variable) {
+// prepareVerification computes Q = [r/s]PK + [m/s]G and returns Q.x as an
+// element of the scalar field (i.e. Q.x mod n, as required by ECDSA: the
+// signature is valid iff r == Q.x mod n), and a boolean that is 1 iff r != 0,
+// s != 0, and pk != O.
+func (pk PublicKey[T, S]) prepareVerification(api frontend.API, params sw_emulated.CurveParams, msg *emulated.Element[S], sig *Signature[S], opts ...algopts.AlgebraOption) (*emulated.Element[S], frontend.Variable) {
 	cr, err := sw_emulated.New[T, S](api, params)
 	if err != nil {
 		panic(err)
@@ -108,11 +112,11 @@ func (pk PublicKey[T, S]) prepareVerification(api frontend.API, params sw_emulat
 	// remain satisfiable, while invalid inputs are still rejected by
 	// inputsValid.
 	q := cr.JointScalarMulBase(&pkpt, rsInv, msInv, opts...)
+	// Q.x is a base field element in [0, p), which may be larger than the
+	// scalar field modulus n. Reinterpret its canonical bits as a scalar field
+	// element; comparing it with r in the scalar field is then a comparison of
+	// Q.x mod n with r.
 	qx := baseApi.Reduce(&q.X)
 	qxBits := baseApi.ToBits(qx)
-	rbits := scalarApi.ToBits(&sig.R)
-	if len(rbits) != len(qxBits) {
-		panic("non-equal lengths")
-	}
-	return qxBits, rbits, inputsValid
+	return scalarApi.FromBits(qxBits...), inputsValid
 }
