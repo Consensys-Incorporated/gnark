@@ -101,5 +101,10 @@ func (f *Field[T]) FromBits(bs ...frontend.Variable) *Element[T] {
 		limbs[i] = bits.FromBinary(f.api, bs[i*f.fParams.BitsPerLimb():(i+1)*f.fParams.BitsPerLimb()])
 	}
 	limbs[nbLimbs-1] = bits.FromBinary(f.api, bs[(nbLimbs-1)*f.fParams.BitsPerLimb():])
+	if len(bs) > f.fParams.Modulus().BitLen() {
+		// more bits than the modulus can encode 2p, 3p, ...: reduce now, so that
+		// every element of overflow 0 stays below 2p (IsZero relies on it).
+		return f.Reduce(f.newInternalElement(limbs, 1))
+	}
 	return f.newInternalElement(limbs, 0)
 }
