@@ -201,9 +201,19 @@ func (f *Field[T]) IsZero(a *Element[T]) frontend.Variable {
 	// however, for checking if the element is p, we can not use the
 	// optimization as we may have underflows. So we have to check every limb
 	// individually.
-	resP := f.api.IsZero(f.api.Sub(p.Limbs[0], ca.Limbs[0]))
-	for i := 1; i < len(ca.Limbs); i++ {
-		resP = f.api.Mul(resP, f.api.IsZero(f.api.Sub(p.Limbs[i], ca.Limbs[i])))
+	// Ensure ca has at least len(p.Limbs) limbs for safe and sound comparison.
+	caLimbs := ca.Limbs
+	if len(caLimbs) < len(p.Limbs) {
+		padded := make([]frontend.Variable, len(p.Limbs))
+		copy(padded, caLimbs)
+		for i := len(caLimbs); i < len(padded); i++ {
+			padded[i] = 0
+		}
+		caLimbs = padded
+	}
+	resP := f.api.IsZero(f.api.Sub(p.Limbs[0], caLimbs[0]))
+	for i := 1; i < len(p.Limbs); i++ {
+		resP = f.api.Mul(resP, f.api.IsZero(f.api.Sub(p.Limbs[i], caLimbs[i])))
 	}
 	return f.api.Or(res0, resP)
 }
