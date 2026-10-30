@@ -1377,11 +1377,7 @@ func (f *Field[T]) callPolyMvHint(mv *multivariate[T], at []*Element[T], assertZ
 	// first compute the length of the result so that we know how many bits we need for the quotient.
 	nbLimbs, nbBits := f.fParams.NbLimbs(), f.fParams.BitsPerLimb()
 	modBits := uint(f.fParams.Modulus().BitLen())
-	quoSize := f.polyMvEvalQuoSize(mv, at)
-	var nbQuoLimbs uint
-	if quoSize+nbBits > modBits {
-		nbQuoLimbs = (quoSize - modBits + nbBits) / nbBits
-	}
+	quoSize, nbQuoLimbs := f.polyMvQuoLimbs(mv, at)
 	nbRemLimbs := nbLimbs
 	if assertZero {
 		nbRemLimbs = 0
@@ -1448,13 +1444,8 @@ func (f *Field[T]) callPolyMvHint(mv *multivariate[T], at []*Element[T], assertZ
 }
 
 func (f *Field[T]) polyMvCarryBound(mv *multivariate[T], at []*Element[T]) uint {
-	nbBits := f.fParams.BitsPerLimb()
 	modBits := uint(f.fParams.Modulus().BitLen())
-	quoSize := f.polyMvEvalQuoSize(mv, at)
-	var nbQuoLimbs uint
-	if quoSize+nbBits > modBits {
-		nbQuoLimbs = (quoSize - modBits + nbBits) / nbBits
-	}
+	quoSize, nbQuoLimbs := f.polyMvQuoLimbs(mv, at)
 	return f.mvCarryBound(mv, at, nbQuoLimbs, modBits, quoSize)
 }
 
@@ -1622,6 +1613,23 @@ func (f *Field[T]) polyMvEvalQuoSize(mv *multivariate[T], at []*Element[T]) (quo
 	// for every term for overflow.
 	quoSize = slices.Max(quoSizes) + uint(len(quoSizes))
 	return quoSize
+}
+
+// polyMvQuoLimbs returns the bit-length bound of the evaluated integer and the
+// number of limbs needed for the absolute value of its quotient by the modulus.
+func (f *Field[T]) polyMvQuoLimbs(mv *multivariate[T], at []*Element[T]) (quoSize, nbQuoLimbs uint) {
+	nbBits := f.fParams.BitsPerLimb()
+	modBits := uint(f.fParams.Modulus().BitLen())
+	quoSize = f.polyMvEvalQuoSize(mv, at)
+	if quoSize+nbBits > modBits {
+		nbQuoLimbs = (quoSize - modBits + nbBits) / nbBits
+	}
+	if nbQuoLimbs == 0 && slices.ContainsFunc(mv.Coefficients, func(c int) bool { return c < 0 }) {
+		// inputs shorter than the modulus can still evaluate to a negative
+		// integer, whose quotient is -1 and needs a limb.
+		nbQuoLimbs = 1
+	}
+	return quoSize, nbQuoLimbs
 }
 
 // polyMvHint computes the multivariate evaluation as a hint. Should not be
