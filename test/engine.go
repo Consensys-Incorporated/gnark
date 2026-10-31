@@ -830,16 +830,13 @@ func (e *engine) ToCanonicalVariable(v frontend.Variable) frontend.CanonicalVari
 func (e *engine) MustBeLessOrEqCst(aBits []frontend.Variable, bound *big.Int, aForDebug frontend.Variable) {
 	v := new(big.Int)
 	for i, b := range aBits {
-		bb, ok := b.(*big.Int)
-		if !ok {
-			panic("not big.Int bit")
-		}
+		// bits may come from ToBinary, which returns uint values, so accept any variable
+		bb := e.toBigInt(b)
 		if !bb.IsUint64() {
 			panic("given bit large")
 		}
 		bbu := uint(bb.Uint64())
 		if bbu > 1 {
-			fmt.Println(bbu)
 			panic("given bit is not a bit")
 		}
 		v.SetBit(v, i, bbu)
