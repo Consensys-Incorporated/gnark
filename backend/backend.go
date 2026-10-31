@@ -57,11 +57,12 @@ type ProverOption func(*ProverConfig) error
 
 // ProverConfig is the configuration for the prover with the options applied.
 type ProverConfig struct {
-	SolverOpts     []solver.Option
-	HashToFieldFn  hash.Hash
-	ChallengeHash  hash.Hash
-	KZGFoldingHash hash.Hash
-	StatisticalZK  bool
+	SolverOpts        []solver.Option
+	HashToFieldFn     hash.Hash
+	ChallengeHash     hash.Hash
+	KZGFoldingHash    hash.Hash
+	StatisticalZK     bool
+	SolutionCachePath string // if non-empty, path to cache/load solver solution
 }
 
 // NewProverConfig returns a default ProverConfig with given prover options opts
@@ -134,6 +135,22 @@ func WithIcicleAcceleration() ProverOption {
 	return func(pc *ProverConfig) error {
 		return fmt.Errorf("WithIcicleAcceleration for switching is deprecated, please use the ICICLE backend directly. " +
 			"Import \"github.com/consensys/gnark/backend/accelerated/icicle\" and use the Prove method there")
+	}
+}
+
+// WithSolutionCachePath sets a file path used to cache the solver solution.
+// It is currently honored only by the ICICLE-accelerated Groth16 backend
+// (backend/accelerated/icicle/groth16). On the first prove call the solver
+// runs normally and the result is written to the file. Subsequent calls with
+// the same path load the cached solution (validated against the circuit's
+// wire count) and skip the solver entirely. The caller is responsible for
+// deleting the cache when the witness or circuit changes.
+// Caching is automatically disabled when BSB22 commitments are present (the
+// solver has side effects that cannot be replayed from cache).
+func WithSolutionCachePath(path string) ProverOption {
+	return func(pc *ProverConfig) error {
+		pc.SolutionCachePath = path
+		return nil
 	}
 }
 
