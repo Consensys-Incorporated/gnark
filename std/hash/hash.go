@@ -112,6 +112,9 @@ type merkleDamgardHasher struct {
 	iv    frontend.Variable
 	f     Compressor
 	api   frontend.API
+	// initial is true while the state is the IV, so that SetState does not have
+	// to compare (possibly uncomparable) circuit variables.
+	initial bool
 }
 
 // NewMerkleDamgardHasher transforms a 2-1 one-way function into a hash
@@ -122,14 +125,20 @@ func NewMerkleDamgardHasher(api frontend.API, f Compressor, initialState fronten
 		iv:    initialState,
 		f:     f,
 		api:   api,
+
+		initial: true,
 	}
 }
 
 func (h *merkleDamgardHasher) Reset() {
 	h.state = h.iv
+	h.initial = true
 }
 
 func (h *merkleDamgardHasher) Write(data ...frontend.Variable) {
+	if len(data) > 0 {
+		h.initial = false
+	}
 	for _, d := range data {
 		h.state = h.f.Compress(h.state, d)
 	}
@@ -144,12 +153,13 @@ func (h *merkleDamgardHasher) State() []frontend.Variable {
 }
 
 func (h *merkleDamgardHasher) SetState(state []frontend.Variable) error {
-	if h.state != h.iv {
+	if !h.initial {
 		return fmt.Errorf("the hasher is not in an initial state; reset before attempting to set the state")
 	}
 	if len(state) != 1 {
 		return fmt.Errorf("expected one state variable, got %d", len(state))
 	}
 	h.state = state[0]
+	h.initial = false
 	return nil
 }
