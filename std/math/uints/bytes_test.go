@@ -75,6 +75,9 @@ func (c *constFoldOnlyCircuit) Define(api frontend.API) error {
 	uapi.AssertIsEqual(and, NewU8(0x3c&0x5a&0xf0))
 	uapi.AssertIsEqual(or, NewU8(0x3c|0x5a|0x0f))
 	uapi.AssertIsEqual(xor, NewU8(0x3c^0x5a^0xff))
+	// Dummy only gives the circuit a witness; read it once, in both circuits
+	// alike, so that it is not flagged as unconstrained
+	api.AssertIsEqual(c.Dummy, 0)
 	return nil
 }
 
@@ -88,6 +91,7 @@ func (c *byteOpBaselineCircuit) Define(api frontend.API) error {
 	if _, err := NewBytes(api); err != nil {
 		return fmt.Errorf("NewBytes: %w", err)
 	}
+	api.AssertIsEqual(c.Dummy, 0)
 	return nil
 }
 

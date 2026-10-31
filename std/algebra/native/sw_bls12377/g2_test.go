@@ -187,12 +187,16 @@ type g2constantScalarMulEdgeCases struct {
 func (circuit *g2constantScalarMulEdgeCases) Define(api frontend.API) error {
 	expected1 := g2AffP{}
 	expected2 := g2AffP{}
+	expected3 := g2AffP{}
 	zero := fields_bls12377.E2{A0: 0, A1: 0}
 	infinity := g2AffP{X: zero, Y: zero}
 	expected1.constScalarMul(api, circuit.A, big.NewInt(0))
 	expected2.constScalarMul(api, infinity, circuit.R)
+	// the two cases above fold at compile time; the unit scalar binds A
+	expected3.constScalarMul(api, circuit.A, big.NewInt(1))
 	expected1.AssertIsEqual(api, infinity)
 	expected2.AssertIsEqual(api, infinity)
+	expected3.AssertIsEqual(api, circuit.A)
 	return nil
 }
 
