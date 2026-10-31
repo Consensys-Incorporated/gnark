@@ -215,3 +215,27 @@ func TestDivUncheckedZeroPanicsInEngine(t *testing.T) {
 		})
 	}
 }
+
+type lessOrEqCstCircuit struct {
+	X frontend.Variable
+}
+
+func (c *lessOrEqCstCircuit) Define(api frontend.API) error {
+	cmper, ok := api.Compiler().(interface {
+		MustBeLessOrEqCst(aBits []frontend.Variable, bound *big.Int, aForDebug frontend.Variable)
+	})
+	if !ok {
+		return fmt.Errorf("compiler does not implement MustBeLessOrEqCst")
+	}
+	cmper.MustBeLessOrEqCst(api.ToBinary(c.X, 3), big.NewInt(5), c.X)
+	return nil
+}
+
+func TestMustBeLessOrEqCstToBinaryBits(t *testing.T) {
+	assert := NewAssert(t)
+	assert.CheckCircuit(&lessOrEqCstCircuit{},
+		WithValidAssignment(&lessOrEqCstCircuit{X: 4}),
+		WithValidAssignment(&lessOrEqCstCircuit{X: 5}),
+		WithInvalidAssignment(&lessOrEqCstCircuit{X: 6}),
+	)
+}
