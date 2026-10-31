@@ -111,6 +111,38 @@ func TestSchemaCorrectness(t *testing.T) {
 	assert.Equal(expectedBuf.String(), instanceBuf.String())
 }
 
+type pointerInner struct {
+	A variable
+	B [2]variable
+}
+
+type circuitPointerField struct {
+	P  *pointerInner `gnark:",public"`
+	S  []*pointerInner
+	X  variable
+	NP *pointerInner
+}
+
+// TestSchemaPointerFields checks that the schema contains the leaves behind
+// pointer fields, in the same number as Walk (used to build the witness) finds.
+func TestSchemaPointerFields(t *testing.T) {
+	assert := require.New(t)
+
+	circuit := &circuitPointerField{
+		P: &pointerInner{},
+		S: []*pointerInner{{}, {}},
+	}
+	s, err := New(ecc.BN254.ScalarField(), circuit, tVariable)
+	assert.NoError(err)
+	count, err := Walk(ecc.BN254.ScalarField(), circuit, tVariable, nil)
+	assert.NoError(err)
+
+	assert.Equal(3, s.NbPublic)
+	assert.Equal(7, s.NbSecret)
+	assert.Equal(count.Public, s.NbPublic)
+	assert.Equal(count.Secret, s.NbSecret)
+}
+
 type circuitInherit1 struct {
 	X variable `gnark:"x"`
 	Y struct {
