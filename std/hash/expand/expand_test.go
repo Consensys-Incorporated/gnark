@@ -41,6 +41,30 @@ func (c *expandMsgXmdCircuit) Define(api frontend.API) error {
 }
 
 // adapted from gnark-crypto/field/hash/hashutils_test.go
+type expandDstCircuit struct {
+	Msg []uints.U8
+	dst []byte
+}
+
+func (c *expandDstCircuit) Define(api frontend.API) error {
+	_, err := ExpandMsgXmd(api, c.Msg, c.dst, 32)
+	return err
+}
+
+func TestExpandMsgXmdKeepsDst(t *testing.T) {
+	// dst has spare capacity, appending the DST size must not write into it
+	buf := []byte("DSTZ")
+	dst := buf[:3]
+	circuit := &expandDstCircuit{Msg: make([]uints.U8, 1), dst: dst}
+	assignment := &expandDstCircuit{Msg: uints.NewU8Array([]byte{0}), dst: dst}
+	if err := test.IsSolved(circuit, assignment, ecc.BN254.ScalarField()); err != nil {
+		t.Fatal(err)
+	}
+	if buf[3] != 'Z' {
+		t.Fatalf("dst backing array modified: buf[3] = %q", buf[3])
+	}
+}
+
 func TestExpandMsgXmd(t *testing.T) {
 	assert := test.NewAssert(t)
 	//name := "expand_message_xmd"
