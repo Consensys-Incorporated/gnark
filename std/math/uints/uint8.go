@@ -356,10 +356,14 @@ func (bf *BinaryField[T]) Add(a ...T) T {
 	}
 }
 
-// Lrot performs left rotation of a by c bits.
+// Lrot performs left rotation of a by c bits. A negative c rotates right. The
+// rotation must be strictly less than the bit width of T in absolute value.
 // For example, if T is U32, then Lrot(0x12345678, 8) = 0x34567812
 func (bf *BinaryField[T]) Lrot(a T, c int) T {
 	l := bf.lenBts()
+	if c <= -l*8 || c >= l*8 {
+		panic(fmt.Sprintf("rotation %d out of range for %d-bit value", c, l*8))
+	}
 	if c < 0 {
 		c = l*8 + c
 	}
@@ -386,10 +390,18 @@ func (bf *BinaryField[T]) Lrot(a T, c int) T {
 	return ret
 }
 
-// Rshift performs right shift of a by c bits.
+// Rshift performs right shift of a by c bits. Shifting by the bit width of T or
+// more returns zero.
 // For example, if T is U32, then Rshift(0x12345678, 8) = 0x00123456
 func (bf *BinaryField[T]) Rshift(a T, c int) T {
 	lenB := bf.lenBts()
+	if c >= lenB*8 {
+		var ret T
+		for i := 0; i < lenB; i++ {
+			ret[i] = NewU8(0)
+		}
+		return ret
+	}
 	shiftBl := c / 8
 	shiftBt := c % 8
 	partitioned := make([][2]frontend.Variable, lenB-shiftBl)
