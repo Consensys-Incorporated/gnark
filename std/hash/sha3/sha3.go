@@ -102,6 +102,9 @@ func (d *digest) paddingFixedWidth(length frontend.Variable) (padded []uints.U8,
 	// length mod rate and forging the padding position. Bounding quotient to
 	// the max block count keeps quotient*rate + remainder well below the native
 	// modulus, so the identity holds over the integers and remainder is pinned.
+	// This relies on length ∈ [0, maxLen] and remainder ∈ [0, rate) being
+	// bounded on both sides (checked above and in quoRemRate): then
+	// length-remainder > -rate, so the accepted quotient is non-negative.
 	comparator.AssertIsLessEq(quotient, maxTotalLen/d.rate)
 
 	// When i < minLen or i > maxLen, padding dsbyte is completely unnecessary
@@ -207,15 +210,21 @@ func (d *digest) squeezeBlocks(state [25]uints.U64) (result []uints.U8) {
 	return
 }
 
-// quoRemRate returns quotient = x / d.rate and remainder = x % d.rate with
+// quoRemRate returns quotient = x / d.rate and remainder = x % d.rate. It
+// constrains remainder ∈ [0, d.rate). The quotient is not constrained and
+// must be bounded by the caller to bind the Euclidean relation over the
+// integers.
 func (d *digest) quoRemRate(x frontend.Variable) (quotient, remainder frontend.Variable) {
-	var err error
-	// we can use api.AssertIsLessOrEqual when the bound is constant. It has a short path for case when bound is constant.
 	res, err := d.api.NewHint(remHint, 1, d.rate, x)
 	if err != nil {
 		panic(fmt.Sprintf("call remHint: %v", err))
 	}
+	// The remainder is a hint output, so it has to be bounded on both sides:
+	// the comparator alone is only sound when |a-b| <= rate, and the upper
+	// bound alone would also accept negative remainders down to
+	// rate - 2^bitlen(rate), which would shift the padding by one block.
 	c := cmp.NewBoundedComparator(d.api, big.NewInt(int64(d.rate)), false)
+	c.AssertIsLessEq(0, res[0])
 	c.AssertIsLess(res[0], d.rate)
 	quotient = d.api.DivUnchecked(d.api.Sub(x, res[0]), d.rate)
 	return quotient, res[0]

@@ -168,6 +168,39 @@ func negativeLengthForgeries(field *big.Int, in []byte, p fixedLengthParams, out
 	return res
 }
 
+// negativeRemainderForgery returns a forgery for an honest length L where the
+// remainder hint returns (L mod rate) - rate, i.e. a negative remainder. The
+// one-sided check remainder < rate accepts it when L mod rate >= 2*rate -
+// 2^bitlen(rate). Then quotient = L/rate + 1 and the padding is moved one
+// block further, yielding a second digest for the same input. It picks the
+// largest such L <= len(in) and returns false if there is none.
+func negativeRemainderForgery(in []byte, p fixedLengthParams, outLen int) (forgery, bool) {
+	maxLen := len(in)
+	maxTotalLen := maxLen + p.rate - maxLen%p.rate
+	threshold := 2*p.rate - (1 << big.NewInt(int64(p.rate)).BitLen())
+	length := maxLen
+	for length >= 0 && length%p.rate < threshold {
+		length--
+	}
+	if length < 0 {
+		return forgery{}, false
+	}
+	q0, r0 := length/p.rate, length%p.rate
+	padded := make([]byte, maxTotalLen)
+	copy(padded, in[:length])
+	padded[length] = p.dsbyte
+	if lastPos := (q0+2)*p.rate - 1; lastPos < maxTotalLen {
+		padded[lastPos] = 0x80
+	}
+	nbBlocks := min(q0+2, maxTotalLen/p.rate)
+	return forgery{
+		name:   fmt.Sprintf("length=%d/remainder=%d", length, r0-p.rate),
+		length: big.NewInt(int64(length)),
+		hint:   signedRemHint(-int64(p.rate)),
+		digest: nativeSpongeRaw(padded[:nbBlocks*p.rate], p.rate, outLen),
+	}, true
+}
+
 func TestSHA3FixedLengthSumForgery(t *testing.T) {
 	assert := test.NewAssert(t)
 	// 40 bytes: shorter than all rates. 170 bytes: spans two blocks for
@@ -194,6 +227,9 @@ func TestSHA3FixedLengthSumForgery(t *testing.T) {
 		for iname, in := range inputs {
 			for fname, field := range fields {
 				forgeries := negativeLengthForgeries(field, in, p, outLen)
+				if f, ok := negativeRemainderForgery(in, p, outLen); ok {
+					forgeries = append(forgeries, f)
+				}
 				circuit := &sha3FixedLengthSumCircuit{
 					In:       make([]uints.U8, len(in)),
 					Expected: make([]uints.U8, outLen),
@@ -235,6 +271,9 @@ func TestSHA3FixedLengthSumForgeryCompiled(t *testing.T) {
 	p := fixedLengthParamsByName[hname]
 	outLen := testCases[hname].native().Size()
 	forgeries := negativeLengthForgeries(field, in, p, outLen)
+	f, ok := negativeRemainderForgery(in, p, outLen)
+	assert.True(ok)
+	forgeries = append(forgeries, f)
 	remHintID := solver.GetHintID(remHint)
 
 	for _, builder := range []string{"r1cs", "scs"} {
