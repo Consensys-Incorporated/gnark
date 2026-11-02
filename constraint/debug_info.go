@@ -23,7 +23,8 @@ func (system *System) NewDebugInfo(errName string, i ...interface{}) DebugInfo {
 		case LinearExpression:
 			l.WriteVariable(v, &sbb)
 		case string:
-			sbb.WriteString(v)
+			// l.Format is later passed to fmt.Sprintf, so a literal '%' must be escaped
+			sbb.WriteString(strings.ReplaceAll(v, "%", "%%"))
 		case Term:
 			l.WriteVariable(LinearExpression{v}, &sbb)
 		default:

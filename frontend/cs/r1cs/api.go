@@ -751,9 +751,8 @@ func (builder *builder[E]) printArg(log *constraint.LogEntry, sbb *strings.Build
 
 	// no variables in nested struct, we use fmt std print function
 	if count == 0 || err != nil {
-		if _, err = fmt.Fprint(sbb, a); err != nil {
-			panic(err)
-		}
+		// the log format is later passed to fmt.Sprintf, so a literal '%' must be escaped
+		sbb.WriteString(strings.ReplaceAll(fmt.Sprint(a), "%", "%%"))
 		return
 	}
 

@@ -91,3 +91,44 @@ func BenchmarkCompileManyLookup(b *testing.B) {
 		}
 	})
 }
+
+// tableWithoutQueries fills a table but never reads from it, for instance when
+// the number of lookups depends on a circuit parameter that happens to be 0.
+type tableWithoutQueries struct {
+	Entries [4]frontend.Variable
+	X       frontend.Variable
+}
+
+func (c *tableWithoutQueries) Define(api frontend.API) error {
+	t := New(api)
+	for i := range c.Entries {
+		t.Insert(c.Entries[i])
+	}
+	t.Lookup()
+	api.AssertIsEqual(c.X, 1)
+	// the table adds no constraints and PLONK setup needs at least two
+	api.AssertIsEqual(api.Mul(c.X, c.X), 1)
+	return nil
+}
+
+type emptyUnusedTable struct {
+	X frontend.Variable
+}
+
+func (c *emptyUnusedTable) Define(api frontend.API) error {
+	New(api)
+	api.AssertIsEqual(c.X, 1)
+	// the table adds no constraints and PLONK setup needs at least two
+	api.AssertIsEqual(api.Mul(c.X, c.X), 1)
+	return nil
+}
+
+func TestTableWithoutQueries(t *testing.T) {
+	assert := test.NewAssert(t)
+	assert.CheckCircuit(&tableWithoutQueries{},
+		test.WithValidAssignment(&tableWithoutQueries{Entries: [4]frontend.Variable{1, 2, 3, 4}, X: 1}),
+		test.WithInvalidAssignment(&tableWithoutQueries{Entries: [4]frontend.Variable{1, 2, 3, 4}, X: 2}))
+	assert.CheckCircuit(&emptyUnusedTable{},
+		test.WithValidAssignment(&emptyUnusedTable{X: 1}),
+		test.WithInvalidAssignment(&emptyUnusedTable{X: 2}))
+}

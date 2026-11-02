@@ -29,6 +29,8 @@ func ReadBytesShort(reader io.Reader) ([]byte, int64, error) {
 		return nil, 1, nil
 	}
 	challenge := make([]byte, length)
-	dn, err := reader.Read(challenge)
+	// a single Read may return fewer bytes without an error (e.g. bufio.Reader
+	// at a buffer boundary), so read until the slice is full.
+	dn, err := io.ReadFull(reader, challenge)
 	return challenge, 1 + int64(dn), err
 }

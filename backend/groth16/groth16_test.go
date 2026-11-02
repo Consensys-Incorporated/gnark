@@ -13,6 +13,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/test"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCustomHashToField(t *testing.T) {
@@ -181,4 +182,59 @@ func getCurves() []ecc.ID {
 		return []ecc.ID{ecc.BN254}
 	}
 	return gnark.Curves()
+}
+
+func TestIndependentCommitments(t *testing.T) {
+	assert := require.New(t)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &independentCommitmentsCircuit{})
+	assert.NoError(err)
+	pk, vk, err := groth16.Setup(ccs)
+	assert.NoError(err)
+	witness, err := frontend.NewWitness(independentCommitmentsAssignment(), ecc.BN254.ScalarField())
+	assert.NoError(err)
+	pubWitness, err := witness.Public()
+	assert.NoError(err)
+	// the commitment hints may run concurrently, prove a few times to catch
+	// any interference between them
+	for i := 0; i < 20; i++ {
+		proof, err := groth16.Prove(ccs, pk, witness)
+		assert.NoError(err)
+		assert.NoError(groth16.Verify(proof, vk, pubWitness), "proof %d", i)
+	}
+}
+
+// independentCommitmentsCircuit has two commitments which don't depend on each
+// other, with enough constraints around them so that the solver computes both
+// commitment hints in the same level, in parallel.
+type independentCommitmentsCircuit struct {
+	X [400]frontend.Variable
+	Y [400]frontend.Variable `gnark:",public"`
+}
+
+func (c *independentCommitmentsCircuit) Define(api frontend.API) error {
+	for i := 0; i < len(c.X)/2; i++ {
+		api.AssertIsEqual(api.Mul(c.X[i], c.X[i]), c.Y[i])
+	}
+	cmt1, err := api.(frontend.Committer).Commit(c.X[0], c.X[1])
+	if err != nil {
+		return err
+	}
+	for i := len(c.X) / 2; i < len(c.X); i++ {
+		api.AssertIsEqual(api.Mul(c.X[i], c.X[i]), c.Y[i])
+	}
+	cmt2, err := api.(frontend.Committer).Commit(c.X[2], c.X[3])
+	if err != nil {
+		return err
+	}
+	api.AssertIsDifferent(cmt1, cmt2)
+	return nil
+}
+
+func independentCommitmentsAssignment() *independentCommitmentsCircuit {
+	var a independentCommitmentsCircuit
+	for i := range a.X {
+		a.X[i] = i + 2
+		a.Y[i] = (i + 2) * (i + 2)
+	}
+	return &a
 }
