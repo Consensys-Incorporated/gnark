@@ -76,6 +76,9 @@ func (d *digest) paddingFixedWidth(length frontend.Variable) (padded []uints.U8,
 	maxLen := len(d.in)
 	maxPaddingCount := d.rate - maxLen%d.rate
 	maxTotalLen := maxLen + maxPaddingCount
+	if d.minimalLength < 0 || d.minimalLength > maxLen {
+		panic(fmt.Sprintf("minimal length %d not in [0, %d]", d.minimalLength, maxLen))
+	}
 
 	comparator := cmp.NewBoundedComparator(d.api, big.NewInt(int64(maxTotalLen)), false)
 	// Assert minimalLength <= length <= maxLen over the integers. The
