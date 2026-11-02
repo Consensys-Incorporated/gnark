@@ -20,6 +20,9 @@ type PublicKey[Base, Scalar emulated.FieldParams] sw_emulated.AffinePoint[Base]
 //
 // We assume that the message msg is already hashed to the scalar field.
 //
+// With Q = [m/s]G + [r/s]PK, the signature is valid iff r == Q.x mod n, where n
+// is the scalar field modulus.
+//
 // The method asserts in-circuit that sig.R != 0, sig.S != 0, and pk is not the
 // point at infinity.
 //
@@ -49,6 +52,9 @@ func (pk PublicKey[T, S]) Verify(api frontend.API, params sw_emulated.CurveParam
 //
 // We assume that the message msg is already hashed to the scalar field.
 //
+// With Q = [m/s]G + [r/s]PK, the signature is valid iff r == Q.x mod n, where n
+// is the scalar field modulus.
+//
 // The method returns 0 if sig.R == 0, sig.S == 0, or pk is the point at
 // infinity, without asserting failure.
 //
@@ -70,9 +76,14 @@ func (pk PublicKey[T, S]) IsValid(api frontend.API, params sw_emulated.CurvePara
 }
 
 // prepareVerification computes Q = [r/s]PK + [m/s]G and returns Q.x as an
-// element of the scalar field (i.e. Q.x mod n, as required by ECDSA: the
-// signature is valid iff r == Q.x mod n), and a boolean that is 1 iff r != 0,
-// s != 0, and pk != O.
+// element of the scalar field, and a boolean that is 1 iff r != 0, s != 0, and
+// pk != O.
+//
+// The returned element is congruent to Q.x mod n but not reduced: its integer
+// value is Q.x in [0, p), which can be >= n. Callers may only use it in
+// modular operations (such as AssertIsEqual or Sub followed by IsZero) to check
+// r == Q.x mod n. Non-modular operations on it (ToBits, ToBitsCanonical,
+// AssertIsLessOrEqual against the modulus) see the unreduced value.
 func (pk PublicKey[T, S]) prepareVerification(api frontend.API, params sw_emulated.CurveParams, msg *emulated.Element[S], sig *Signature[S], opts ...algopts.AlgebraOption) (*emulated.Element[S], frontend.Variable) {
 	cr, err := sw_emulated.New[T, S](api, params)
 	if err != nil {
@@ -114,8 +125,9 @@ func (pk PublicKey[T, S]) prepareVerification(api frontend.API, params sw_emulat
 	q := cr.JointScalarMulBase(&pkpt, rsInv, msInv, opts...)
 	// Q.x is a base field element in [0, p), which may be larger than the
 	// scalar field modulus n. Take its canonical bits (ToBits alone could also
-	// return the bits of Q.x+p) and reinterpret them as a scalar field element;
-	// comparing it with r in the scalar field then compares Q.x mod n with r.
+	// return the bits of Q.x+p) and reinterpret them as a scalar field element.
+	// The result is congruent to Q.x mod n but not reduced, so comparing it
+	// with r in the scalar field compares Q.x mod n with r.
 	qxBits := baseApi.ToBitsCanonical(&q.X)
 	return scalarApi.FromBits(qxBits...), inputsValid
 }
