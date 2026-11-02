@@ -78,14 +78,15 @@ func (d *digest) paddingFixedWidth(length frontend.Variable) (padded []uints.U8,
 	maxTotalLen := maxLen + maxPaddingCount
 
 	comparator := cmp.NewBoundedComparator(d.api, big.NewInt(int64(maxTotalLen)), false)
-	// assert that the length is not larger than the maximum length of the
-	// hashed input. I don't currently see how it could be exploited if it was,
-	// but just to be safe.
+	// Assert minimalLength <= length <= maxLen over the integers. The
+	// comparator is only sound when |a-b| <= maxTotalLen, which does not hold
+	// for an arbitrary witness: with the upper bound alone a field-negative
+	// length (e.g. P-1) wraps around and passes. Each check decomposes the
+	// difference into bitlen(maxTotalLen) bits, so together they bound length
+	// on both sides to a small non-negative integer. The lower bound must
+	// therefore be checked also when minimalLength is 0.
 	comparator.AssertIsLessEq(length, maxLen)
-	// in case the lower bound on the length of input is given, check that the input is long enough
-	if d.minimalLength > 0 {
-		comparator.AssertIsLessEq(d.minimalLength, length)
-	}
+	comparator.AssertIsLessEq(d.minimalLength, length)
 
 	padded = make([]uints.U8, maxLen)
 	copy(padded[:], d.in[:])
