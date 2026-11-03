@@ -29,11 +29,6 @@ import (
 
 var cache = gkrtesting.NewCache(gkr.PrimeField(ecc.BLS12_381.ScalarField()))
 
-// newPoseidon2Hasher returns a Poseidon2 hasher over the field's elements.
-func newPoseidon2Hasher() fieldHasher {
-	return poseidon2.NewMerkleDamgardHasher()
-}
-
 func TestNoGateTwoInstances(t *testing.T) {
 	// Testing a single instance is not possible because the sumcheck implementation doesn't cover the trivial 0-variate case
 	testNoGate(t, []fr.Element{four, three})
@@ -99,7 +94,7 @@ func TestEndToEndPoseidon2(t *testing.T) {
 	}
 	// The output column is left nil: Prove computes it.
 
-	proof, proverClaims, err := Prove(circuit, schedule, assignment, newPoseidon2Hasher())
+	proof, proverClaims, err := Prove(circuit, schedule, assignment, poseidon2.NewHasher())
 	require.NoError(t, err)
 
 	var flattened []fr.Element
@@ -112,7 +107,7 @@ func TestEndToEndPoseidon2(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		claims, err := Verify(circuit, schedule, assignment.NumVars(), deserialized, newPoseidon2Hasher())
+		claims, err := Verify(circuit, schedule, assignment.NumVars(), deserialized, poseidon2.NewHasher())
 		if err != nil {
 			return nil, err
 		}
@@ -408,7 +403,7 @@ func benchmarkGkrMiMC(b *testing.B, nbInstances, mimcDepth int) {
 	//b.ResetTimer()
 	fmt.Println("constructing proof")
 	start = time.Now().UnixMicro()
-	_, _, err = Prove(c, schedule, assignment, newPoseidon2Hasher())
+	_, _, err = Prove(c, schedule, assignment, poseidon2.NewHasher())
 	proved := time.Now().UnixMicro() - start
 	fmt.Println("proved in", proved, "μs")
 	assert.NoError(b, err)

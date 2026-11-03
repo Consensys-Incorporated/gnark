@@ -28,7 +28,7 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() fiel
 	}
 
 	claim := singleMultilinClaim{g: poly.Clone()}
-	t := gkrcore.NewHashTranscript[fr.Element](hashGenerator())
+	t := gkrcore.NewNativeTranscript(hashGenerator())
 
 	proof := sumcheckProve(&claim, t)
 
@@ -46,14 +46,14 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() fiel
 	}
 
 	lazyClaim := singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
-	t = gkrcore.NewHashTranscript[fr.Element](hashGenerator())
+	t = gkrcore.NewNativeTranscript(hashGenerator())
 	if err := sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t); err != nil {
 		return err
 	}
 
 	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], gkrtesting.ToElement[fr.Element](1))
 	lazyClaim = singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
-	t = gkrcore.NewHashTranscript[fr.Element](hashGenerator())
+	t = gkrcore.NewNativeTranscript(hashGenerator())
 	if sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t) == nil {
 		return fmt.Errorf("bad proof accepted")
 	}

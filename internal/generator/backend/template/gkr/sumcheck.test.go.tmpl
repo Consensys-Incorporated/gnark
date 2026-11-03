@@ -1,7 +1,8 @@
+{{ $newTranscript := "gkrcore.NewNativeTranscript" }}{{ if .Mixed }}{{ $newTranscript = printf "gkrcore.NewExtensionTranscript[%s]" .ElementType }}{{ end }}
 import (
+	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"fmt"
 	"{{ .FieldPackagePath }}/polynomial"
-	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
 	{{ if not .GenerateTestVectors}}
@@ -19,7 +20,7 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() fiel
 	}
 
 	claim := singleMultilinClaim{g: poly.Clone()}
-	t := gkrcore.NewHashTranscript[{{ .ElementType }}](hashGenerator())
+	t := {{ $newTranscript }}(hashGenerator())
 
 	proof := sumcheckProve(&claim, t)
 
@@ -37,14 +38,14 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() fiel
 	}
 
 	lazyClaim := singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
-	t = gkrcore.NewHashTranscript[{{ .ElementType }}](hashGenerator())
+	t = {{ $newTranscript }}(hashGenerator())
 	if err := sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t); err != nil {
 		return err
 	}
 
 	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], gkrtesting.ToElement[{{ .ElementType }}](1))
 	lazyClaim = singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
-	t = gkrcore.NewHashTranscript[{{ .ElementType }}](hashGenerator())
+	t = {{ $newTranscript }}(hashGenerator())
 	if sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t) == nil {
 		return fmt.Errorf("bad proof accepted")
 	}

@@ -81,7 +81,7 @@ type resources struct {
 	workers            *utils.WorkerPool
 	circuit            Circuit
 	schedule           constraint.GkrProvingSchedule
-	transcript         *transcript
+	transcript         transcript
 	claimValueIndices  [][]int // claimValueIndices[wI][claimI]: index of w's claimI-th claimed value in its source level's finalEvalProof
 	claims             Claims
 	consolidated       []bool // the wires of schedule[0], indexed by wire
@@ -104,13 +104,13 @@ func identityGate() gkrcore.SerializableGate {
 
 // newResources builds the resources shared by Prove and Verify. It takes no assignment and
 // creates no pools; Prove sets those up separately afterward, since Verify needs neither.
-func newResources(c Circuit, schedule constraint.GkrProvingSchedule, nbVars int, hasher hash.FieldHasher[extensions.E6, extensions.E6]) resources {
+func newResources[D gkrcore.Digest[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, nbVars int, hasher hash.FieldHasher[koalabear.Element, D]) resources {
 	return resources{
 		outgoingEvalPoints: make([][][]extensions.E6, len(schedule)+1),
 		nbVars:             nbVars,
 		circuit:            c,
 		schedule:           schedule,
-		transcript:         gkrcore.NewHashTranscript[extensions.E6](hasher),
+		transcript:         gkrcore.NewExtensionTranscript[extensions.E6](hasher),
 		claimValueIndices:  c.ClaimValueIndices(schedule),
 		claims:             make(Claims),
 		consolidated:       c.LevelWires(schedule[0]),
@@ -196,7 +196,7 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 // inputs and outputs; the caller must check them. The claim values returned to the caller, the
 // output evaluations among them, are not bound into the transcript. hasher must be seeded as
 // Verify requires.
-func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.FieldHasher[extensions.E6, extensions.E6]) (Proof, Claims, error) {
+func Prove[D gkrcore.Digest[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.FieldHasher[koalabear.Element, D]) (Proof, Claims, error) {
 	nbInstances := assignment.NumInstances()
 	nbVars := assignment.NumVars()
 	if nbVars == 0 {
@@ -294,10 +294,9 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // The transcript starts empty, so for soundness the verifier must seed hasher, as the prover did,
 // by writing to it a commitment to the circuit, the schedule, the number of instances and the input
 // and output columns, computed from values it trusts.
-// Over the extension, wrap a base field hasher with gnark-crypto's
-// NewBaseFieldHashAdapterE6; base field seed elements can be written to the
-// base hasher directly.
-func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.FieldHasher[extensions.E6, extensions.E6]) (Claims, error) {
+// The hasher is a hasher of koalabear.Element, the prime subfield of extensions.E6, and the
+// seed is made of koalabear.Element elements.
+func Verify[D gkrcore.Digest[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.FieldHasher[koalabear.Element, D]) (Claims, error) {
 	if logNbInstances < 1 {
 		return nil, errors.New("number of variables must be positive")
 	}

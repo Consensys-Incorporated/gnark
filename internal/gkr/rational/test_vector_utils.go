@@ -26,7 +26,7 @@ func hashFromDescription(d gkrtesting.HashDescription) (fieldHasher, error) {
 		switch _type {
 		case "const":
 			startState := int64(d["val"].(float64))
-			return &messageCounter{state: startState, step: 0}, nil
+			return &messageCounter{startState: startState, state: startState, step: 0}, nil
 		default:
 			return nil, fmt.Errorf("unknown fake hash type \"%s\"", _type)
 		}
@@ -37,24 +37,31 @@ func hashFromDescription(d gkrtesting.HashDescription) (fieldHasher, error) {
 // messageCounter is a stand-in hasher whose state depends only on the number of field elements
 // written to it, not on their values.
 type messageCounter struct {
-	state int64
-	step  int64
+	startState int64
+	state      int64
+	step       int64
 }
 
-func (m *messageCounter) WriteField(e ...rational.Element) {
+func (m *messageCounter) Reset() { m.state = m.startState }
+
+func (m *messageCounter) WriteElement(rational.Element) { m.state += m.step }
+
+func (m *messageCounter) WriteElements(e ...rational.Element) {
 	m.state += int64(len(e)) * m.step
 }
 
 func (m *messageCounter) PadBlock() {}
 
-func (m *messageCounter) SumField() rational.Element {
+func (m *messageCounter) SumDigest() rational.Element {
 	var res rational.Element
 	res.SetInt64(m.state + m.step)
 	return res
 }
 
+func (m *messageCounter) BlockLen() int { return 1 }
+
 func newMessageCounter(startState, step int) fieldHasher {
-	return &messageCounter{state: int64(startState), step: int64(step)}
+	return &messageCounter{startState: int64(startState), state: int64(startState), step: int64(step)}
 }
 
 func newMessageCounterGenerator(startState, step int) func() fieldHasher {

@@ -2,10 +2,8 @@ package gkrapi
 
 import (
 	"fmt"
-	"hash"
 	"math/big"
 	"math/rand"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -570,49 +568,22 @@ func (m MiMCCipherGate) Degree() int {
 	return 7
 }
 
-type constBytesPseudoHash []byte
+// constFieldPseudoHash is a constant "hash" over the elements of F.
+type constFieldPseudoHash[F any] struct{ digest F }
 
-func (c constBytesPseudoHash) Write(p []byte) (n int, err error) {
-	return len(p), nil
-}
+func (h constFieldPseudoHash[F]) Reset() {}
 
-func (c constBytesPseudoHash) Sum([]byte) []byte {
-	return slices.Clone(c)
-}
+func (h constFieldPseudoHash[F]) WriteElement(F) {}
 
-func (c constBytesPseudoHash) Reset() {
-}
-
-func (c constBytesPseudoHash) Size() int {
-	return len(c)
-}
-
-func (c constBytesPseudoHash) BlockSize() int {
-	return len(c)
-}
-
-func newConstBytesPseudoHash(c int64, mod *big.Int) constBytesPseudoHash {
-	i := big.NewInt(c)
-	i.Mod(i, mod)
-	b := make([]byte, len(mod.Bytes()))
-	i.FillBytes(b)
-	return b
-}
-
-// constFieldPseudoHash is a constant "hash" over the elements of F: it is both a hash.Hash, as
-// RegisterCustomHash requires, and a gnark-crypto hash.FieldHasher, as the GKR blueprints require.
-type constFieldPseudoHash[F any] struct {
-	constBytesPseudoHash
-	digest F
-}
-
-func (h constFieldPseudoHash[F]) WriteField(...F) {}
+func (h constFieldPseudoHash[F]) WriteElements(...F) {}
 
 func (h constFieldPseudoHash[F]) PadBlock() {}
 
-func (h constFieldPseudoHash[F]) SumField() F {
+func (h constFieldPseudoHash[F]) SumDigest() F {
 	return h.digest
 }
+
+func (h constFieldPseudoHash[F]) BlockLen() int { return 1 }
 
 // registerConstPseudoHash registers the constant hash v, over the scalar field of curve, as
 // name_CURVE.
@@ -620,9 +591,9 @@ func registerConstPseudoHash[F any, PF interface {
 	*F
 	SetBigInt(*big.Int) *F
 }](name string, v int64, curve ecc.ID) {
-	h := constFieldPseudoHash[F]{constBytesPseudoHash: newConstBytesPseudoHash(v, curve.ScalarField())}
+	var h constFieldPseudoHash[F]
 	PF(&h.digest).SetBigInt(big.NewInt(v))
-	gcHash.RegisterCustomHash(name+"_"+strings.ToUpper(curve.String()), func() hash.Hash {
+	gcHash.RegisterCustomFieldHasher(name+"_"+strings.ToUpper(curve.String()), func() gcHash.FieldHasher[F, F] {
 		return h
 	})
 }

@@ -1,4 +1,6 @@
 {{ $gateEvaluator := "GateEvaluator" }}{{ if .Mixed }}{{ $gateEvaluator = "GateEvaluatorMixed" }}{{ end }}
+{{ $newTranscript := "gkrcore.NewNativeTranscript" }}{{ if .Mixed }}{{ $newTranscript = printf "gkrcore.NewExtensionTranscript[%s]" .ElementType }}{{ end }}
+{{ $digest := .ElementType }}{{ $typeParams := "" }}{{ if .Mixed }}{{ $digest = "D" }}{{ $typeParams = printf "[D gkrcore.Digest[%s]]" .BaseElementType }}{{ end }}
 import (
 	"errors"
 	"fmt"
@@ -86,7 +88,7 @@ type resources struct {
 	workers            *utils.WorkerPool
 	circuit            Circuit
 	schedule           constraint.GkrProvingSchedule
-	transcript         *transcript
+	transcript         transcript
 	claimValueIndices  [][]int // claimValueIndices[wI][claimI]: index of w's claimI-th claimed value in its source level's finalEvalProof
 	claims             Claims
 	consolidated       []bool // the wires of schedule[0], indexed by wire
@@ -111,13 +113,13 @@ func identityGate() gkrcore.SerializableGate {
 
 // newResources builds the resources shared by Prove and Verify. It takes no assignment and
 // creates no pools; Prove sets those up separately afterward, since Verify needs neither.
-func newResources(c Circuit, schedule constraint.GkrProvingSchedule, nbVars int, hasher hash.FieldHasher[{{ .ElementType }}, {{ .ElementType }}]) resources {
+func newResources{{ $typeParams }}(c Circuit, schedule constraint.GkrProvingSchedule, nbVars int, hasher hash.FieldHasher[{{ .BaseElementType }}, {{ $digest }}]) resources {
 	return resources{
 		outgoingEvalPoints: make([][][]{{ .ElementType }}, len(schedule)+1),
 		nbVars:             nbVars,
 		circuit:            c,
 		schedule:           schedule,
-		transcript:         gkrcore.NewHashTranscript[{{ .ElementType }}](hasher),
+		transcript:         {{ $newTranscript }}(hasher),
 		claimValueIndices:  c.ClaimValueIndices(schedule),
 		claims:             make(Claims),
 		consolidated:       c.LevelWires(schedule[0]),
@@ -207,7 +209,7 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 // inputs and outputs; the caller must check them. The claim values returned to the caller, the
 // output evaluations among them, are not bound into the transcript. hasher must be seeded as
 // Verify requires.
-func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.FieldHasher[{{ .ElementType }}, {{ .ElementType }}]) (Proof, Claims, error) {
+func Prove{{ $typeParams }}(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.FieldHasher[{{ .BaseElementType }}, {{ $digest }}]) (Proof, Claims, error) {
 	nbInstances := assignment.NumInstances()
 	nbVars := assignment.NumVars()
 	if nbVars == 0 {
@@ -314,11 +316,10 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // by writing to it a commitment to the circuit, the schedule, the number of instances and the input
 // and output columns, computed from values it trusts.
 {{- if .Mixed }}
-// Over the extension, wrap a base field hasher with gnark-crypto's
-// NewBaseFieldHashAdapter{{ .ExtensionSuffix }}; base field seed elements can be written to the
-// base hasher directly.
+// The hasher is a hasher of {{ .BaseElementType }}, the prime subfield of {{ .ElementType }}, and the
+// seed is made of {{ .BaseElementType }} elements.
 {{- end }}
-func Verify(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.FieldHasher[{{ .ElementType }}, {{ .ElementType }}]) (Claims, error) {
+func Verify{{ $typeParams }}(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.FieldHasher[{{ .BaseElementType }}, {{ $digest }}]) (Claims, error) {
 	if logNbInstances < 1 {
 		return nil, errors.New("number of variables must be positive")
 	}

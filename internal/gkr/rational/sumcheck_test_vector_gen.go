@@ -38,7 +38,7 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	}
 
 	claim := singleMultilinClaim{poly}
-	t := gkrcore.NewHashTranscript[rational.Element](hsh)
+	t := gkrcore.NewNativeTranscript(hsh)
 	proof := sumcheckProve(&claim, t)
 	testCaseInfo.Proof = sumcheckToPrintableProof(proof)
 
@@ -56,7 +56,7 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}
-	t = gkrcore.NewHashTranscript[rational.Element](hsh)
+	t = gkrcore.NewNativeTranscript(hsh)
 	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, t); err != nil {
 		return fmt.Errorf("proof rejected: %v", err)
 	}
@@ -65,7 +65,7 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}
-	t = gkrcore.NewHashTranscript[rational.Element](hsh)
+	t = gkrcore.NewNativeTranscript(hsh)
 	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, t); err == nil {
 		return fmt.Errorf("bad proof accepted")
 	}

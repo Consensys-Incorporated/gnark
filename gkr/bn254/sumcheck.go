@@ -18,8 +18,8 @@ import (
 
 // This does not make use of parallelism and represents polynomials as lists of coefficients.
 
-// transcript specializes gkrcore's generic hash transcript to this field.
-type transcript = gkrcore.HashTranscript[fr.Element]
+// transcript is the Fiat-Shamir transcript over this field.
+type transcript = gkrcore.Transcript[fr.Element]
 
 // sumcheckClaims to a multi-sumcheck statement. i.e. one of the form ∑_{0≤i<2ⁿ} fⱼ(i) = cⱼ for 1 ≤ j ≤ m.
 // Later evolving into a claim of the form gⱼ = ∑_{0≤i<2ⁿ⁻ʲ} g(r₁, r₂, ..., rⱼ₋₁, Xⱼ, i...)
@@ -46,7 +46,7 @@ type sumcheckProof struct {
 // sumcheckProve creates a non-interactive sumcheck proof.
 // The fold challenge is derived by the caller (proveLevel).
 // Pattern: roundPolynomial, [roundFold, roundPolynomial]*, proveFinalEval.
-func sumcheckProve(claims sumcheckClaims, t *transcript) sumcheckProof {
+func sumcheckProve(claims sumcheckClaims, t transcript) sumcheckProof {
 	varsNum := claims.varsNum()
 	proof := sumcheckProof{partialSumPolys: make([]polynomial.Polynomial, varsNum)}
 	proof.partialSumPolys[0] = claims.roundPolynomial()
@@ -66,7 +66,7 @@ func sumcheckProve(claims sumcheckClaims, t *transcript) sumcheckProof {
 // sumcheckVerify verifies a non-interactive sumcheck proof.
 // The fold challenge is derived by the caller (verifyLevel).
 // claimedSum is the expected sum; degree is the polynomial's degree in each variable.
-func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum fr.Element, degree int, t *transcript) error {
+func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum fr.Element, degree int, t transcript) error {
 	r := make([]fr.Element, claims.varsNum())
 
 	gJ := make(polynomial.Polynomial, degree+1)

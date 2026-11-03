@@ -30,7 +30,7 @@ func Example() {
 
 	// Prove and Verify must be given hashers seeded identically with a commitment to the circuit,
 	// the schedule, the number of instances and the inputs and outputs. The example omits it.
-	proof, proverClaims, err := gkrbn254.Prove(circuit, schedule, assignment, mimc.NewFieldHasher())
+	proof, proverClaims, err := gkrbn254.Prove(circuit, schedule, assignment, mimc.NewHasher())
 	assertNoError(err)
 	assertNoError(proverClaims.Check(assignment))
 
@@ -41,7 +41,7 @@ func Example() {
 	deserialized, err := gkrbn254.DeserializeProof(circuit, schedule, flattened)
 	assertNoError(err)
 
-	verifierClaims, err := gkrbn254.Verify(circuit, schedule, 1, deserialized, mimc.NewFieldHasher())
+	verifierClaims, err := gkrbn254.Verify(circuit, schedule, 1, deserialized, mimc.NewHasher())
 	assertNoError(err)
 	assertNoError(verifierClaims.Check(assignment)) // every returned claim must be checked
 
