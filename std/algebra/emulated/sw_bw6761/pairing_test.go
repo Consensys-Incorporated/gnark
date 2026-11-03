@@ -9,6 +9,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761"
+	"github.com/consensys/gnark-crypto/ecc/bw6-761/fp"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
@@ -468,6 +469,43 @@ func TestGroupMembershipSolve(t *testing.T) {
 	}
 	err := test.IsSolved(&GroupMembershipCircuit{}, &witness, ecc.BN254.ScalarField())
 	assert.NoError(err)
+}
+
+func TestGroupMembershipInfinity(t *testing.T) {
+	assert := test.NewAssert(t)
+	p, q := randomG1G2Affines()
+	var p0 bw6761.G1Affine
+	var q0 bw6761.G2Affine
+	for _, w := range []GroupMembershipCircuit{
+		{InG1: NewG1Affine(p0), InG2: NewG2Affine(q)},
+		{InG1: NewG1Affine(p), InG2: NewG2Affine(q0)},
+		{InG1: NewG1Affine(p0), InG2: NewG2Affine(q0)},
+	} {
+		err := test.IsSolved(&GroupMembershipCircuit{}, &w, ecc.BN254.ScalarField())
+		assert.NoError(err)
+	}
+}
+
+func TestGroupMembershipNotInSubgroup(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, q := randomG1G2Affines()
+	// a point on y² = x³ - 1 which is not in G1
+	var p bw6761.G1Affine
+	var one, rhs fp.Element
+	one.SetOne()
+	for x := uint64(2); ; x++ {
+		p.X.SetUint64(x)
+		rhs.Square(&p.X).Mul(&rhs, &p.X).Sub(&rhs, &one)
+		if p.Y.Sqrt(&rhs) != nil && p.IsOnCurve() && !p.IsInSubGroup() {
+			break
+		}
+	}
+	witness := GroupMembershipCircuit{
+		InG1: NewG1Affine(p),
+		InG2: NewG2Affine(q),
+	}
+	err := test.IsSolved(&GroupMembershipCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.Error(err)
 }
 
 type MuxesCircuits struct {
