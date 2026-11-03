@@ -522,7 +522,7 @@ func TestMiMCNoDepSolve(t *testing.T) {
 
 func TestMiMCShallowNoDepSolveWithMiMCHash(t *testing.T) {
 	assert := test.NewAssert(t)
-	circuit, assignment := mimcNoDepCircuits(5, 1<<3, "MIMC")
+	circuit, assignment := mimcNoDepCircuits(5, 1<<3, gcHash.FieldHasherMiMC)
 	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithCurves(ecc.BN254))
 }
 
@@ -626,7 +626,7 @@ func (c *pow4Circuit) Define(api frontend.API) error {
 	x2 := gkrApi.Mul(x, x)   // x²
 	x4 := gkrApi.Mul(x2, x2) // x⁴
 
-	gkrCircuit, err := gkrApi.Compile("MIMC")
+	gkrCircuit, err := gkrApi.Compile(gcHash.FieldHasherMiMC)
 	if err != nil {
 		return err
 	}
@@ -684,7 +684,7 @@ func TestSingleInstance(t *testing.T) {
 		X:         make([]frontend.Variable, 1),
 		Y:         make([]frontend.Variable, 1),
 		mimcDepth: 2,
-		hashName:  "MIMC",
+		hashName:  gcHash.FieldHasherMiMC,
 	}
 	assignment := mimcNoDepCircuit{
 		X: []frontend.Variable{10},
@@ -714,7 +714,7 @@ func (c *testNoInstanceCircuit) Define(api frontend.API) error {
 	y := gkrApi.Mul(x, x)
 	gkrApi.Mul(x, y)
 
-	_, err = gkrApi.Compile("MIMC")
+	_, err = gkrApi.Compile(gcHash.FieldHasherMiMC)
 	return err
 }
 
@@ -741,7 +741,7 @@ func (c *testMultiCircuit) Define(api frontend.API) error {
 	y2 := api2.NewInput()
 	z2 := api2.Mul(x2, y2)
 
-	circuit2, err := api2.Compile("MIMC")
+	circuit2, err := api2.Compile(gcHash.FieldHasherMiMC)
 	if err != nil {
 		return err
 	}
