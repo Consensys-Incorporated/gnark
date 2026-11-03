@@ -5,7 +5,6 @@ import (
 	"math/big"
 	"math/rand"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -585,15 +584,14 @@ func (h constFieldPseudoHash[F]) SumDigest() F {
 
 func (h constFieldPseudoHash[F]) BlockLen() int { return 1 }
 
-// registerConstPseudoHash registers the constant hash v, over the scalar field of curve, as
-// name_CURVE.
+// registerConstPseudoHash registers the constant hash v over F as name.
 func registerConstPseudoHash[F any, PF interface {
 	*F
 	SetBigInt(*big.Int) *F
-}](name string, v int64, curve ecc.ID) {
+}](name string, v int64) {
 	var h constFieldPseudoHash[F]
 	PF(&h.digest).SetBigInt(big.NewInt(v))
-	gcHash.RegisterCustomFieldHasher(name+"_"+strings.ToUpper(curve.String()), func() gcHash.FieldHasher[F, F] {
+	gcHash.RegisterFieldHasher(name, func() gcHash.FieldHasher[F, F] {
 		return h
 	})
 }
@@ -605,10 +603,10 @@ func init() {
 		stdHash.RegisterCustomHash(name, func(api frontend.API) (stdHash.FieldHasher, error) {
 			return constPseudoHash(v), nil
 		})
-		registerConstPseudoHash[frbn254.Element](name, v, ecc.BN254)
-		registerConstPseudoHash[frbls12377.Element](name, v, ecc.BLS12_377)
-		registerConstPseudoHash[frbls12381.Element](name, v, ecc.BLS12_381)
-		registerConstPseudoHash[frbw6761.Element](name, v, ecc.BW6_761)
+		registerConstPseudoHash[frbn254.Element](name, v)
+		registerConstPseudoHash[frbls12377.Element](name, v)
+		registerConstPseudoHash[frbls12381.Element](name, v)
+		registerConstPseudoHash[frbw6761.Element](name, v)
 	}
 }
 

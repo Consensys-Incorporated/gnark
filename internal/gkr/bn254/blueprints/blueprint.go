@@ -259,7 +259,7 @@ func (b *BlueprintProve) Solve(s constraint.Solver[constraint.U64], inst constra
 	}
 
 	// Create hasher and write base challenges
-	hsh, err := hash.NewFieldHasher[fr.Element, fr.Element](b.HashName + "_BN254")
+	hsh, err := hash.NewFieldHasher[fr.Element, fr.Element](b.HashName)
 	if err != nil {
 		return err
 	}
