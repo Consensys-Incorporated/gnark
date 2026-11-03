@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/consensys/gnark-crypto/field/mamabear"
-	extensionsHash "github.com/consensys/gnark-crypto/field/mamabear/extensions/hash"
 	"github.com/consensys/gnark-crypto/field/mamabear/poseidon2"
 	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/gkr/gkrapi"
@@ -32,8 +31,8 @@ func randomHalves(width, nbInstances int) (left, right [][]mamabear.Element) {
 }
 
 // newHasher returns a hasher for the gadget's proofs.
-func newHasher() *extensionsHash.BaseFieldHashAdapterE3 {
-	return extensionsHash.NewBaseFieldHashAdapterE3(poseidon2.NewMerkleDamgardHasher())
+func newHasher() *poseidon2.Hasher {
+	return poseidon2.NewHasher()
 }
 
 // TestAffineGateFewTerms checks affine gates whose sum has fewer than two terms.
@@ -98,17 +97,14 @@ func TestCompressor(t *testing.T) {
 
 	// Prove has computed the outputs.
 	reference := poseidon2.NewCompressor(poseidon2.NewDefaultPermutation())
-	half := params.Width / 2
-	leftRow := make([]mamabear.Element, half)
-	rightRow := make([]mamabear.Element, half)
-	expected := make([]mamabear.Element, half)
+	var leftRow, rightRow, expected [poseidon2.BlockLen]mamabear.Element
 	for instanceI := range 1 << logNbInstances {
-		for i := range half {
+		for i := range leftRow {
 			leftRow[i] = left[i][instanceI]
 			rightRow[i] = right[i][instanceI]
 		}
-		reference.CompressField(expected, leftRow, rightRow)
-		for i := range half {
+		reference.CompressField(&expected, &leftRow, &rightRow)
+		for i := range expected {
 			assert.True(t, expected[i].Equal(&assignment[compressor.Out[i]][instanceI]), "instance %d, output %d", instanceI, i)
 		}
 	}

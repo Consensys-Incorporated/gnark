@@ -2,12 +2,9 @@ package gkrapi
 
 import (
 	"fmt"
-	"hash"
 	"math/big"
 	"math/rand"
-	"slices"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -525,7 +522,7 @@ func TestMiMCNoDepSolve(t *testing.T) {
 
 func TestMiMCShallowNoDepSolveWithMiMCHash(t *testing.T) {
 	assert := test.NewAssert(t)
-	circuit, assignment := mimcNoDepCircuits(5, 1<<3, "MIMC")
+	circuit, assignment := mimcNoDepCircuits(5, 1<<3, gcHash.FieldHasherMiMC)
 	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithCurves(ecc.BN254))
 }
 
@@ -570,59 +567,31 @@ func (m MiMCCipherGate) Degree() int {
 	return 7
 }
 
-type constBytesPseudoHash []byte
+// constFieldPseudoHash is a constant "hash" over the elements of F.
+type constFieldPseudoHash[F any] struct{ digest F }
 
-func (c constBytesPseudoHash) Write(p []byte) (n int, err error) {
-	return len(p), nil
-}
+func (h constFieldPseudoHash[F]) Reset() {}
 
-func (c constBytesPseudoHash) Sum([]byte) []byte {
-	return slices.Clone(c)
-}
+func (h constFieldPseudoHash[F]) WriteElement(F) {}
 
-func (c constBytesPseudoHash) Reset() {
-}
-
-func (c constBytesPseudoHash) Size() int {
-	return len(c)
-}
-
-func (c constBytesPseudoHash) BlockSize() int {
-	return len(c)
-}
-
-func newConstBytesPseudoHash(c int64, mod *big.Int) constBytesPseudoHash {
-	i := big.NewInt(c)
-	i.Mod(i, mod)
-	b := make([]byte, len(mod.Bytes()))
-	i.FillBytes(b)
-	return b
-}
-
-// constFieldPseudoHash is a constant "hash" over the elements of F: it is both a hash.Hash, as
-// RegisterCustomHash requires, and a gnark-crypto hash.FieldHasher, as the GKR blueprints require.
-type constFieldPseudoHash[F any] struct {
-	constBytesPseudoHash
-	digest F
-}
-
-func (h constFieldPseudoHash[F]) WriteField(...F) {}
+func (h constFieldPseudoHash[F]) WriteElements(...F) {}
 
 func (h constFieldPseudoHash[F]) PadBlock() {}
 
-func (h constFieldPseudoHash[F]) SumField() F {
+func (h constFieldPseudoHash[F]) SumDigest() F {
 	return h.digest
 }
 
-// registerConstPseudoHash registers the constant hash v, over the scalar field of curve, as
-// name_CURVE.
+func (h constFieldPseudoHash[F]) BlockLen() int { return 1 }
+
+// registerConstPseudoHash registers the constant hash v over F as name.
 func registerConstPseudoHash[F any, PF interface {
 	*F
 	SetBigInt(*big.Int) *F
-}](name string, v int64, curve ecc.ID) {
-	h := constFieldPseudoHash[F]{constBytesPseudoHash: newConstBytesPseudoHash(v, curve.ScalarField())}
+}](name string, v int64) {
+	var h constFieldPseudoHash[F]
 	PF(&h.digest).SetBigInt(big.NewInt(v))
-	gcHash.RegisterCustomHash(name+"_"+strings.ToUpper(curve.String()), func() hash.Hash {
+	gcHash.RegisterFieldHasher(name, func() gcHash.FieldHasher[F, F] {
 		return h
 	})
 }
@@ -634,10 +603,10 @@ func init() {
 		stdHash.RegisterCustomHash(name, func(api frontend.API) (stdHash.FieldHasher, error) {
 			return constPseudoHash(v), nil
 		})
-		registerConstPseudoHash[frbn254.Element](name, v, ecc.BN254)
-		registerConstPseudoHash[frbls12377.Element](name, v, ecc.BLS12_377)
-		registerConstPseudoHash[frbls12381.Element](name, v, ecc.BLS12_381)
-		registerConstPseudoHash[frbw6761.Element](name, v, ecc.BW6_761)
+		registerConstPseudoHash[frbn254.Element](name, v)
+		registerConstPseudoHash[frbls12377.Element](name, v)
+		registerConstPseudoHash[frbls12381.Element](name, v)
+		registerConstPseudoHash[frbw6761.Element](name, v)
 	}
 }
 
@@ -657,7 +626,7 @@ func (c *pow4Circuit) Define(api frontend.API) error {
 	x2 := gkrApi.Mul(x, x)   // x²
 	x4 := gkrApi.Mul(x2, x2) // x⁴
 
-	gkrCircuit, err := gkrApi.Compile("MIMC")
+	gkrCircuit, err := gkrApi.Compile(gcHash.FieldHasherMiMC)
 	if err != nil {
 		return err
 	}
@@ -715,7 +684,7 @@ func TestSingleInstance(t *testing.T) {
 		X:         make([]frontend.Variable, 1),
 		Y:         make([]frontend.Variable, 1),
 		mimcDepth: 2,
-		hashName:  "MIMC",
+		hashName:  gcHash.FieldHasherMiMC,
 	}
 	assignment := mimcNoDepCircuit{
 		X: []frontend.Variable{10},
@@ -745,7 +714,7 @@ func (c *testNoInstanceCircuit) Define(api frontend.API) error {
 	y := gkrApi.Mul(x, x)
 	gkrApi.Mul(x, y)
 
-	_, err = gkrApi.Compile("MIMC")
+	_, err = gkrApi.Compile(gcHash.FieldHasherMiMC)
 	return err
 }
 
@@ -772,7 +741,7 @@ func (c *testMultiCircuit) Define(api frontend.API) error {
 	y2 := api2.NewInput()
 	z2 := api2.Mul(x2, y2)
 
-	circuit2, err := api2.Compile("MIMC")
+	circuit2, err := api2.Compile(gcHash.FieldHasherMiMC)
 	if err != nil {
 		return err
 	}

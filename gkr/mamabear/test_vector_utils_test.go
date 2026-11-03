@@ -8,13 +8,14 @@ package gkrmamabear
 import (
 	"fmt"
 
-	"github.com/consensys/gnark-crypto/field/mamabear/extensions"
+	"github.com/consensys/gnark-crypto/field/mamabear"
+	"github.com/consensys/gnark-crypto/field/mamabear/poseidon2"
 	"github.com/consensys/gnark-crypto/hash"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 )
 
 // fieldHasher is the hasher the transcript of this field's GKR runs on.
-type fieldHasher = hash.FieldHasher[extensions.E3, extensions.E3]
+type fieldHasher = hash.FieldHasher[mamabear.Element, [poseidon2.BlockLen]mamabear.Element]
 
 // hashFromDescription returns the hash a test vector names. The only type is "const": a
 // messageCounter with step 0, so every challenge equals the given value regardless of what the
@@ -25,8 +26,7 @@ func hashFromDescription(d gkrtesting.HashDescription) (fieldHasher, error) {
 	if _type, ok := d["type"]; ok {
 		switch _type {
 		case "const":
-			startState := int64(d["val"].(float64))
-			return &messageCounter{state: startState, step: 0}, nil
+			return newMessageCounter(int(d["val"].(float64)), 0), nil
 		default:
 			return nil, fmt.Errorf("unknown fake hash type \"%s\"", _type)
 		}
@@ -37,24 +37,31 @@ func hashFromDescription(d gkrtesting.HashDescription) (fieldHasher, error) {
 // messageCounter is a stand-in hasher whose state depends only on the number of field elements
 // written to it, not on their values.
 type messageCounter struct {
-	state int64
-	step  int64
+	startState int64
+	state      int64
+	step       int64
 }
 
-func (m *messageCounter) WriteField(e ...extensions.E3) {
+func (m *messageCounter) Reset() { m.state = m.startState }
+
+func (m *messageCounter) WriteElement(mamabear.Element) { m.state += m.step }
+
+func (m *messageCounter) WriteElements(e ...mamabear.Element) {
 	m.state += int64(len(e)) * m.step
 }
 
 func (m *messageCounter) PadBlock() {}
 
-func (m *messageCounter) SumField() extensions.E3 {
-	var res extensions.E3
-	res.SetInt64(m.state + m.step)
+func (m *messageCounter) SumDigest() [poseidon2.BlockLen]mamabear.Element {
+	var res [poseidon2.BlockLen]mamabear.Element
+	res[0].SetInt64(m.state + m.step)
 	return res
 }
 
+func (m *messageCounter) BlockLen() int { return 1 }
+
 func newMessageCounter(startState, step int) fieldHasher {
-	return &messageCounter{state: int64(startState), step: int64(step)}
+	return &messageCounter{startState: int64(startState), state: int64(startState), step: int64(step)}
 }
 
 func newMessageCounterGenerator(startState, step int) func() fieldHasher {

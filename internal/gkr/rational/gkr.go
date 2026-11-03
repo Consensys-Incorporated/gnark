@@ -77,7 +77,7 @@ type resources struct {
 	workers            *utils.WorkerPool
 	circuit            Circuit
 	schedule           constraint.GkrProvingSchedule
-	transcript         *transcript
+	transcript         transcript
 	claimValueIndices  [][]int // claimValueIndices[wI][claimI]: index of w's claimI-th claimed value in its source level's finalEvalProof
 	claims             Claims
 	consolidated       []bool // the wires of schedule[0], indexed by wire
@@ -97,7 +97,7 @@ func newResources(c Circuit, schedule constraint.GkrProvingSchedule, nbVars int,
 		nbVars:             nbVars,
 		circuit:            c,
 		schedule:           schedule,
-		transcript:         gkrcore.NewHashTranscript[rational.Element](hasher),
+		transcript:         gkrcore.NewNativeTranscript(hasher),
 		claimValueIndices:  c.ClaimValueIndices(schedule),
 		claims:             make(Claims),
 		consolidated:       gkrcore.LevelWires(c, schedule[0]),

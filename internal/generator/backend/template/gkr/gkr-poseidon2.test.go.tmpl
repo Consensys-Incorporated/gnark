@@ -3,7 +3,6 @@ import (
 
 	"{{ .BaseFieldPackagePath }}"
 	"{{ .BaseFieldPackagePath }}/poseidon2"
-	extensionsHash "{{ .FieldPackagePath }}/hash"
 	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/gkr/gkrapi"
 	"github.com/consensys/gnark/gkr/{{ .GkrPackageName }}"
@@ -25,8 +24,8 @@ func randomHalves(width, nbInstances int) (left, right [][]{{ .BaseElementType }
 }
 
 // newHasher returns a hasher for the gadget's proofs.
-func newHasher() *extensionsHash.BaseFieldHashAdapter{{ .ExtensionSuffix }} {
-	return extensionsHash.NewBaseFieldHashAdapter{{ .ExtensionSuffix }}(poseidon2.NewMerkleDamgardHasher())
+func newHasher() *poseidon2.Hasher {
+	return poseidon2.NewHasher()
 }
 
 // TestAffineGateFewTerms checks affine gates whose sum has fewer than two terms.
@@ -91,17 +90,14 @@ func TestCompressor(t *testing.T) {
 
 	// Prove has computed the outputs.
 	reference := poseidon2.NewCompressor(poseidon2.NewDefaultPermutation())
-	half := params.Width / 2
-	leftRow := make([]{{ .BaseElementType }}, half)
-	rightRow := make([]{{ .BaseElementType }}, half)
-	expected := make([]{{ .BaseElementType }}, half)
+	var leftRow, rightRow, expected [poseidon2.BlockLen]{{ .BaseElementType }}
 	for instanceI := range 1 << logNbInstances {
-		for i := range half {
+		for i := range leftRow {
 			leftRow[i] = left[i][instanceI]
 			rightRow[i] = right[i][instanceI]
 		}
-		reference.CompressField(expected, leftRow, rightRow)
-		for i := range half {
+		reference.CompressField(&expected, &leftRow, &rightRow)
+		for i := range expected {
 			assert.True(t, expected[i].Equal(&assignment[compressor.Out[i]][instanceI]), "instance %d, output %d", instanceI, i)
 		}
 	}

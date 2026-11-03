@@ -463,6 +463,15 @@ func (c gkrConfig) BasePolynomial() string {
 	return "polynomial"
 }
 
+// NewTranscript is the constructor of the field's transcript over a hasher: gkrcore.NewNativeTranscript
+// for a prime field, gkrcore.NewExtensionTranscript instantiated at ElementType for an extension.
+func (c gkrConfig) NewTranscript() string {
+	if c.Mixed() {
+		return "gkrcore.NewExtensionTranscript[" + c.ElementType() + "]"
+	}
+	return "gkrcore.NewNativeTranscript"
+}
+
 // PackageName is the name of the generated packages: "gkr" followed by GkrPackageName with its
 // hyphens removed, e.g. gkrbls12377. The name gkr alone clashes with github.com/consensys/gnark/gkr,
 // and GkrPackageName alone with gnark-crypto's packages of the same name.

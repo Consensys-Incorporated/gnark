@@ -263,7 +263,7 @@ func NativeToBytes(api frontend.API, v frontend.Variable, opts ...Option) ([]uin
 // using [BytesToEmulated].
 func EmulatedToBytes[T emulated.FieldParams](api frontend.API, v *emulated.Element[T], opts ...Option) ([]uints.U8, error) {
 	var fr T
-	_, nbBitsPerLimb := emulated.GetEffectiveFieldParams[T](api.Compiler().Field())
+	nbLimbs, nbBitsPerLimb := emulated.GetEffectiveFieldParams[T](api.Compiler().Field())
 	f, err := emulated.NewField[T](api)
 	if err != nil {
 		return nil, fmt.Errorf("new field: %w", err)
@@ -278,13 +278,19 @@ func EmulatedToBytes[T emulated.FieldParams](api frontend.API, v *emulated.Eleme
 	} else {
 		vr = f.ReduceStrict(v)
 	}
-	if nbBitsPerLimb%8 != 0 {
+	nbOutputBytes := uint(fr.Modulus().BitLen()+7) / 8
+	// the byte-wise decomposition below writes all bytes of all limbs, so it
+	// only applies when the limbs cover exactly the output bytes. Otherwise
+	// (the limb width is not a multiple of 8, or the most significant limb is
+	// not full as for a 224-bit modulus with 4x64-bit limbs) decompose into
+	// bits and check that the bits above the output length are zero.
+	if nbBitsPerLimb%8 != 0 || nbLimbs*(nbBitsPerLimb/8) != nbOutputBytes {
 		return emulatedToBytesNotDivisible(api, vr, nbBitsPerLimb)
 	}
 
 	nbBytes := (api.Compiler().Field().BitLen() + 7) / 8
 	nbLimbBytes := nbBitsPerLimb / 8 // bits per limb is divisible by 8, so this is ok
-	resU8 := make([]uints.U8, (fr.Modulus().BitLen()+7)/8)
+	resU8 := make([]uints.U8, nbOutputBytes)
 	uapi, err := uints.NewBytes(api)
 	if err != nil {
 		return nil, fmt.Errorf("new uints: %w", err)
