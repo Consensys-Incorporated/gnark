@@ -44,11 +44,6 @@ func (t *NativeTranscript[E]) Squeeze(elements ...E) E {
 	return t.h.SumDigest()
 }
 
-// Digest constrains the digest types of the hashers of gnark-crypto's small fields.
-type Digest[F any] interface {
-	~[4]F | ~[6]F | ~[8]F | ~[12]F
-}
-
 // ExtensionTranscript is a Fiat-Shamir transcript over an extension E of a field F, backed by a
 // running hasher of F. An element is written as its coordinates, and a challenge is made of the
 // first coordinates of the hasher's digest. Absorb and Squeeze are otherwise those of
@@ -56,7 +51,7 @@ type Digest[F any] interface {
 type ExtensionTranscript[E interface{ AppendBase([]F) []F }, PE interface {
 	*E
 	SetBase([]F) *E
-}, F any, D Digest[F]] struct {
+}, F any, D hash.ArrayBlock[F]] struct {
 	h        hash.FieldHasher[F, D]
 	degree   int  // the number of coordinates of an element of E
 	buf      []F  // the coordinates being written or read
@@ -68,7 +63,7 @@ type ExtensionTranscript[E interface{ AppendBase([]F) []F }, PE interface {
 func NewExtensionTranscript[E interface{ AppendBase([]F) []F }, PE interface {
 	*E
 	SetBase([]F) *E
-}, F any, D Digest[F]](h hash.FieldHasher[F, D]) *ExtensionTranscript[E, PE, F, D] {
+}, F any, D hash.ArrayBlock[F]](h hash.FieldHasher[F, D]) *ExtensionTranscript[E, PE, F, D] {
 	var zero E
 	var d D
 	degree := len(zero.AppendBase(nil))

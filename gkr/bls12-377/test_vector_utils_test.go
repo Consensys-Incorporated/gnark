@@ -25,8 +25,7 @@ func hashFromDescription(d gkrtesting.HashDescription) (fieldHasher, error) {
 	if _type, ok := d["type"]; ok {
 		switch _type {
 		case "const":
-			startState := int64(d["val"].(float64))
-			return &messageCounter{startState: startState, state: startState, step: 0}, nil
+			return newMessageCounter(int(d["val"].(float64)), 0), nil
 		default:
 			return nil, fmt.Errorf("unknown fake hash type \"%s\"", _type)
 		}

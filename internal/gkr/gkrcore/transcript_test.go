@@ -9,11 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var (
-	_ Transcript[koalabear.Element] = (*NativeTranscript[koalabear.Element])(nil)
-	_ Transcript[extensions.E6]     = (*ExtensionTranscript[extensions.E6, *extensions.E6, koalabear.Element, [poseidon2.BlockLen]koalabear.Element])(nil)
-)
-
 // TestExtensionTranscriptBindsWholeElement checks that every coordinate of an absorbed extension
 // element affects the next challenge.
 func TestExtensionTranscriptBindsWholeElement(t *testing.T) {

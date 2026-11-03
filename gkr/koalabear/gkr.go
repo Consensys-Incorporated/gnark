@@ -104,7 +104,7 @@ func identityGate() gkrcore.SerializableGate {
 
 // newResources builds the resources shared by Prove and Verify. It takes no assignment and
 // creates no pools; Prove sets those up separately afterward, since Verify needs neither.
-func newResources[D gkrcore.Digest[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, nbVars int, hasher hash.FieldHasher[koalabear.Element, D]) resources {
+func newResources[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, nbVars int, hasher hash.FieldHasher[koalabear.Element, D]) resources {
 	return resources{
 		outgoingEvalPoints: make([][][]extensions.E6, len(schedule)+1),
 		nbVars:             nbVars,
@@ -196,7 +196,7 @@ func (r *resources) proveLevel(levelI int) sumcheckProof {
 // inputs and outputs; the caller must check them. The claim values returned to the caller, the
 // output evaluations among them, are not bound into the transcript. hasher must be seeded as
 // Verify requires.
-func Prove[D gkrcore.Digest[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.FieldHasher[koalabear.Element, D]) (Proof, Claims, error) {
+func Prove[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.FieldHasher[koalabear.Element, D]) (Proof, Claims, error) {
 	nbInstances := assignment.NumInstances()
 	nbVars := assignment.NumVars()
 	if nbVars == 0 {
@@ -294,9 +294,7 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // The transcript starts empty, so for soundness the verifier must seed hasher, as the prover did,
 // by writing to it a commitment to the circuit, the schedule, the number of instances and the input
 // and output columns, computed from values it trusts.
-// The hasher is a hasher of koalabear.Element, the prime subfield of extensions.E6, and the
-// seed is made of koalabear.Element elements.
-func Verify[D gkrcore.Digest[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.FieldHasher[koalabear.Element, D]) (Claims, error) {
+func Verify[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.FieldHasher[koalabear.Element, D]) (Claims, error) {
 	if logNbInstances < 1 {
 		return nil, errors.New("number of variables must be positive")
 	}

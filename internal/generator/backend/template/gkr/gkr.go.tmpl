@@ -1,6 +1,5 @@
 {{ $gateEvaluator := "GateEvaluator" }}{{ if .Mixed }}{{ $gateEvaluator = "GateEvaluatorMixed" }}{{ end }}
-{{ $newTranscript := "gkrcore.NewNativeTranscript" }}{{ if .Mixed }}{{ $newTranscript = printf "gkrcore.NewExtensionTranscript[%s]" .ElementType }}{{ end }}
-{{ $digest := .ElementType }}{{ $typeParams := "" }}{{ if .Mixed }}{{ $digest = "D" }}{{ $typeParams = printf "[D gkrcore.Digest[%s]]" .BaseElementType }}{{ end }}
+{{ $digest := .ElementType }}{{ $typeParams := "" }}{{ if .Mixed }}{{ $digest = "D" }}{{ $typeParams = printf "[D hash.ArrayBlock[%s]]" .BaseElementType }}{{ end }}
 import (
 	"errors"
 	"fmt"
@@ -119,7 +118,7 @@ func newResources{{ $typeParams }}(c Circuit, schedule constraint.GkrProvingSche
 		nbVars:             nbVars,
 		circuit:            c,
 		schedule:           schedule,
-		transcript:         {{ $newTranscript }}(hasher),
+		transcript:         {{ .NewTranscript }}(hasher),
 		claimValueIndices:  c.ClaimValueIndices(schedule),
 		claims:             make(Claims),
 		consolidated:       c.LevelWires(schedule[0]),
@@ -315,10 +314,6 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 // The transcript starts empty, so for soundness the verifier must seed hasher, as the prover did,
 // by writing to it a commitment to the circuit, the schedule, the number of instances and the input
 // and output columns, computed from values it trusts.
-{{- if .Mixed }}
-// The hasher is a hasher of {{ .BaseElementType }}, the prime subfield of {{ .ElementType }}, and the
-// seed is made of {{ .BaseElementType }} elements.
-{{- end }}
 func Verify{{ $typeParams }}(c Circuit, schedule constraint.GkrProvingSchedule, logNbInstances int, proof Proof, hasher hash.FieldHasher[{{ .BaseElementType }}, {{ $digest }}]) (Claims, error) {
 	if logNbInstances < 1 {
 		return nil, errors.New("number of variables must be positive")
