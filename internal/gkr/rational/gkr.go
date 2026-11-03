@@ -413,7 +413,8 @@ func iterateElems(elems []rational.Element, counter *int, yield func(int, *ratio
 }
 
 // Flatten yields the proof's elements by position. For each entry of the proof, in order, it
-// yields the coefficients of its partial sum polynomials, then its final evaluations.
+// yields the evaluations at 1, …, d of its partial sum polynomials, d being their degree, then its
+// final evaluations.
 // DeserializeProof reads the same order.
 func (p Proof) Flatten() iter.Seq2[int, *rational.Element] {
 	return func(yield func(int, *rational.Element) bool) {
