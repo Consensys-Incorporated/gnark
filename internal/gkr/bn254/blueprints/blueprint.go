@@ -259,7 +259,10 @@ func (b *BlueprintProve) Solve(s constraint.Solver[constraint.U64], inst constra
 	}
 
 	// Create hasher and write base challenges
-	hsh := hash.NewHash(b.HashName + "_BN254")
+	hsh, err := hash.NewFieldHasher[fr.Element, fr.Element](b.HashName)
+	if err != nil {
+		return err
+	}
 
 	// Read initial challenges from instruction calldata (parse dynamically, no metadata)
 	// Format: [0]=totalSize, [1...]=challenge linear expressions
@@ -271,8 +274,7 @@ func (b *BlueprintProve) Solve(s constraint.Solver[constraint.U64], inst constra
 		// Copy directly from constraint.U64 to fr.Element (both in Montgomery form)
 		var challenge fr.Element
 		copy(challenge[:], val[:])
-		challengeBytes := challenge.Bytes()
-		hsh.Write(challengeBytes[:])
+		hsh.WriteElement(challenge)
 	}
 
 	// Call the BN254-specific Prove function (assignments already WireAssignment type)

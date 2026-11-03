@@ -6,6 +6,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377"
+	gcHash "github.com/consensys/gnark-crypto/hash"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/std/gkrapi"
@@ -100,7 +101,7 @@ func (c *exampleCircuit) Define(api frontend.API) error {
 	// Mark XOut as an output, even though it is fed into another wire (YOut)
 	gkrApi.Export(XOut)
 
-	gkrCircuit, err := gkrApi.Compile("MIMC")
+	gkrCircuit, err := gkrApi.Compile(gcHash.FieldHasherMiMC)
 	if err != nil {
 		return err
 	}

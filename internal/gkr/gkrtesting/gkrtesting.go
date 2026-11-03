@@ -32,6 +32,14 @@ type circuits struct {
 	gadget       gkrcore.GadgetCircuit
 }
 
+// ConstantPositionsGate is a gate of two inputs, x and y, with a constant in every position the
+// gate compiler allows one: the first operand of Add, Sub, Mul and SumExp17, a multiplicand of
+// MulAcc, and the addend of MulAcc.
+func ConstantPositionsGate(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
+	x, y := in[0], in[1]
+	return api.Add(5, api.MulAcc(api.Sub(7, x), 3, y), api.Mul(2, x, y), api.MulAcc(4, x, y), api.SumExp17(1, x, y))
+}
+
 func mimcGate(api gkr.GateAPI, input ...frontend.Variable) frontend.Variable {
 	sum := api.Add(input[0], input[1]) //.Add(&sum, &m.ark)  TODO: add ark
 	res := api.Mul(sum, sum)           // sum^2

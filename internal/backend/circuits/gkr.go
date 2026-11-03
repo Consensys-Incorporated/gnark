@@ -2,6 +2,7 @@ package circuits
 
 import (
 	"github.com/consensys/gnark"
+	gcHash "github.com/consensys/gnark-crypto/hash"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/std/gkrapi"
@@ -25,7 +26,7 @@ func (c *gkrCubeCircuit) Define(api frontend.API) error {
 
 	gkrApi.Export(y)
 
-	gkrCircuit, err := gkrApi.Compile("MIMC")
+	gkrCircuit, err := gkrApi.Compile(gcHash.FieldHasherMiMC)
 	if err != nil {
 		return err
 	}

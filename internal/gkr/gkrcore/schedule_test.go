@@ -5,12 +5,13 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/require"
 )
 
-var scheduleTestCache = gkrtesting.NewCache(gkrcore.PrimeField(ecc.BN254.ScalarField()))
+var scheduleTestCache = gkrtesting.NewCache(gkr.PrimeField(ecc.BN254.ScalarField()))
 
 func TestDefaultProvingSchedule(t *testing.T) {
 	_, c := scheduleTestCache.Compile(t, gkrtesting.SingleMulGateCircuit())

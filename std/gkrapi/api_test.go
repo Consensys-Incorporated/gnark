@@ -2,17 +2,17 @@ package gkrapi
 
 import (
 	"fmt"
-	"hash"
 	"math/big"
 	"math/rand"
-	"slices"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/consensys/gnark"
 	"github.com/consensys/gnark-crypto/ecc"
+	frbls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
+	frbls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
+	frbn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr"
+	frbw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/fr"
 	gcHash "github.com/consensys/gnark-crypto/hash"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/frontend"
@@ -522,7 +522,7 @@ func TestMiMCNoDepSolve(t *testing.T) {
 
 func TestMiMCShallowNoDepSolveWithMiMCHash(t *testing.T) {
 	assert := test.NewAssert(t)
-	circuit, assignment := mimcNoDepCircuits(5, 1<<3, "MIMC")
+	circuit, assignment := mimcNoDepCircuits(5, 1<<3, gcHash.FieldHasherMiMC)
 	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithCurves(ecc.BN254))
 }
 
@@ -567,33 +567,33 @@ func (m MiMCCipherGate) Degree() int {
 	return 7
 }
 
-type constBytesPseudoHash []byte
+// constFieldPseudoHash is a constant "hash" over the elements of F.
+type constFieldPseudoHash[F any] struct{ digest F }
 
-func (c constBytesPseudoHash) Write(p []byte) (n int, err error) {
-	return len(p), nil
+func (h constFieldPseudoHash[F]) Reset() {}
+
+func (h constFieldPseudoHash[F]) WriteElement(F) {}
+
+func (h constFieldPseudoHash[F]) WriteElements(...F) {}
+
+func (h constFieldPseudoHash[F]) PadBlock() {}
+
+func (h constFieldPseudoHash[F]) SumDigest() F {
+	return h.digest
 }
 
-func (c constBytesPseudoHash) Sum([]byte) []byte {
-	return slices.Clone(c)
-}
+func (h constFieldPseudoHash[F]) BlockLen() int { return 1 }
 
-func (c constBytesPseudoHash) Reset() {
-}
-
-func (c constBytesPseudoHash) Size() int {
-	return len(c)
-}
-
-func (c constBytesPseudoHash) BlockSize() int {
-	return len(c)
-}
-
-func newConstBytesPseudoHash(c int64, mod *big.Int) constBytesPseudoHash {
-	i := big.NewInt(c)
-	i.Mod(i, mod)
-	b := make([]byte, len(mod.Bytes()))
-	i.FillBytes(b)
-	return b
+// registerConstPseudoHash registers the constant hash v over F as name.
+func registerConstPseudoHash[F any, PF interface {
+	*F
+	SetBigInt(*big.Int) *F
+}](name string, v int64) {
+	var h constFieldPseudoHash[F]
+	PF(&h.digest).SetBigInt(big.NewInt(v))
+	gcHash.RegisterFieldHasher(name, func() gcHash.FieldHasher[F, F] {
+		return h
+	})
 }
 
 func init() {
@@ -603,12 +603,10 @@ func init() {
 		stdHash.RegisterCustomHash(name, func(api frontend.API) (stdHash.FieldHasher, error) {
 			return constPseudoHash(v), nil
 		})
-		for _, curve := range gnark.Curves() {
-			h := newConstBytesPseudoHash(v, curve.ScalarField())
-			gcHash.RegisterCustomHash(name+"_"+strings.ToUpper(curve.String()), func() hash.Hash {
-				return h
-			})
-		}
+		registerConstPseudoHash[frbn254.Element](name, v)
+		registerConstPseudoHash[frbls12377.Element](name, v)
+		registerConstPseudoHash[frbls12381.Element](name, v)
+		registerConstPseudoHash[frbw6761.Element](name, v)
 	}
 }
 
@@ -628,7 +626,7 @@ func (c *pow4Circuit) Define(api frontend.API) error {
 	x2 := gkrApi.Mul(x, x)   // x²
 	x4 := gkrApi.Mul(x2, x2) // x⁴
 
-	gkrCircuit, err := gkrApi.Compile("MIMC")
+	gkrCircuit, err := gkrApi.Compile(gcHash.FieldHasherMiMC)
 	if err != nil {
 		return err
 	}
@@ -686,7 +684,7 @@ func TestSingleInstance(t *testing.T) {
 		X:         make([]frontend.Variable, 1),
 		Y:         make([]frontend.Variable, 1),
 		mimcDepth: 2,
-		hashName:  "MIMC",
+		hashName:  gcHash.FieldHasherMiMC,
 	}
 	assignment := mimcNoDepCircuit{
 		X: []frontend.Variable{10},
@@ -716,7 +714,7 @@ func (c *testNoInstanceCircuit) Define(api frontend.API) error {
 	y := gkrApi.Mul(x, x)
 	gkrApi.Mul(x, y)
 
-	_, err = gkrApi.Compile("MIMC")
+	_, err = gkrApi.Compile(gcHash.FieldHasherMiMC)
 	return err
 }
 
@@ -743,7 +741,7 @@ func (c *testMultiCircuit) Define(api frontend.API) error {
 	y2 := api2.NewInput()
 	z2 := api2.Mul(x2, y2)
 
-	circuit2, err := api2.Compile("MIMC")
+	circuit2, err := api2.Compile(gcHash.FieldHasherMiMC)
 	if err != nil {
 		return err
 	}
