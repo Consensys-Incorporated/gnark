@@ -8,6 +8,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/std/hash"
 	"github.com/consensys/gnark/std/math/uints"
 	"github.com/consensys/gnark/test"
@@ -107,4 +108,13 @@ func TestSHA2FixedLengthSum(t *testing.T) {
 			}, fmt.Sprintf("bound=%d/length=%d", lengthBound, length))
 		}
 	}
+}
+
+// TestSHA2NegativeMinimalLength checks that New returns an error for a
+// negative minimal length, rather than panicking later in FixedLengthSum.
+func TestSHA2NegativeMinimalLength(t *testing.T) {
+	assert := test.NewAssert(t)
+	circuit := &sha2FixedLengthCircuit{In: make([]uints.U8, 144), minimalLength: -1}
+	_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+	assert.ErrorContains(err, "minimal length must be non-negative, got -1")
 }

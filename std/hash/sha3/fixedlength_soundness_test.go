@@ -319,19 +319,36 @@ func TestSHA3FixedLengthSumForgeryCompiled(t *testing.T) {
 	}
 }
 
-// TestSHA3FixedLengthSumInvalidMinimalLength checks that an out-of-range
-// minimal length is rejected at compile time instead of silently producing an
-// unsatisfiable (or malformed) circuit.
+// TestSHA3FixedLengthSumInvalidMinimalLength checks that a minimal length
+// larger than the input is rejected at compile time instead of silently
+// producing an unsatisfiable circuit.
 func TestSHA3FixedLengthSumInvalidMinimalLength(t *testing.T) {
 	assert := test.NewAssert(t)
-	for _, ml := range []int{-1, 41} {
-		circuit := &sha3FixedLengthSumCircuit{
-			In:            make([]uints.U8, 40),
-			Expected:      make([]uints.U8, 32),
-			hasher:        "Keccak-256",
-			minimalLength: ml,
-		}
-		_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
-		assert.ErrorContains(err, fmt.Sprintf("minimal length %d not in [0, 40]", ml))
+	circuit := &sha3FixedLengthSumCircuit{
+		In:            make([]uints.U8, 40),
+		Expected:      make([]uints.U8, 32),
+		hasher:        "Keccak-256",
+		minimalLength: 41,
+	}
+	_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+	assert.ErrorContains(err, "minimal length 41 not in [0, 40]")
+}
+
+// TestSHA3NegativeMinimalLength checks that all constructors return an error
+// for a negative minimal length, rather than failing later (or never) when
+// FixedLengthSum is called.
+func TestSHA3NegativeMinimalLength(t *testing.T) {
+	assert := test.NewAssert(t)
+	for name := range testCases {
+		assert.Run(func(assert *test.Assert) {
+			circuit := &sha3FixedLengthSumCircuit{
+				In:            make([]uints.U8, 40),
+				Expected:      make([]uints.U8, 32),
+				hasher:        name,
+				minimalLength: -1,
+			}
+			_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+			assert.ErrorContains(err, "minimal length must be non-negative, got -1")
+		}, name)
 	}
 }
