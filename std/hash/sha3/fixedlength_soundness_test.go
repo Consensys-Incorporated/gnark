@@ -188,6 +188,9 @@ func negativeRemainderForgery(in []byte, p fixedLengthParams, outLen int) (forge
 
 func TestSHA3FixedLengthSumForgery(t *testing.T) {
 	assert := test.NewAssert(t)
+	// BN254 only: the comparator bounds are tiny compared to the order of any
+	// supported field, so other fields add runtime but no coverage here.
+	field := ecc.BN254.ScalarField()
 	// 40 bytes: shorter than all rates. 170 bytes: spans two blocks for
 	// rate=136 and three blocks for rate 72/104.
 	inputs := map[string][]byte{}
@@ -198,46 +201,38 @@ func TestSHA3FixedLengthSumForgery(t *testing.T) {
 		}
 		inputs[fmt.Sprintf("maxLen=%d", n)] = in
 	}
-	fields := map[string]*big.Int{
-		"BN254":     ecc.BN254.ScalarField(),
-		"BLS12-377": ecc.BLS12_377.ScalarField(),
-		"BLS12-381": ecc.BLS12_381.ScalarField(),
-		"BW6-761":   ecc.BW6_761.ScalarField(),
-	}
 	remHintID := solver.GetHintID(remHint)
 
 	for hname, tc := range testCases {
 		p := fixedLengthParamsByName[hname]
 		outLen := tc.native().Size()
 		for iname, in := range inputs {
-			for fname, field := range fields {
-				forgeries := negativeLengthForgeries(field, in, p, outLen)
-				if f, ok := negativeRemainderForgery(in, p, outLen); ok {
-					forgeries = append(forgeries, f)
-				}
-				circuit := &sha3FixedLengthSumCircuit{
-					In:       make([]uints.U8, len(in)),
-					Expected: make([]uints.U8, outLen),
-					hasher:   hname,
-				}
-				for _, f := range forgeries {
-					assert.Run(func(assert *test.Assert) {
-						// sanity: the forged digest is not the honest digest of any prefix
-						for l := 0; l <= len(in); l++ {
-							h := tc.native()
-							h.Write(in[:l])
-							assert.NotEqual(h.Sum(nil), f.digest, "forged digest equals honest digest of in[:%d]", l)
-						}
-						witness := &sha3FixedLengthSumCircuit{
-							In:       uints.NewU8Array(in),
-							Expected: uints.NewU8Array(f.digest),
-							Length:   f.length,
-						}
-						err := test.IsSolved(circuit, witness, field, test.WithReplacementHint(remHintID, f.hint))
-						assert.Error(err, "forged witness accepted")
-						assert.Equal(f.failsIn, failingMethod(err), "forged witness rejected by an unexpected constraint: %v", err)
-					}, hname, iname, fname, f.name)
-				}
+			forgeries := negativeLengthForgeries(field, in, p, outLen)
+			if f, ok := negativeRemainderForgery(in, p, outLen); ok {
+				forgeries = append(forgeries, f)
+			}
+			circuit := &sha3FixedLengthSumCircuit{
+				In:       make([]uints.U8, len(in)),
+				Expected: make([]uints.U8, outLen),
+				hasher:   hname,
+			}
+			for _, f := range forgeries {
+				assert.Run(func(assert *test.Assert) {
+					// sanity: the forged digest is not the honest digest of any prefix
+					for l := 0; l <= len(in); l++ {
+						h := tc.native()
+						h.Write(in[:l])
+						assert.NotEqual(h.Sum(nil), f.digest, "forged digest equals honest digest of in[:%d]", l)
+					}
+					witness := &sha3FixedLengthSumCircuit{
+						In:       uints.NewU8Array(in),
+						Expected: uints.NewU8Array(f.digest),
+						Length:   f.length,
+					}
+					err := test.IsSolved(circuit, witness, field, test.WithReplacementHint(remHintID, f.hint))
+					assert.Error(err, "forged witness accepted")
+					assert.Equal(f.failsIn, failingMethod(err), "forged witness rejected by an unexpected constraint: %v", err)
+				}, hname, iname, f.name)
 			}
 		}
 	}
