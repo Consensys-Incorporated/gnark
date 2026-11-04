@@ -14,6 +14,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
+	"github.com/consensys/gnark/std/internal/keccakref"
 	"github.com/consensys/gnark/std/math/uints"
 	"github.com/consensys/gnark/test"
 )
@@ -22,48 +23,6 @@ import (
 // assigns a witness that does not describe the honest hash of In[:Length],
 // together with a malicious remainder hint, and checks that the constraint
 // system rejects it.
-
-// nativeKeccakF1600 is a compact reference Keccak-f[1600] permutation. It is
-// checked against golang.org/x/crypto/sha3 in [TestNativeSpongeReference].
-func nativeKeccakF1600(a *[25]uint64) {
-	rc := [24]uint64{
-		0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
-		0x000000000000808b, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
-		0x000000000000008a, 0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
-		0x000000008000808b, 0x800000000000008b, 0x8000000000008089, 0x8000000000008003,
-		0x8000000000008002, 0x8000000000000080, 0x000000000000800a, 0x800000008000000a,
-		0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
-	}
-	rotc := [24]uint{1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14, 27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44}
-	piln := [24]int{10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1}
-	rotl := func(x uint64, n uint) uint64 { return x<<n | x>>(64-n) }
-	var bc [5]uint64
-	for r := range 24 {
-		for i := range 5 {
-			bc[i] = a[i] ^ a[i+5] ^ a[i+10] ^ a[i+15] ^ a[i+20]
-		}
-		for i := range 5 {
-			t := bc[(i+4)%5] ^ rotl(bc[(i+1)%5], 1)
-			for j := 0; j < 25; j += 5 {
-				a[j+i] ^= t
-			}
-		}
-		t := a[1]
-		for i := range 24 {
-			j := piln[i]
-			t, a[j] = a[j], rotl(t, rotc[i])
-		}
-		for j := 0; j < 25; j += 5 {
-			for i := range 5 {
-				bc[i] = a[j+i]
-			}
-			for i := range 5 {
-				a[j+i] ^= ^bc[(i+1)%5] & bc[(i+2)%5]
-			}
-		}
-		a[0] ^= rc[r]
-	}
-}
 
 // nativeSpongeRaw absorbs the already padded input (len(padded) must be a
 // multiple of rate) without adding any padding and squeezes outLen bytes.
@@ -76,7 +35,7 @@ func nativeSpongeRaw(padded []byte, rate, outLen int) []byte {
 		for i := 0; i < rate/8; i++ {
 			st[i] ^= binary.LittleEndian.Uint64(padded[8*i:])
 		}
-		nativeKeccakF1600(&st)
+		st = keccakref.KeccakF1600(st)
 		padded = padded[rate:]
 	}
 	out := make([]byte, 25*8)
