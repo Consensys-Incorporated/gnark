@@ -25,6 +25,7 @@ import (
 	"github.com/consensys/gnark-crypto/field/pool"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/internal/circuitdefer"
+	"github.com/consensys/gnark/internal/debugstack"
 	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/internal/smallfields"
 	"github.com/consensys/gnark/internal/utils"
@@ -123,6 +124,12 @@ func IsSolved(circuit, witness frontend.Circuit, field *big.Int, opts ...TestEng
 
 	defer func() {
 		if r := recover(); r != nil {
+			if dp, ok := r.(*debugStackPanic); ok {
+				// the failure happened in an operation which was attributed
+				// to a different place in the circuit, see [engine.WithDebugStack].
+				err = fmt.Errorf("%v\n%s", dp.value, dp.stack)
+				return
+			}
 			err = fmt.Errorf("%v\n%s", r, string(debug.Stack()))
 		}
 	}()
@@ -692,6 +699,44 @@ func (e *engine) Field() *big.Int {
 
 func (e *engine) Compiler() frontend.Compiler {
 	return e
+}
+
+var _ debugstack.Attributor = (*engine)(nil)
+
+// WithDebugStack calls fn. If an assertion fails inside fn, then the reported
+// error contains the call stack described by pcs (see [debug.Callers]) instead
+// of the call stack at the time of the failure. If pcs is empty, then the
+// current call stack is used as usual.
+//
+// This allows gadgets which perform their checks in deferred callbacks to point
+// to the place in the circuit where the checked operation was defined.
+func (e *engine) WithDebugStack(pcs []uintptr, fn func()) {
+	if len(pcs) == 0 {
+		fn()
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(*debugStackPanic); ok {
+				// already attributed by an inner call, keep the most specific
+				// location.
+				panic(r)
+			}
+			panic(&debugStackPanic{value: r, stack: debug.StackFrom(pcs)})
+		}
+	}()
+	fn()
+}
+
+// debugStackPanic wraps a panic which happened inside [engine.WithDebugStack]
+// together with the call stack the failure is attributed to.
+type debugStackPanic struct {
+	value any
+	stack string
+}
+
+func (p *debugStackPanic) String() string {
+	return fmt.Sprintf("%v", p.value)
 }
 
 func (e *engine) Commit(v ...frontend.Variable) (frontend.Variable, error) {

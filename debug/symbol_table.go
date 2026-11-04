@@ -21,6 +21,20 @@ func NewSymbolTable() SymbolTable {
 }
 
 func (st *SymbolTable) CollectStack() []int {
+	// Ask runtime.Callers for up to 20 pcs
+	var pc [20]uintptr
+	n := runtime.Callers(4, pc[:])
+	return st.CollectStackFrom(pc[:n])
+}
+
+// CollectStackFrom registers the call stack described by pcs in the symbol
+// table and returns the location ids, in the same way as [SymbolTable.CollectStack]
+// does for the current call stack. The program counters are expected to be
+// obtained with [runtime.Callers] (see [Callers]).
+//
+// It allows to attribute constraints created later (for example in deferred
+// callbacks) to the place in the circuit where the operation was defined.
+func (st *SymbolTable) CollectStackFrom(pc []uintptr) []int {
 	var r []int
 	if Debug {
 		r = make([]int, 0, 2)
@@ -29,16 +43,12 @@ func (st *SymbolTable) CollectStack() []int {
 	}
 	// derived from: https://golang.org/pkg/runtime/#example_Frames
 	// we stop when func name == Define as it is where the gnark circuit code should start
-
-	// Ask runtime.Callers for up to 10 pcs
-	var pc [20]uintptr
-	n := runtime.Callers(4, pc[:])
-	if n == 0 {
+	if len(pc) == 0 {
 		// No pcs available. Stop now.
 		// This can happen if the first argument to runtime.Callers is large.
 		return r
 	}
-	frames := runtime.CallersFrames(pc[:n]) // pass only valid pcs to runtime.CallersFrames
+	frames := runtime.CallersFrames(pc) // pass only valid pcs to runtime.CallersFrames
 	cpt := 0
 	// Loop to get frames.
 	// A fixed number of pcs can expand to an indefinite number of Frames.

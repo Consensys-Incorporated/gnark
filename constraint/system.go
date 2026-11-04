@@ -83,6 +83,10 @@ type ConstraintSystemGeneric[E Element] interface {
 	AddCoeff(coeff E) uint32
 
 	NewDebugInfo(errName string, i ...interface{}) DebugInfo
+	// NewDebugInfoAt is like NewDebugInfo, but records the call stack given by
+	// the program counters pcs (see [github.com/consensys/gnark/debug.Callers])
+	// instead of the current one.
+	NewDebugInfoAt(pcs []uintptr, errName string, i ...interface{}) DebugInfo
 
 	// AttachDebugInfo enables attaching debug information to multiple constraints.
 	// This is more efficient than using the AddR1C(.., debugInfo) since it will store the

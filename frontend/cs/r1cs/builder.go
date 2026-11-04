@@ -19,6 +19,7 @@ import (
 	"github.com/consensys/gnark/frontend/internal/expr"
 	"github.com/consensys/gnark/frontend/schema"
 	"github.com/consensys/gnark/internal/circuitdefer"
+	"github.com/consensys/gnark/internal/debugstack"
 	"github.com/consensys/gnark/internal/frontendtype"
 	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/internal/smallfields/tinyfield"
@@ -64,6 +65,10 @@ type builder[E constraint.Element] struct {
 
 	genericGate      constraint.BlueprintID
 	batchInverseGate constraint.BlueprintID
+
+	// debugStack overrides the call stack recorded in the debug information
+	// of new constraints. See [builder.WithDebugStack].
+	debugStack []uintptr
 }
 
 // initialCapacity has quite some impact on frontend performance, especially on large circuits size
@@ -480,8 +485,27 @@ func (builder *builder[E]) newDebugInfo(errName string, in ...interface{}) const
 		}
 	}
 
+	if len(builder.debugStack) > 0 {
+		return builder.cs.NewDebugInfoAt(builder.debugStack, errName, in...)
+	}
 	return builder.cs.NewDebugInfo(errName, in...)
 
+}
+
+var _ debugstack.Attributor = (*builder[constraint.U64])(nil)
+
+// WithDebugStack calls fn. Debug information of the constraints added inside fn
+// reports the call stack described by pcs (see [debug.Callers]) instead of the
+// call stack at the time the constraints are added. If pcs is empty, then the
+// current call stack is used as usual.
+//
+// This allows gadgets which create the constraints in deferred callbacks to
+// point to the place in the circuit where the checked operation was defined.
+func (builder *builder[E]) WithDebugStack(pcs []uintptr, fn func()) {
+	prev := builder.debugStack
+	builder.debugStack = pcs
+	defer func() { builder.debugStack = prev }()
+	fn()
 }
 
 // compress checks the length of the linear expression le and if it is larger or

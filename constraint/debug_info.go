@@ -9,6 +9,26 @@ import (
 type DebugInfo LogEntry
 
 func (system *System) NewDebugInfo(errName string, i ...interface{}) DebugInfo {
+	l := system.newDebugInfo(errName, i...)
+	// get the stack
+	l.Stack = system.SymbolTable.CollectStack()
+	return DebugInfo(l)
+}
+
+// NewDebugInfoAt is like [System.NewDebugInfo], but records the call stack
+// described by the program counters pcs (as returned by [github.com/consensys/gnark/debug.Callers])
+// instead of the current call stack.
+//
+// It is used to attribute constraints which are created later than the
+// operation they check (for example in deferred callbacks) to the place in the
+// circuit where the operation was defined.
+func (system *System) NewDebugInfoAt(pcs []uintptr, errName string, i ...interface{}) DebugInfo {
+	l := system.newDebugInfo(errName, i...)
+	l.Stack = system.SymbolTable.CollectStackFrom(pcs)
+	return DebugInfo(l)
+}
+
+func (system *System) newDebugInfo(errName string, i ...interface{}) LogEntry {
 	var l LogEntry
 
 	const minLogSize = 500
@@ -35,9 +55,5 @@ func (system *System) NewDebugInfo(errName string, i ...interface{}) DebugInfo {
 	sbb.WriteByte('\n')
 	sbb.WriteString("%s\n") // some space for the stack.
 	l.Format = sbb.String()
-
-	// get the stack
-	l.Stack = system.SymbolTable.CollectStack()
-
-	return DebugInfo(l)
+	return l
 }
