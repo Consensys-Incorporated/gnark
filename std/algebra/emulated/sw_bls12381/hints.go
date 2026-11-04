@@ -518,6 +518,33 @@ func scalarMulG2CofactorPreimageHint(field *big.Int, inputs []*big.Int, outputs 
 	})
 }
 
+// g2Eigenvalue is the eigenvalue λ of the GLV endomorphism Φ on the prime-order
+// G2 subgroup, Φ(Q) = [λ]Q. It is the single source for the in-circuit constant
+// ([NewG2]) and for the scalar decomposition in [rationalReconstructExtG2].
+var g2Eigenvalue = func() *big.Int {
+	λ, ok := new(big.Int).SetString("228988810152649578064853576960394133503", 10)
+	if !ok {
+		panic("invalid G2 eigenvalue")
+	}
+	return λ
+}()
+
+// decomposeScalarG2 returns the signed 4-D GLV decomposition (u1, u2, v1, v2) of
+// the scalar s against the eigenvalue λ modulo r, such that
+//
+//	s·(v1 + λ·v2) + u1 + λ·u2 ≡ 0 (mod r)
+//
+// i.e. −s ≡ (u1 + λ·u2) / (v1 + λ·v2). It is shared by the hint
+// [rationalReconstructExtG2] and by tests that need to predict the decomposition
+// the circuit will receive.
+func decomposeScalarG2(s, lambda, r *big.Int) [4]*big.Int {
+	// in-circuit we check that R - [s]Q = 0 or equivalently R + [-s]Q = 0
+	// so we use k = -s.
+	k := new(big.Int).Neg(s)
+	k.Mod(k, r)
+	return lattice.NewReconstructor(r).SetLambda(lambda).RationalReconstructExt(k)
+}
+
 func rationalReconstructExtG2(mod *big.Int, inputs []*big.Int, outputs []*big.Int) error {
 	return emulated.UnwrapHintContext(mod, inputs, outputs, func(hc emulated.HintContext) error {
 		moduli := hc.EmulatedModuli()
@@ -537,14 +564,8 @@ func rationalReconstructExtG2(mod *big.Int, inputs []*big.Int, outputs []*big.In
 		}
 
 		// Use lattice reduction to find (x, y, z, t) such that
-		// k ≡ (x + λ*y) / (z + λ*t) (mod r)
-		//
-		// in-circuit we check that R - [s]Q = 0 or equivalently R + [-s]Q = 0
-		// so here we use k = -s.
-		k := new(big.Int).Neg(emuInputs[0])
-		k.Mod(k, moduli[0])
-		rc := lattice.NewReconstructor(moduli[0]).SetLambda(emuInputs[1])
-		res := rc.RationalReconstructExt(k)
+		// k ≡ (x + λ*y) / (z + λ*t) (mod r) with k = -s, see [decomposeScalarG2].
+		res := decomposeScalarG2(emuInputs[0], emuInputs[1], moduli[0])
 		x, y, z, t := res[0], res[1], res[2], res[3]
 
 		// u1 = x, u2 = y, v1 = z, v2 = t
