@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"fmt"
+	"math/big"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -117,4 +118,38 @@ func TestSHA2NegativeMinimalLength(t *testing.T) {
 	circuit := &sha2FixedLengthCircuit{In: make([]uints.U8, 144), minimalLength: -1}
 	_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
 	assert.ErrorContains(err, "minimal length must be non-negative, got -1")
+}
+
+// TestSHA2FixedLengthSumInvalidMinimalLength checks that a minimal length
+// larger than the input is rejected at compile time instead of silently
+// producing an unsatisfiable circuit.
+func TestSHA2FixedLengthSumInvalidMinimalLength(t *testing.T) {
+	assert := test.NewAssert(t)
+	circuit := &sha2FixedLengthCircuit{In: make([]uints.U8, 144), minimalLength: 145}
+	_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+	assert.ErrorContains(err, "minimal length 145 not in [0, 144]")
+}
+
+// TestSHA2FixedLengthSumNegativeLength checks that a field-negative length
+// (P-k) is rejected by the lower bound check on the length, also when no
+// minimal length is given. For these k the upper bound check alone passes as
+// maxLen-length wraps around to a small positive number.
+func TestSHA2FixedLengthSumNegativeLength(t *testing.T) {
+	const maxLen = 144
+	assert := test.NewAssert(t)
+	field := ecc.BN254.ScalarField()
+	bts := make([]byte, maxLen)
+	dgst := sha256.Sum256(bts)
+	circuit := &sha2FixedLengthCircuit{In: make([]uints.U8, maxLen)}
+	for _, k := range []int64{1, 2, 64} {
+		assert.Run(func(assert *test.Assert) {
+			witness := &sha2FixedLengthCircuit{
+				In:       uints.NewU8Array(bts),
+				Length:   new(big.Int).Sub(field, big.NewInt(k)),
+				Expected: [32]uints.U8(uints.NewU8Array(dgst[:])),
+			}
+			err := test.IsSolved(circuit, witness, field)
+			assert.ErrorContains(err, "AssertIsLessEq", "forged length rejected for an unrelated reason")
+		}, fmt.Sprintf("length=P-%d", k))
+	}
 }

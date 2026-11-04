@@ -105,6 +105,9 @@ func (d *digest) FixedLengthSum(length frontend.Variable) []uints.U8 {
 	// use.
 
 	maxLen := len(d.in)
+	if d.minimalLength < 0 || d.minimalLength > maxLen {
+		panic(fmt.Sprintf("minimal length %d not in [0, %d]", d.minimalLength, maxLen))
+	}
 	maxPaddingCount := 64 - maxLen%64
 	if maxPaddingCount <= 8 {
 		maxPaddingCount += 64
@@ -112,20 +115,18 @@ func (d *digest) FixedLengthSum(length frontend.Variable) []uints.U8 {
 	maxTotalLen := maxLen + maxPaddingCount
 
 	comparator := cmp.NewBoundedComparator(d.api, big.NewInt(int64(maxTotalLen)), false)
-	// assert that the length is not larger than the maximum length of the
-	// hashed input. The comparator is only sound when |length-maxLen| <=
-	// maxTotalLen, which does not hold for an arbitrary witness (e.g. a
-	// field-negative length P-1 would pass this check alone). It is sound here
-	// because length is also decomposed into 64 bits below (in mod64 and in
-	// bigEndianPutUint64(length*8)), which bounds length to [0, 2^61).
+	// Assert minimalLength <= length <= maxLen over the integers. The
+	// comparator is only sound when |a-b| <= maxTotalLen, which does not hold
+	// for an arbitrary witness: with the upper bound alone a field-negative
+	// length (e.g. P-1) wraps around and passes. Each check decomposes the
+	// difference into bitlen(maxTotalLen) bits, so together they bound length
+	// on both sides to a small non-negative integer. The lower bound is
+	// checked also when minimalLength is 0, so that soundness does not depend
+	// on the 64-bit decompositions of length done below (in mod64 and in
+	// bigEndianPutUint64(length*8)).
 	comparator.AssertIsLessEq(length, maxLen)
-	// when minimal length is 0 (i.e. not set), then we can skip the lower
-	// bound check as length is already constrained to be non-negative by the
-	// 64-bit decompositions below.
-	if d.minimalLength > 0 {
-		// we use comparator as [frontend.API] doesn't have a fast path for case API.AssertIsLessOrEqual(constant, variable)
-		comparator.AssertIsLessEq(d.minimalLength, length)
-	}
+	// we use comparator as [frontend.API] doesn't have a fast path for case API.AssertIsLessOrEqual(constant, variable)
+	comparator.AssertIsLessEq(d.minimalLength, length)
 
 	data := make([]uints.U8, maxLen)
 	copy(data, d.in)
