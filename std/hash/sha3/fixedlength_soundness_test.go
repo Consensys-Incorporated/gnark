@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -143,10 +144,33 @@ func signedRemHint(offset int64) solver.Hint {
 
 // forgery describes a malicious witness for FixedLengthSum.
 type forgery struct {
-	name   string
-	length *big.Int // assigned Length (field element)
-	hint   solver.Hint
-	digest []byte // the digest the malicious prover claims
+	name    string
+	length  *big.Int // assigned Length (field element)
+	hint    solver.Hint
+	digest  []byte // the digest the malicious prover claims
+	failsIn string // name of the digest method with the constraint which has to reject the forgery
+}
+
+// failingMethod returns the name of the innermost sha3.(*digest) method in the
+// stack trace that the test engine attaches to the error of a violated
+// assertion. It returns "" if the error is not a violated assertion (for
+// example a failing hint, which also carries a stack trace) or if the trace
+// has no such method (for example the final comparison of the digest in the
+// circuit). This allows to check that a forgery is rejected by the intended
+// constraint, and not for an unrelated reason.
+func failingMethod(err error) string {
+	const assertionPrefix = "[assertIsEqual]"
+	const methodPrefix = "sha3.(*digest)."
+	msg := err.Error()
+	if !strings.HasPrefix(msg, assertionPrefix) {
+		return ""
+	}
+	_, rest, ok := strings.Cut(msg, methodPrefix)
+	if !ok {
+		return ""
+	}
+	name, _, _ := strings.Cut(rest, "\n")
+	return name
 }
 
 // negativeLengthForgeries returns forgeries with Length = P - k. With the
@@ -159,10 +183,11 @@ func negativeLengthForgeries(field *big.Int, in []byte, p fixedLengthParams, out
 	var res []forgery
 	for _, k := range []int64{1, 2, int64(p.rate) / 2, int64(p.rate)} {
 		res = append(res, forgery{
-			name:   fmt.Sprintf("length=P-%d", k),
-			length: new(big.Int).Sub(field, big.NewInt(k)),
-			hint:   signedRemHint(0),
-			digest: digest,
+			name:    fmt.Sprintf("length=P-%d", k),
+			length:  new(big.Int).Sub(field, big.NewInt(k)),
+			hint:    signedRemHint(0),
+			digest:  digest,
+			failsIn: "paddingFixedWidth",
 		})
 	}
 	return res
@@ -194,10 +219,11 @@ func negativeRemainderForgery(in []byte, p fixedLengthParams, outLen int) (forge
 	}
 	nbBlocks := min(q0+2, maxTotalLen/p.rate)
 	return forgery{
-		name:   fmt.Sprintf("length=%d/remainder=%d", length, r0-p.rate),
-		length: big.NewInt(int64(length)),
-		hint:   signedRemHint(-int64(p.rate)),
-		digest: nativeSpongeRaw(padded[:nbBlocks*p.rate], p.rate, outLen),
+		name:    fmt.Sprintf("length=%d/remainder=%d", length, r0-p.rate),
+		length:  big.NewInt(int64(length)),
+		hint:    signedRemHint(-int64(p.rate)),
+		digest:  nativeSpongeRaw(padded[:nbBlocks*p.rate], p.rate, outLen),
+		failsIn: "quoRemRate",
 	}, true
 }
 
@@ -250,6 +276,7 @@ func TestSHA3FixedLengthSumForgery(t *testing.T) {
 						}
 						err := test.IsSolved(circuit, witness, field, test.WithReplacementHint(remHintID, f.hint))
 						assert.Error(err, "forged witness accepted")
+						assert.Equal(f.failsIn, failingMethod(err), "forged witness rejected by an unexpected constraint: %v", err)
 					}, hname, iname, fname, f.name)
 				}
 			}
@@ -314,6 +341,10 @@ func TestSHA3FixedLengthSumForgeryCompiled(t *testing.T) {
 				assert.NoError(err)
 				err = ccs.IsSolved(w, solver.OverrideHint(remHintID, f.hint))
 				assert.Error(err, "forged witness accepted")
+				// compiled constraint systems carry no stack traces, so we can
+				// only exclude failures other than an unsatisfied constraint
+				// (e.g. from the hint).
+				assert.ErrorContains(err, "is not satisfied", "forged witness rejected for another reason than an unsatisfied constraint")
 			}, builder, f.name)
 		}
 	}
