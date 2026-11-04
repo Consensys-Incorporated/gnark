@@ -9,16 +9,17 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/consensys/gnark/gkr"
+
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr/polynomial"
-	"github.com/consensys/gnark/internal/gkr/gkrcore"
 )
 
 // GateEvaluator provides a high-level API for evaluating compiled gates efficiently.
 // It manages the stack internally and handles input buffering, making it easy to
 // evaluate the same gate multiple times with different inputs.
 type GateEvaluator struct {
-	gate gkrcore.GateBytecode
+	gate gkr.GateBytecode
 	vars []fr.Element
 	nbIn int              // number of inputs expected
 	pool *polynomial.Pool // pool vars was allocated from, if any
@@ -26,7 +27,7 @@ type GateEvaluator struct {
 
 // NewGateEvaluator creates an evaluator for the given compiled gate.
 // The stack is preloaded with constants and ready for evaluation.
-func NewGateEvaluator(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polynomial.Pool) GateEvaluator {
+func NewGateEvaluator(gate gkr.GateBytecode, nbIn int, elementPool ...*polynomial.Pool) GateEvaluator {
 	e := GateEvaluator{
 		gate: gate,
 		nbIn: nbIn,
@@ -79,28 +80,28 @@ func (e *GateEvaluator) Evaluate(top ...fr.Element) *fr.Element {
 
 		// Use switch instead of function pointer for better inlining
 		switch inst.Op {
-		case gkrcore.OpAdd:
+		case gkr.OpAdd:
 			dst.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Add(dst, &e.vars[inst.Inputs[j]])
 			}
-		case gkrcore.OpMul:
+		case gkr.OpMul:
 			dst.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Mul(dst, &e.vars[inst.Inputs[j]])
 			}
-		case gkrcore.OpSub:
+		case gkr.OpSub:
 			dst.Sub(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			for j := 2; j < len(inst.Inputs); j++ {
 				dst.Sub(dst, &e.vars[inst.Inputs[j]])
 			}
-		case gkrcore.OpNeg:
+		case gkr.OpNeg:
 			dst.Neg(&e.vars[inst.Inputs[0]])
-		case gkrcore.OpMulAcc:
+		case gkr.OpMulAcc:
 			var prod fr.Element
 			prod.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			dst.Add(&prod, &e.vars[inst.Inputs[2]])
-		case gkrcore.OpSumExp17:
+		case gkr.OpSumExp17:
 			// result = (x[0] + x[1] + x[2])^17
 			var sum fr.Element
 			sum.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
@@ -126,14 +127,14 @@ func (e *GateEvaluator) Evaluate(top ...fr.Element) *fr.Element {
 // GateEvaluatorPool manages a pool of gate evaluators for a specific gate type.
 // The evaluators allocate their element slices from the polynomial.Pool the pool was given, if any.
 type GateEvaluatorPool struct {
-	gate        gkrcore.GateBytecode
+	gate        gkr.GateBytecode
 	nbIn        int
 	lock        sync.Mutex
 	available   []*GateEvaluator
 	elementPool []*polynomial.Pool
 }
 
-func NewGateEvaluatorPool(gate gkrcore.GateBytecode, nbIn int, elementPool ...*polynomial.Pool) *GateEvaluatorPool {
+func NewGateEvaluatorPool(gate gkr.GateBytecode, nbIn int, elementPool ...*polynomial.Pool) *GateEvaluatorPool {
 	return &GateEvaluatorPool{
 		gate:        gate,
 		nbIn:        nbIn,
