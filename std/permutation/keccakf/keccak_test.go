@@ -10,6 +10,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
+	"github.com/consensys/gnark/std/internal/keccakref"
 	"github.com/consensys/gnark/std/permutation/keccakf"
 	"github.com/consensys/gnark/test"
 )
@@ -72,7 +73,7 @@ func TestKeccakf(t *testing.T) {
 		res[i] = 2
 	}
 	for i := 0; i < 2; i++ {
-		res = keccakF1600(res)
+		res = keccakref.KeccakF1600(res)
 	}
 	witness := keccakfCircuit{}
 	for i := range nativeIn {

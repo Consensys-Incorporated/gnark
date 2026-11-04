@@ -1,7 +1,10 @@
 // Copyright 2014 The Go Authors.
 // vendored from golang.org/x/crypto/sha3/keccakf.go for testing
 
-package keccakf_test
+// Package keccakref is a native reference implementation of the Keccak-f[1600]
+// permutation. It is the single copy shared by the tests of the Keccak and
+// SHA-3 circuits, and is not meant to be used outside of tests.
+package keccakref
 
 // rc stores the round constants for use in the ι step.
 var rc = [24]uint64{
@@ -31,9 +34,9 @@ var rc = [24]uint64{
 	0x8000000080008008,
 }
 
-// keccakF1600 applies the Keccak permutation to a 1600b-wide
-// state represented as a slice of 25 uint64s.
-func keccakF1600(a [25]uint64) [25]uint64 {
+// KeccakF1600 applies the Keccak permutation to a 1600b-wide
+// state represented as an array of 25 uint64s.
+func KeccakF1600(a [25]uint64) [25]uint64 {
 	// Implementation translated from Keccak-inplace.c
 	// in the keccak reference code.
 	var t, bc0, bc1, bc2, bc3, bc4, d0, d1, d2, d3, d4 uint64
