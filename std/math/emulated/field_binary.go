@@ -94,6 +94,12 @@ func (f *Field[T]) ToBitsCanonical(a *Element[T]) []frontend.Variable {
 }
 
 // FromBits returns a new Element given the bits is little-endian order.
+//
+// Over more bits than the modulus (constant zeros on top not counted), the
+// result is reduced, except for small fields (Goldilocks, BabyBear, ...):
+// AssertIsInRange, AssertIsLessOrEqual and ToBits then see the value mod p,
+// not the integer the bits encode. To range-check an encoding, pass exactly
+// the modulus's bit length.
 func (f *Field[T]) FromBits(bs ...frontend.Variable) *Element[T] {
 	nbLimbs := (uint(len(bs)) + f.fParams.BitsPerLimb() - 1) / f.fParams.BitsPerLimb()
 	limbs := make([]frontend.Variable, nbLimbs)
@@ -101,9 +107,18 @@ func (f *Field[T]) FromBits(bs ...frontend.Variable) *Element[T] {
 		limbs[i] = bits.FromBinary(f.api, bs[i*f.fParams.BitsPerLimb():(i+1)*f.fParams.BitsPerLimb()])
 	}
 	limbs[nbLimbs-1] = bits.FromBinary(f.api, bs[(nbLimbs-1)*f.fParams.BitsPerLimb():])
-	if len(bs) > f.fParams.Modulus().BitLen() {
-		// more bits than the modulus can encode 2p, 3p, ...: reduce now, so that
-		// every element of overflow 0 stays below 2p (IsZero relies on it).
+	// constant zeros on top encode nothing, so they don't widen the value
+	n := len(bs)
+	for ; n > 0; n-- {
+		if v, ok := f.api.Compiler().ConstantValue(bs[n-1]); !ok || v.Sign() != 0 {
+			break
+		}
+	}
+	// more bits than the modulus can encode 2p, 3p, ...: reduce now, so that
+	// every element of overflow 0 stays below 2p (IsZero relies on it). Not in
+	// small-field mode, whose reduction folds the limbs into one native value
+	// and can wrap it.
+	if n > f.fParams.Modulus().BitLen() && !f.useSmallFieldOptimization() {
 		return f.Reduce(f.newInternalElement(limbs, 1))
 	}
 	return f.newInternalElement(limbs, 0)

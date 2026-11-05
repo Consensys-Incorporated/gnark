@@ -5,7 +5,10 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
+	"github.com/consensys/gnark/frontend/cs/scs"
 	"github.com/consensys/gnark/test"
 )
 
@@ -112,4 +115,104 @@ func testFromBitsIsZeroMultipleOfModulus[T FieldParams](t *testing.T) {
 	pp := new(big.Int).Mul(p, p)
 	check("p^2", 2*limbBits, pp)
 	check("p^2+1", 2*limbBits, pp.Add(pp, big.NewInt(1)))
+}
+
+// fromBitsPaddingCircuit asserts FromBits(Bits followed by Pad constant zeros)
+// in range.
+type fromBitsPaddingCircuit[T FieldParams] struct {
+	Bits []frontend.Variable
+	Pad  int `gnark:"-"`
+}
+
+func (c *fromBitsPaddingCircuit[T]) Define(api frontend.API) error {
+	f, err := NewField[T](api)
+	if err != nil {
+		return err
+	}
+	bs := append([]frontend.Variable{}, c.Bits...)
+	for i := 0; i < c.Pad; i++ {
+		bs = append(bs, 0)
+	}
+	f.AssertIsInRange(f.FromBits(bs...))
+	return nil
+}
+
+// Constant zeros on top of the modulus's bit length don't make FromBits
+// reduce: the padding costs nothing and AssertIsInRange still rejects p.
+// Compiled backends only: the test engine shows no constants.
+func TestFromBitsConstantPadding(t *testing.T) {
+	type T = BN254Fp
+	p := T{}.Modulus()
+	nbBits, pad := p.BitLen(), 2 // 256 bits, the modulus's limb count
+	bitsOf := func(v *big.Int) []frontend.Variable {
+		bs := make([]frontend.Variable, nbBits)
+		for i := range bs {
+			bs[i] = v.Bit(i)
+		}
+		return bs
+	}
+	for _, b := range []struct {
+		name    string
+		compile func(frontend.Circuit) (constraint.ConstraintSystem, error)
+	}{
+		{"r1cs", func(c frontend.Circuit) (constraint.ConstraintSystem, error) {
+			return frontend.Compile(testCurve.ScalarField(), r1cs.NewBuilder, c)
+		}},
+		{"scs", func(c frontend.Circuit) (constraint.ConstraintSystem, error) {
+			return frontend.Compile(testCurve.ScalarField(), scs.NewBuilder, c)
+		}},
+	} {
+		plain, err := b.compile(&fromBitsPaddingCircuit[T]{Bits: make([]frontend.Variable, nbBits)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		padded, err := b.compile(&fromBitsPaddingCircuit[T]{Bits: make([]frontend.Variable, nbBits), Pad: pad})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if padded.GetNbConstraints() != plain.GetNbConstraints() {
+			t.Errorf("%s: %d constraints with padding, %d without", b.name, padded.GetNbConstraints(), plain.GetNbConstraints())
+		}
+		solve := func(v *big.Int) error {
+			w, err := frontend.NewWitness(&fromBitsPaddingCircuit[T]{Bits: bitsOf(v), Pad: pad}, testCurve.ScalarField())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = padded.Solve(w)
+			return err
+		}
+		if err := solve(new(big.Int).Sub(p, big.NewInt(1))); err != nil {
+			t.Errorf("%s: p-1 rejected: %v", b.name, err)
+		}
+		if err := solve(p); err == nil {
+			t.Errorf("%s: p accepted: the padding made FromBits reduce", b.name)
+		}
+	}
+}
+
+type fromBitsSmallFieldCircuit struct {
+	Bits []frontend.Variable
+}
+
+func (c *fromBitsSmallFieldCircuit) Define(api frontend.API) error {
+	f, err := NewField[Goldilocks](api)
+	if err != nil {
+		return err
+	}
+	if x := f.FromBits(c.Bits...); x.overflow != 0 || len(x.Limbs) != 2 {
+		return fmt.Errorf("FromBits(128 bits) reduced on a small field: overflow %d, %d limbs", x.overflow, len(x.Limbs))
+	}
+	return nil
+}
+
+// Small fields are left as they were: their reduction folds the limbs into
+// one native value, which a wide input can wrap.
+func TestFromBitsSmallFieldNotReduced(t *testing.T) {
+	bs := make([]frontend.Variable, 128)
+	for i := range bs {
+		bs[i] = 1
+	}
+	if err := test.IsSolved(&fromBitsSmallFieldCircuit{Bits: make([]frontend.Variable, 128)}, &fromBitsSmallFieldCircuit{Bits: bs}, testCurve.ScalarField()); err != nil {
+		t.Fatal(err)
+	}
 }
