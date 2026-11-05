@@ -85,6 +85,7 @@ type resources struct {
 	claimValueIndices  [][]int // claimValueIndices[wI][claimI]: index of w's claimI-th claimed value in its source level's finalEvalProof
 	claims             Claims
 	consolidated       []bool // the wires of schedule[0], indexed by wire
+	proof              Proof  // the proof being built by Prove or checked by Verify
 }
 
 // evaluateBase returns the evaluation of the multilinear extension of the base field column col at
@@ -139,11 +140,11 @@ func (r *resources) proveSkipLevel(levelI int) sumcheckProof {
 
 // verifySkipLevel verifies a SkipSumcheck level: checks that the finalEvalProof is consistent with
 // the gate evaluations, and records outgoing eval points.
-func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
+func (r *resources) verifySkipLevel(levelI int) error {
 	level := r.schedule[levelI].(*constraint.GkrSkipLevel)
 	gkrcore.CollectOutgoingEvalPoints(level, levelI, r.outgoingEvalPoints)
 
-	finalEval := proof[levelI].finalEvalProof
+	finalEval := r.proof[levelI].finalEvalProof
 	_, inputIndices := r.circuit.InputMapping(level)
 	group := constraint.GkrClaimGroup(*level)
 
@@ -155,7 +156,7 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 				evaluator.PushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
 			}
 			gateEval := evaluator.Evaluate()
-			claimedEval := proof[src.Level].finalEvalProof[r.claimValueIndices[wI][claimI]]
+			claimedEval := r.proof[src.Level].finalEvalProof[r.claimValueIndices[wI][claimI]]
 			if !claimedEval.Equal(gateEval) {
 				return fmt.Errorf("level %d wire %d claim %d: claimed eval %v disagrees with gate eval %v", levelI, wI, claimI, &claimedEval, gateEval)
 			}
@@ -178,22 +179,20 @@ func (r *resources) levelPredicates(levelI int) (absorb, include func(wI int) bo
 }
 
 // proveLevel proves level levelI: computes its proof entry, absorbs its values, and appends its claims.
-func (r *resources) proveLevel(levelI int) sumcheckProof {
-	var entry sumcheckProof
+func (r *resources) proveLevel(levelI int) {
 	switch r.schedule[levelI].(type) {
 	case *constraint.GkrSkipLevel:
-		entry = r.proveSkipLevel(levelI)
+		r.proof[levelI] = r.proveSkipLevel(levelI)
 	case *constraint.GkrSingleSourceZeroCheckLevel:
-		entry = r.proveSingleSourceZeroCheckLevel(levelI)
+		r.proof[levelI] = r.proveSingleSourceZeroCheckLevel(levelI)
 	case *constraint.GkrSumcheckLevel:
-		entry = r.proveSumcheckLevel(levelI)
+		r.proof[levelI] = r.proveSumcheckLevel(levelI)
 	default:
 		panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
 	}
 	absorb, include := r.levelPredicates(levelI)
-	constraint.AbsorbGkrFinalEvalProof(r.transcript, entry.finalEvalProof, gkrcore.UniqueGateInputs(r.circuit, r.schedule[levelI]), absorb, r.schedule[levelI])
-	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], entry.finalEvalProof, r.outgoingEvalPoints[levelI], include)
-	return entry
+	constraint.AbsorbGkrFinalEvalProof(r.transcript, r.proof[levelI].finalEvalProof, gkrcore.UniqueGateInputs(r.circuit, r.schedule[levelI]), absorb, r.schedule[levelI])
+	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], r.proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI], include)
 }
 
 // Prove consistency of the claimed assignment. It returns the evaluation claims on the circuit's
@@ -233,7 +232,7 @@ func Prove[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.
 		}
 	}
 
-	proof := make(Proof, len(schedule)+1)
+	r.proof = make(Proof, len(schedule)+1)
 
 	// Derive the initial challenge point
 	firstChallenge := make([]extensions.E6, r.nbVars)
@@ -247,7 +246,7 @@ func Prove[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.
 	for i, w := range outputs {
 		outputEvals[i] = r.evaluateBase(r.assignment[w], firstChallenge)
 	}
-	proof[len(schedule)] = sumcheckProof{finalEvalProof: outputEvals}
+	r.proof[len(schedule)] = sumcheckProof{finalEvalProof: outputEvals}
 	var absorbedOutputEvals []extensions.E6
 	for i, w := range outputs {
 		if r.consolidated[w] {
@@ -258,24 +257,24 @@ func Prove[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.
 	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputEvals, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
-		proof[levelI] = r.proveLevel(levelI)
+		r.proveLevel(levelI)
 	}
 	r.circuit = r.circuit.LevelCircuit(r.schedule, 0, identityGate())
-	proof[0] = r.proveLevel(0)
+	r.proveLevel(0)
 
-	return proof, r.claims, nil
+	return r.proof, r.claims, nil
 }
 
 // verifyLevel verifies level levelI: checks its proof entry, absorbs its values, and appends its claims.
-func (r *resources) verifyLevel(levelI int, proof Proof) error {
+func (r *resources) verifyLevel(levelI int) error {
 	var err error
 	switch r.schedule[levelI].(type) {
 	case *constraint.GkrSkipLevel:
-		err = r.verifySkipLevel(levelI, proof)
+		err = r.verifySkipLevel(levelI)
 	case *constraint.GkrSingleSourceZeroCheckLevel:
-		err = r.verifySingleSourceZeroCheckLevel(levelI, proof)
+		err = r.verifySingleSourceZeroCheckLevel(levelI)
 	case *constraint.GkrSumcheckLevel:
-		err = r.verifySumcheckLevel(levelI, proof)
+		err = r.verifySumcheckLevel(levelI)
 	default:
 		panic(fmt.Sprintf("level %d: unknown proving level type %T", levelI, r.schedule[levelI]))
 	}
@@ -283,8 +282,8 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 		return fmt.Errorf("level %d: %v", levelI, err)
 	}
 	absorb, include := r.levelPredicates(levelI)
-	constraint.AbsorbGkrFinalEvalProof(r.transcript, proof[levelI].finalEvalProof, gkrcore.UniqueGateInputs(r.circuit, r.schedule[levelI]), absorb, r.schedule[levelI])
-	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI], include)
+	constraint.AbsorbGkrFinalEvalProof(r.transcript, r.proof[levelI].finalEvalProof, gkrcore.UniqueGateInputs(r.circuit, r.schedule[levelI]), absorb, r.schedule[levelI])
+	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], r.proof[levelI].finalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return nil
 }
 
@@ -303,6 +302,7 @@ func Verify[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint
 		return nil, errors.New("number of variables must be positive")
 	}
 	r := newResources(c, schedule, logNbInstances, hasher)
+	r.proof = proof
 
 	if len(proof) != len(schedule)+1 {
 		return nil, fmt.Errorf("proof has %d levels, expected %d", len(proof), len(schedule)+1)
@@ -351,12 +351,12 @@ func Verify[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint
 	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.finalEvalProof, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
-		if err := r.verifyLevel(levelI, proof); err != nil {
+		if err := r.verifyLevel(levelI); err != nil {
 			return nil, err
 		}
 	}
 	r.circuit = view
-	if err := r.verifyLevel(0, proof); err != nil {
+	if err := r.verifyLevel(0); err != nil {
 		return nil, err
 	}
 	return r.claims, nil
@@ -422,8 +422,8 @@ func iterateElems(elems []extensions.E6, counter *int, yield func(int, *extensio
 }
 
 // Flatten yields the proof's elements by position. For each entry of the proof, in order, it
-// yields the evaluations at 1, …, d of its partial sum polynomials, d being their degree, then its
-// final evaluations.
+// yields the coefficients of degree 1 to d of its partial sum polynomials, d being their degree,
+// then its final evaluations.
 // DeserializeProof reads the same order.
 func (p Proof) Flatten() iter.Seq2[int, *extensions.E6] {
 	return func(yield func(int, *extensions.E6) bool) {

@@ -140,7 +140,7 @@ func (gc *gateCompiler) recordCommutative(op gkr.GateOp, identity *big.Int, comb
 	return gc.addInstruction(op, vars...)
 }
 
-// SumExp17 records (a + b + c)^17 as a single instruction. If any of a, b, c is a constant, the
+// SumExp17 records (a + b + c)¹⁷ as a single instruction. If any of a, b, c is a constant, the
 // first one found is read first. Constants are not merged.
 func (gc *gateCompiler) SumExp17(a, b, c frontend.Variable) frontend.Variable {
 	operands := []frontend.Variable{a, b, c}
@@ -301,10 +301,10 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 	}, nil
 }
 
-// Field describes F_p[X]/(f); see gkr.Field.
+// Field describes Fₚ[X]/(f); see gkr.Field.
 type Field = gkr.Field
 
-// gateTester evaluates gate bytecode over a field F_p[X]/(f), to discover a gate's degree and
+// gateTester evaluates gate bytecode over a field Fₚ[X]/(f), to discover a gate's degree and
 // solvable variable. An element is a []*big.Int of length field.Degree(), coefficient i the
 // coefficient of Xⁱ, each reduced mod p. For gkr.PrimeField, Degree() is 1, and every operation below
 // reduces to arithmetic mod p.
@@ -511,7 +511,7 @@ func (t *gateTester) evaluate(inputs ...[]*big.Int) []*big.Int {
 		case gkr.OpMulAcc: // a*b + c
 			dst = t.mul(t.vars[inst.Inputs[0]], t.vars[inst.Inputs[1]])
 			dst = t.add(dst, t.vars[inst.Inputs[2]])
-		case gkr.OpSumExp17: // (a + b + c)^17
+		case gkr.OpSumExp17: // (a + b + c)¹⁷
 			dst = t.add(t.vars[inst.Inputs[0]], t.vars[inst.Inputs[1]])
 			dst = t.add(dst, t.vars[inst.Inputs[2]])
 			dst = t.pow(dst, big.NewInt(17))

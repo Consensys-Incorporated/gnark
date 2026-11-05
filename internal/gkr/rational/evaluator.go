@@ -102,7 +102,7 @@ func (e *GateEvaluator) Evaluate(top ...rational.Element) *rational.Element {
 			prod.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			dst.Add(&prod, &e.vars[inst.Inputs[2]])
 		case gkr.OpSumExp17:
-			// result = (x[0] + x[1] + x[2])^17
+			// result = (x[0] + x[1] + x[2])¹⁷
 			var sum rational.Element
 			sum.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			sum.Add(&sum, &e.vars[inst.Inputs[2]])

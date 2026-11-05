@@ -104,7 +104,7 @@ func (e *GateEvaluator) Evaluate(top ...koalabear.Element) *koalabear.Element {
 			prod.Mul(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			dst.Add(&prod, &e.vars[inst.Inputs[2]])
 		case gkr.OpSumExp17:
-			// result = (x[0] + x[1] + x[2])^17
+			// result = (x[0] + x[1] + x[2])¹⁷
 			var sum koalabear.Element
 			sum.Add(&e.vars[inst.Inputs[0]], &e.vars[inst.Inputs[1]])
 			sum.Add(&sum, &e.vars[inst.Inputs[2]])
@@ -288,7 +288,7 @@ func (e *GateEvaluatorMixed) Evaluate(top ...extensions.E6) *extensions.E6 {
 			}
 			dst.Add(&prod, &e.vars[inst.Inputs[2]])
 		case gkr.OpSumExp17:
-			// result = (x[0] + x[1] + x[2])^17
+			// result = (x[0] + x[1] + x[2])¹⁷
 			var sum extensions.E6
 			if e.isInputConstant(inst, 0) {
 				sum.AddElement(&e.vars[inst.Inputs[1]], &e.consts[inst.Inputs[0]])

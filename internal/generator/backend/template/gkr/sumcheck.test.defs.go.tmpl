@@ -24,6 +24,12 @@ func (c *singleMultilinClaim) roundPolynomial() polynomial.Polynomial{{ .Extensi
 	return sumForX1One(c.g)
 }
 
+func (c *singleMultilinClaim) evaluationAtZero(_ int, claim, atOne {{ .ElementType }}) {{ .ElementType }} {
+	var res {{ .ElementType }}
+	res.Sub(&claim, &atOne)
+	return res
+}
+
 func (c *singleMultilinClaim) roundFold(r {{ .ElementType }}) {
 	c.g.Fold(r)
 }
