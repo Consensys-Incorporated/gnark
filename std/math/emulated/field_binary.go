@@ -101,19 +101,23 @@ func (f *Field[T]) ToBitsCanonical(a *Element[T]) []frontend.Variable {
 // not the integer the bits encode. To range-check an encoding, pass exactly
 // the modulus's bit length.
 func (f *Field[T]) FromBits(bs ...frontend.Variable) *Element[T] {
-	nbLimbs := (uint(len(bs)) + f.fParams.BitsPerLimb() - 1) / f.fParams.BitsPerLimb()
-	limbs := make([]frontend.Variable, nbLimbs)
-	for i := uint(0); i < nbLimbs-1; i++ {
-		limbs[i] = bits.FromBinary(f.api, bs[i*f.fParams.BitsPerLimb():(i+1)*f.fParams.BitsPerLimb()])
-	}
-	limbs[nbLimbs-1] = bits.FromBinary(f.api, bs[(nbLimbs-1)*f.fParams.BitsPerLimb():])
-	// constant zeros on top encode nothing, so they don't widen the value
+	// constant zeros on top encode nothing: they don't widen the value, and
+	// those beyond the modulus's limbs are dropped so that they add no limb
 	n := len(bs)
 	for ; n > 0; n-- {
 		if v, ok := f.api.Compiler().ConstantValue(bs[n-1]); !ok || v.Sign() != 0 {
 			break
 		}
 	}
+	if full := int(f.fParams.NbLimbs() * f.fParams.BitsPerLimb()); len(bs) > full {
+		bs = bs[:max(n, full)]
+	}
+	nbLimbs := (uint(len(bs)) + f.fParams.BitsPerLimb() - 1) / f.fParams.BitsPerLimb()
+	limbs := make([]frontend.Variable, nbLimbs)
+	for i := uint(0); i < nbLimbs-1; i++ {
+		limbs[i] = bits.FromBinary(f.api, bs[i*f.fParams.BitsPerLimb():(i+1)*f.fParams.BitsPerLimb()])
+	}
+	limbs[nbLimbs-1] = bits.FromBinary(f.api, bs[(nbLimbs-1)*f.fParams.BitsPerLimb():])
 	// more bits than the modulus can encode 2p, 3p, ...: reduce now, so that
 	// every element of overflow 0 stays below 2p (IsZero relies on it). Not in
 	// small-field mode, whose reduction folds the limbs into one native value

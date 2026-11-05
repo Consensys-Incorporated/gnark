@@ -133,17 +133,20 @@ func (c *fromBitsPaddingCircuit[T]) Define(api frontend.API) error {
 	for i := 0; i < c.Pad; i++ {
 		bs = append(bs, 0)
 	}
-	f.AssertIsInRange(f.FromBits(bs...))
+	el := f.FromBits(bs...)
+	f.IsZero(el) // padding must not add a limb IsZero cannot compare
+	f.AssertIsInRange(el)
 	return nil
 }
 
 // Constant zeros on top of the modulus's bit length don't make FromBits
-// reduce: the padding costs nothing and AssertIsInRange still rejects p.
-// Compiled backends only: the test engine shows no constants.
+// reduce or add a limb: the padding costs nothing and AssertIsInRange still
+// rejects p, within the modulus's limbs (2 zeros, 256 bits) and beyond them
+// (3 and 70 zeros). Compiled backends only: the test engine shows no constants.
 func TestFromBitsConstantPadding(t *testing.T) {
 	type T = BN254Fp
 	p := T{}.Modulus()
-	nbBits, pad := p.BitLen(), 2 // 256 bits, the modulus's limb count
+	nbBits := p.BitLen()
 	bitsOf := func(v *big.Int) []frontend.Variable {
 		bs := make([]frontend.Variable, nbBits)
 		for i := range bs {
@@ -166,26 +169,28 @@ func TestFromBitsConstantPadding(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		padded, err := b.compile(&fromBitsPaddingCircuit[T]{Bits: make([]frontend.Variable, nbBits), Pad: pad})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if padded.GetNbConstraints() != plain.GetNbConstraints() {
-			t.Errorf("%s: %d constraints with padding, %d without", b.name, padded.GetNbConstraints(), plain.GetNbConstraints())
-		}
-		solve := func(v *big.Int) error {
-			w, err := frontend.NewWitness(&fromBitsPaddingCircuit[T]{Bits: bitsOf(v), Pad: pad}, testCurve.ScalarField())
+		for _, pad := range []int{2, 3, 70} {
+			padded, err := b.compile(&fromBitsPaddingCircuit[T]{Bits: make([]frontend.Variable, nbBits), Pad: pad})
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("%s, %d zeros: %v", b.name, pad, err)
 			}
-			_, err = padded.Solve(w)
-			return err
-		}
-		if err := solve(new(big.Int).Sub(p, big.NewInt(1))); err != nil {
-			t.Errorf("%s: p-1 rejected: %v", b.name, err)
-		}
-		if err := solve(p); err == nil {
-			t.Errorf("%s: p accepted: the padding made FromBits reduce", b.name)
+			if padded.GetNbConstraints() != plain.GetNbConstraints() {
+				t.Errorf("%s, %d zeros: %d constraints with padding, %d without", b.name, pad, padded.GetNbConstraints(), plain.GetNbConstraints())
+			}
+			solve := func(v *big.Int) error {
+				w, err := frontend.NewWitness(&fromBitsPaddingCircuit[T]{Bits: bitsOf(v), Pad: pad}, testCurve.ScalarField())
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = padded.Solve(w)
+				return err
+			}
+			if err := solve(new(big.Int).Sub(p, big.NewInt(1))); err != nil {
+				t.Errorf("%s, %d zeros: p-1 rejected: %v", b.name, pad, err)
+			}
+			if err := solve(p); err == nil {
+				t.Errorf("%s, %d zeros: p accepted: the padding made FromBits reduce", b.name, pad)
+			}
 		}
 	}
 }
