@@ -327,6 +327,13 @@ func (w *witness) FromJSON(s *schema.Schema, data []byte) error {
 	if err := dec.Decode(instance); err != nil {
 		return err
 	}
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return errors.New("unexpected trailing JSON value")
+	}
 	// walk through the public AND secret values
 	missingAssignment := func(name string) error {
 		return fmt.Errorf("missing assignment for %s", name)
