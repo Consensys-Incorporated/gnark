@@ -123,8 +123,8 @@ scalar_mul_G1_bn254,bn254,groth16,165514,259320
 scalar_mul_G1_bn254,bn254,plonk,599990,578348
 scalar_mul_G1_bn254_incomplete,bn254,groth16,75974,123602
 scalar_mul_G1_bn254_incomplete,bn254,plonk,283942,274778
-scalar_mul_G2_bls12381,bn254,groth16,598959,947949
-scalar_mul_G2_bls12381,bn254,plonk,2098981,2012192
+scalar_mul_G2_bls12381,bn254,groth16,597886,946272
+scalar_mul_G2_bls12381,bn254,plonk,2095083,2008478
 scalar_mul_G2_bn254,bn254,groth16,449267,715630
 scalar_mul_G2_bn254,bn254,plonk,1552336,1487843
 scalar_mul_G2_bw6761,bn254,groth16,371608,592187
