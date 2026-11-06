@@ -28,8 +28,16 @@ type Cache struct {
 }
 
 type circuits struct {
-	serializable gkrcore.SerializableCircuit
-	gadget       gkrcore.GadgetCircuit
+	serializable gkr.SerializableCircuit
+	gadget       gkr.GadgetCircuit
+}
+
+// ConstantPositionsGate is a gate of two inputs, x and y, with a constant in every position the
+// gate compiler allows one: the first operand of Add, Sub, Mul and SumExp17, a multiplicand of
+// MulAcc, and the addend of MulAcc.
+func ConstantPositionsGate(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
+	x, y := in[0], in[1]
+	return api.Add(5, api.MulAcc(api.Sub(7, x), 3, y), api.Mul(2, x, y), api.MulAcc(4, x, y), api.SumExp17(1, x, y))
 }
 
 func mimcGate(api gkr.GateAPI, input ...frontend.Variable) frontend.Variable {
@@ -85,13 +93,13 @@ type JSONWire struct {
 type JSONCircuit []JSONWire
 
 // Compile compiles a RawCircuit into a SerializableCircuit.
-func (c *Cache) Compile(t require.TestingT, circuit gkrcore.RawCircuit) (gkrcore.GadgetCircuit, gkrcore.SerializableCircuit) {
+func (c *Cache) Compile(t require.TestingT, circuit gkrcore.RawCircuit) (gkr.GadgetCircuit, gkr.SerializableCircuit) {
 	gadget, serializable, err := circuit.Compile(c.field)
 	require.NoError(t, err)
 	return gadget, serializable
 }
 
-func (c *Cache) GetCircuit(path string) (gkrcore.SerializableCircuit, gkrcore.GadgetCircuit) {
+func (c *Cache) GetCircuit(path string) (gkr.SerializableCircuit, gkr.GadgetCircuit) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 

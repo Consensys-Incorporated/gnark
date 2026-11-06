@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/consensys/gnark/gkr"
+
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
@@ -15,8 +17,8 @@ import (
 
 // Type aliases for gadget circuit types
 type (
-	Wire    = gkrcore.GadgetWire
-	Circuit = gkrcore.GadgetCircuit
+	Wire    = gkr.GadgetWire
+	Circuit = gkr.GadgetCircuit
 )
 
 // WireAssignment is an assignment of values to the same wire across many instances of the circuit
@@ -47,7 +49,7 @@ type Proof []sumcheckProof // for each schedule level, a sumcheck proof
 
 // EvaluationClaim is an assertion that a wire's multilinear extension evaluates to Evaluation at
 // EvaluationPoint.
-type EvaluationClaim = gkrcore.EvaluationClaim[frontend.Variable]
+type EvaluationClaim = gkr.EvaluationClaim[frontend.Variable]
 
 // Claims are the evaluation claims on circuit inputs and outputs that Verify returns, by wire.
 type Claims map[int][]EvaluationClaim
@@ -76,10 +78,10 @@ type resources struct {
 	consolidated       []bool // the wires of schedule[0], indexed by wire
 }
 
-// identityGate is the identity gate LevelCircuit and ConsolidationView use to build level 0's view
+// identityGate is the identity gate LevelCircuit and consolidationView use to build level 0's view
 // of the circuit.
-func identityGate() gkrcore.GadgetGate {
-	return gkrcore.GadgetGate{Evaluate: gkrcore.Identity, NbIn: 1, Degree: 1}
+func identityGate() gkr.GadgetGate {
+	return gkr.GadgetGate{Evaluate: gkrcore.Identity, NbIn: 1, Degree: 1}
 }
 
 // zeroCheckLazyClaims is a lazy claim for sumcheck (verifier side).
@@ -115,14 +117,18 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(api frontend.API, r []frontend.Var
 	var terms []frontend.Variable
 	levelWireI := 0
 	for _, group := range level.ClaimGroups() {
+		eqs := make([]frontend.Variable, len(group.ClaimSources))
+		for k, src := range group.ClaimSources {
+			eqs[k] = polynomial.EvalEq(api, e.r.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], r)
+		}
+
 		for _, wI := range group.Wires {
 			wire := e.r.circuit[wI]
 
 			gateEval := wire.Gate.Evaluate(FrontendAPIWrapper{api}, perWireInputEvals[levelWireI]...)
 
-			for _, src := range group.ClaimSources {
-				eq := polynomial.EvalEq(api, e.r.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex], r)
-				term := api.Mul(eq, gateEval)
+			for k := range group.ClaimSources {
+				term := api.Mul(eqs[k], gateEval)
 				terms = append(terms, term)
 			}
 			levelWireI++
@@ -167,7 +173,7 @@ func (r *resources) verifyLevelSetup(levelI int, proof Proof) (frontend.Variable
 
 	foldingCoeff := frontend.Variable(0)
 	if level.NbClaims() >= 2 {
-		foldingCoeff = r.t.getChallenge()
+		foldingCoeff = r.t.Squeeze()
 	}
 
 	var claimedEvals []frontend.Variable
@@ -221,7 +227,7 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 
 		copy(gPrime[1:], partialSumPoly)
 
-		challenges[j] = r.t.getChallenge(proof[levelI].PartialSumPolys[j]...)
+		challenges[j] = r.t.Squeeze(proof[levelI].PartialSumPolys[j]...)
 		claimedSum = polynomial.InterpolateLDE(r.api, challenges[j], gPrime[:(degree+1)])
 	}
 
@@ -233,11 +239,12 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 	return lazyClaims.verifyFinalEval(r.api, challenges, claimedSum, proof[levelI].FinalEvalProof)
 }
 
-// levelPredicates returns the bind and include predicates for level levelI's unique gate inputs.
-// Level 0 binds nothing and returns every one of its wires (self-referencing on the consolidation
-// view); every other level binds every unique gate input that is not an unconsolidated circuit
-// input, and returns claims for exactly those it withholds from binding.
-func (r *resources) levelPredicates(levelI int) (bind, include func(wI int) bool) {
+// levelPredicates returns, for level levelI's unique gate inputs, the predicate absorb, which selects
+// those absorbed into the transcript, and the predicate include, which selects those whose claims are
+// returned. Level 0 absorbs nothing and returns every one of its wires (self-referencing on the
+// consolidation view); every other level absorbs every unique gate input that is not an
+// unconsolidated circuit input, and returns claims for exactly those it withholds from absorbing.
+func (r *resources) levelPredicates(levelI int) (absorb, include func(wI int) bool) {
 	if levelI == 0 {
 		return func(int) bool { return false }, func(int) bool { return true }
 	}
@@ -245,7 +252,7 @@ func (r *resources) levelPredicates(levelI int) (bind, include func(wI int) bool
 		func(wI int) bool { return r.circuit.IsInput(wI) && !r.consolidated[wI] }
 }
 
-// verifyLevel verifies level levelI: checks its proof entry, binds its values, and appends its claims.
+// verifyLevel verifies level levelI: checks its proof entry, absorbs its values, and appends its claims.
 func (r *resources) verifyLevel(levelI int, proof Proof) error {
 	switch r.schedule[levelI].(type) {
 	case *constraint.GkrSkipLevel:
@@ -259,8 +266,8 @@ func (r *resources) verifyLevel(levelI int, proof Proof) error {
 			return err
 		}
 	}
-	bind, include := r.levelPredicates(levelI)
-	constraint.BindGkrFinalEvalProof(r.t, proof[levelI].FinalEvalProof, r.circuit.UniqueGateInputs(r.schedule[levelI]), bind, r.schedule[levelI])
+	absorb, include := r.levelPredicates(levelI)
+	constraint.AbsorbGkrFinalEvalProof(r.t, proof[levelI].FinalEvalProof, gkrcore.UniqueGateInputs(r.circuit, r.schedule[levelI]), absorb, r.schedule[levelI])
 	gkrcore.AppendLevelClaims(r.claims, r.circuit, r.schedule[levelI], proof[levelI].FinalEvalProof, r.outgoingEvalPoints[levelI], include)
 	return nil
 }
@@ -280,7 +287,7 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 		nbVars:             logNbInstances,
 		claimValueIndices:  c.ClaimValueIndices(schedule),
 		claims:             make(Claims),
-		consolidated:       c.LevelWires(schedule[0]),
+		consolidated:       gkrcore.LevelWires(c, schedule[0]),
 	}
 
 	initialChallengeI := len(schedule)
@@ -301,7 +308,7 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 		if levelI == 0 {
 			levelCircuit = view
 		}
-		nbUniqueInputs := len(levelCircuit.UniqueGateInputs(level))
+		nbUniqueInputs := len(gkrcore.UniqueGateInputs(levelCircuit, level))
 		wantFinalEvalLen := nbUniqueInputs * level.NbOutgoingEvalPoints()
 		if len(proof[levelI].FinalEvalProof) != wantFinalEvalLen {
 			return nil, fmt.Errorf("level %d: got %d final evaluations, expected %d", levelI, len(proof[levelI].FinalEvalProof), wantFinalEvalLen)
@@ -317,16 +324,16 @@ func Verify(api frontend.API, c Circuit, schedule constraint.GkrProvingSchedule,
 
 	firstChallenge := make([]frontend.Variable, logNbInstances)
 	for j := range logNbInstances {
-		firstChallenge[j] = r.t.getChallenge()
+		firstChallenge[j] = r.t.Squeeze()
 	}
 	r.outgoingEvalPoints[initialChallengeI] = [][]frontend.Variable{firstChallenge}
-	var boundOutputEvals []frontend.Variable
+	var absorbedOutputEvals []frontend.Variable
 	for i, w := range c.Outputs() {
 		if r.consolidated[w] {
-			boundOutputEvals = append(boundOutputEvals, outputLevel.FinalEvalProof[i])
+			absorbedOutputEvals = append(absorbedOutputEvals, outputLevel.FinalEvalProof[i])
 		}
 	}
-	r.t.Bind(boundOutputEvals...)
+	r.t.Absorb(absorbedOutputEvals...)
 	gkrcore.AppendOutputClaims(r.claims, c, firstChallenge, outputLevel.FinalEvalProof, func(wI int) bool { return !r.consolidated[wI] })
 
 	for levelI := len(schedule) - 1; levelI >= 1; levelI-- {
@@ -353,37 +360,6 @@ func (p Proof) Serialize() []frontend.Variable {
 	return res
 }
 
-// ComputeLogNbInstances derives n such that the number of instances is 2ⁿ
-// from the size of the proof and the circuit/schedule structure.
-func ComputeLogNbInstances(circuit Circuit, schedule constraint.GkrProvingSchedule, serializedProofLen int) int {
-	serializedProofLen -= len(circuit.Outputs())
-	identity := identityGate()
-	perVar := 0
-	for levelI, level := range schedule {
-		levelCircuit := circuit.LevelCircuit(schedule, levelI, identity)
-		nbUniqueInputs := len(levelCircuit.UniqueGateInputs(level))
-		switch level.(type) {
-		case *constraint.GkrSkipLevel:
-			serializedProofLen -= nbUniqueInputs * level.NbOutgoingEvalPoints()
-		default:
-			perVar += levelCircuit.ZeroCheckDegree(level)
-			serializedProofLen -= nbUniqueInputs
-		}
-	}
-	if perVar == 0 {
-		if serializedProofLen == 0 {
-			return -1
-		}
-	} else {
-		res := serializedProofLen / perVar
-		if res*perVar == serializedProofLen {
-			return res
-		}
-	}
-
-	panic("cannot compute logNbInstances")
-}
-
 type variablesReader []frontend.Variable
 
 func (r *variablesReader) nextN(n int) []frontend.Variable {
@@ -398,13 +374,16 @@ func (r *variablesReader) hasNextN(n int) bool {
 
 func DeserializeProof(circuit Circuit, schedule constraint.GkrProvingSchedule, serializedProof []frontend.Variable) (Proof, error) {
 	proof := make(Proof, len(schedule)+1)
-	logNbInstances := ComputeLogNbInstances(circuit, schedule, len(serializedProof))
+	logNbInstances, err := gkrcore.ComputeLogNbInstances(circuit, schedule, len(serializedProof), identityGate())
+	if err != nil && !errors.Is(err, gkrcore.ErrNbInstancesUndetermined) {
+		return nil, err
+	}
 
 	identity := identityGate()
 	reader := variablesReader(serializedProof)
 	for levelI, level := range schedule {
 		levelCircuit := circuit.LevelCircuit(schedule, levelI, identity)
-		nbUniqueInputs := len(levelCircuit.UniqueGateInputs(level))
+		nbUniqueInputs := len(gkrcore.UniqueGateInputs(levelCircuit, level))
 		if _, isSkip := level.(*constraint.GkrSkipLevel); isSkip {
 			proof[levelI].FinalEvalProof = reader.nextN(nbUniqueInputs * level.NbOutgoingEvalPoints())
 		} else {

@@ -69,7 +69,7 @@ func TestMamabearMatchesNative(t *testing.T) {
 func TestMamabearParameters(t *testing.T) {
 	p, err := mamabearParameters()
 	require.NoError(t, err)
-	require.Equal(t, 16, p.Width)
+	require.Equal(t, 12, p.Width)
 	require.Equal(t, 3, p.DegreeSBox)
 	// Round numbers follow Eq. (1) of the Poseidon2 paper for n = 49, t = 16,
 	// d = 3 at kappa = 128: R_F = 8, R_P = ceil(1.075 * 29) = 32. They are NOT

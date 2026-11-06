@@ -76,16 +76,20 @@ func (d *digest) paddingFixedWidth(length frontend.Variable) (padded []uints.U8,
 	maxLen := len(d.in)
 	maxPaddingCount := d.rate - maxLen%d.rate
 	maxTotalLen := maxLen + maxPaddingCount
+	if d.minimalLength < 0 || d.minimalLength > maxLen {
+		panic(fmt.Sprintf("minimal length %d not in [0, %d]", d.minimalLength, maxLen))
+	}
 
 	comparator := cmp.NewBoundedComparator(d.api, big.NewInt(int64(maxTotalLen)), false)
-	// assert that the length is not larger than the maximum length of the
-	// hashed input. I don't currently see how it could be exploited if it was,
-	// but just to be safe.
+	// Assert minimalLength <= length <= maxLen over the integers. The
+	// comparator is only sound when |a-b| <= maxTotalLen, which does not hold
+	// for an arbitrary witness: with the upper bound alone a field-negative
+	// length (e.g. P-1) wraps around and passes. Each check decomposes the
+	// difference into bitlen(maxTotalLen) bits, so together they bound length
+	// on both sides to a small non-negative integer. The lower bound must
+	// therefore be checked also when minimalLength is 0.
 	comparator.AssertIsLessEq(length, maxLen)
-	// in case the lower bound on the length of input is given, check that the input is long enough
-	if d.minimalLength > 0 {
-		comparator.AssertIsLessEq(d.minimalLength, length)
-	}
+	comparator.AssertIsLessEq(d.minimalLength, length)
 
 	padded = make([]uints.U8, maxLen)
 	copy(padded[:], d.in[:])
@@ -101,6 +105,9 @@ func (d *digest) paddingFixedWidth(length frontend.Variable) (padded []uints.U8,
 	// length mod rate and forging the padding position. Bounding quotient to
 	// the max block count keeps quotient*rate + remainder well below the native
 	// modulus, so the identity holds over the integers and remainder is pinned.
+	// This relies on length ∈ [0, maxLen] and remainder ∈ [0, rate) being
+	// bounded on both sides (checked above and in quoRemRate): then
+	// length-remainder > -rate, so the accepted quotient is non-negative.
 	comparator.AssertIsLessEq(quotient, maxTotalLen/d.rate)
 
 	// When i < minLen or i > maxLen, padding dsbyte is completely unnecessary
@@ -206,15 +213,21 @@ func (d *digest) squeezeBlocks(state [25]uints.U64) (result []uints.U8) {
 	return
 }
 
-// quoRemRate returns quotient = x / d.rate and remainder = x % d.rate with
+// quoRemRate returns quotient = x / d.rate and remainder = x % d.rate. It
+// constrains remainder ∈ [0, d.rate). The quotient is not constrained and
+// must be bounded by the caller to bind the Euclidean relation over the
+// integers.
 func (d *digest) quoRemRate(x frontend.Variable) (quotient, remainder frontend.Variable) {
-	var err error
-	// we can use api.AssertIsLessOrEqual when the bound is constant. It has a short path for case when bound is constant.
 	res, err := d.api.NewHint(remHint, 1, d.rate, x)
 	if err != nil {
 		panic(fmt.Sprintf("call remHint: %v", err))
 	}
+	// The remainder is a hint output, so it has to be bounded on both sides:
+	// the comparator alone is only sound when |a-b| <= rate, and the upper
+	// bound alone would also accept negative remainders down to
+	// rate - 2^bitlen(rate), which would shift the padding by one block.
 	c := cmp.NewBoundedComparator(d.api, big.NewInt(int64(d.rate)), false)
+	c.AssertIsLessEq(0, res[0])
 	c.AssertIsLess(res[0], d.rate)
 	quotient = d.api.DivUnchecked(d.api.Sub(x, res[0]), d.rate)
 	return quotient, res[0]

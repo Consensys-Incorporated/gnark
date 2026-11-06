@@ -9,6 +9,7 @@ import (
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fr/mimc"
 	bn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
 	bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/fr/mimc"
+	gcHash "github.com/consensys/gnark-crypto/hash"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/kvstore"
@@ -85,7 +86,7 @@ func NewCompressor(api frontend.API) (hash.Compressor, error) {
 
 	y = gkrApi.Gate(lastLayerSBox(&constants[len(constants)-1]), in0, y, in1)
 
-	gkrCircuit, err := gkrApi.Compile("POSEIDON2")
+	gkrCircuit, err := gkrApi.Compile(gcHash.FieldHasherPoseidon2)
 	if err != nil {
 		return nil, err
 	}

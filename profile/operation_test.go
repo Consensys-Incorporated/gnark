@@ -97,6 +97,28 @@ func TestOperationsDirectAPI(t *testing.T) {
 	t.Logf("Direct API test - Constraints: %d, Operations: %d", nbConstraints, nbOperations)
 }
 
+func TestAnonymousFunctionFramesAreFiltered(t *testing.T) {
+	p := profile.Start(profile.WithNoOutput())
+
+	func() {
+		profile.RecordConstraint()
+		profile.RecordOperation("first", 1)
+	}()
+	func() {
+		profile.RecordConstraint()
+		profile.RecordOperation("second", 1)
+	}()
+
+	p.Stop()
+
+	if top := p.Top(); strings.Contains(top, ".func2") {
+		t.Errorf("constraint profile contains an anonymous function frame:\n%s", top)
+	}
+	if top := p.TopOperations(); strings.Contains(top, ".func2") {
+		t.Errorf("operation profile contains an anonymous function frame:\n%s", top)
+	}
+}
+
 func TestOperationsNoSession(t *testing.T) {
 	// When no profiling session is active, RecordOperation should be a no-op
 	// This tests that it doesn't panic and doesn't affect anything

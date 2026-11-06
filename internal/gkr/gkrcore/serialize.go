@@ -6,6 +6,8 @@ import (
 	"io"
 	"math/big"
 
+	"github.com/consensys/gnark/gkr"
+
 	"github.com/consensys/gnark/constraint"
 )
 
@@ -59,7 +61,7 @@ func writeBigInt(w io.Writer, x *big.Int) error {
 	return err
 }
 
-// SerializeCircuit writes a SerializableCircuit to w in deterministic binary format,
+// SerializeCircuit writes a gkr.SerializableCircuit to w in deterministic binary format,
 // primarily for hashing circuits to create unique identifiers.
 //
 // The encoding is compact (uint16 for counts/indices, uint8 for bigint byte lengths) and
@@ -73,7 +75,7 @@ func writeBigInt(w io.Writer, x *big.Int) error {
 //	Gate (non-input only): [const_count:u16] [constants...] [inst_count:u16] [instructions...]
 //	Constant: [byte_len:u8] [bytes...]
 //	Instruction: [op:u8] [input_count:u16] [input_indices:u16...]
-func SerializeCircuit(w io.Writer, c SerializableCircuit) error {
+func SerializeCircuit(w io.Writer, c gkr.SerializableCircuit) error {
 	if len(c) >= 1<<16 {
 		return fmt.Errorf("circuit length too large: %d", len(c))
 	}

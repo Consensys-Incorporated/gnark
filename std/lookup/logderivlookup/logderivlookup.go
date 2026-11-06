@@ -189,5 +189,9 @@ func (t *table[E]) resultsTable() [][]frontend.Variable {
 }
 
 func (t *table[E]) commit(api frontend.API) error {
+	if len(t.results) == 0 {
+		// nothing was looked up, so there is nothing to prove
+		return nil
+	}
 	return logderivarg.Build(api, t.entryTable(), t.resultsTable())
 }

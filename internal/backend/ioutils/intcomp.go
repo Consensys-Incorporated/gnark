@@ -38,7 +38,7 @@ func ReadAndDecompressUints32(in []byte, buf32 []uint32) (outbuf32 []uint32, rea
 		return buf32, 0, nil, io.ErrUnexpectedEOF
 	}
 	length := binary.LittleEndian.Uint64(in[:8])
-	if uint64(len(in)) < 8+4*length {
+	if length > uint64((len(in)-8)/4) {
 		return buf32, 0, nil, io.ErrUnexpectedEOF
 	}
 	in = in[8 : 8+4*length]
@@ -62,7 +62,7 @@ func ReadAndDecompressUints64(in []byte) (int, []uint64, error) {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
 	length := binary.LittleEndian.Uint64(in[:8])
-	if uint64(len(in)) < 8+8*length {
+	if length > uint64((len(in)-8)/8) {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
 	in = in[8 : 8+8*length]

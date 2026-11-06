@@ -12,6 +12,8 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/consensys/gnark/gkr"
+
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr/polynomial"
@@ -35,7 +37,7 @@ type circuitEvaluator struct {
 // BlueprintSolve is a BLS12_381-specific blueprint for solving GKR circuit instances.
 type BlueprintSolve struct {
 	// Circuit structure (serialized)
-	Circuit     gkrcore.SerializableCircuit
+	Circuit     gkr.SerializableCircuit
 	NbInstances uint32
 
 	// Not serialized - recreated lazily at solve time
@@ -259,7 +261,10 @@ func (b *BlueprintProve) Solve(s constraint.Solver[constraint.U64], inst constra
 	}
 
 	// Create hasher and write base challenges
-	hsh := hash.NewHash(b.HashName + "_BLS12_381")
+	hsh, err := hash.NewFieldHasher[fr.Element, fr.Element](b.HashName)
+	if err != nil {
+		return err
+	}
 
 	// Read initial challenges from instruction calldata (parse dynamically, no metadata)
 	// Format: [0]=totalSize, [1...]=challenge linear expressions
@@ -271,8 +276,7 @@ func (b *BlueprintProve) Solve(s constraint.Solver[constraint.U64], inst constra
 		// Copy directly from constraint.U64 to fr.Element (both in Montgomery form)
 		var challenge fr.Element
 		copy(challenge[:], val[:])
-		challengeBytes := challenge.Bytes()
-		hsh.Write(challengeBytes[:])
+		hsh.WriteElement(challenge)
 	}
 
 	// Call the BLS12_381-specific Prove function (assignments already WireAssignment type)
@@ -306,7 +310,7 @@ func (b *BlueprintProve) proofSize() int {
 	}
 	nbPaddedInstances := ecc.NextPowerOfTwo(uint64(b.SolveBlueprint.NbInstances))
 	logNbInstances := bits.TrailingZeros64(nbPaddedInstances)
-	return b.SolveBlueprint.Circuit.ProofSize(b.Schedule, logNbInstances)
+	return gkrcore.ProofSize(b.SolveBlueprint.Circuit, b.Schedule, logNbInstances)
 }
 
 // NbOutputs implements Blueprint
@@ -435,7 +439,7 @@ func (b *BlueprintGetAssignment) UpdateInstructionTree(inst constraint.Instructi
 }
 
 // NewBlueprints creates and registers all GKR blueprints for BLS12_381
-func NewBlueprints(circuit gkrcore.SerializableCircuit, schedule constraint.GkrProvingSchedule, hashName string, compiler constraint.CustomizableSystem) gkrcore.Blueprints {
+func NewBlueprints(circuit gkr.SerializableCircuit, schedule constraint.GkrProvingSchedule, hashName string, compiler constraint.CustomizableSystem) gkrcore.Blueprints {
 	// Create and register solve blueprint
 	solve := &BlueprintSolve{Circuit: circuit}
 	solveID := compiler.AddBlueprint(solve)
