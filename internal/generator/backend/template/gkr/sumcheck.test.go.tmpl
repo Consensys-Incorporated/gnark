@@ -1,8 +1,9 @@
 import (
 	"fmt"
 	"{{ .FieldPackagePath }}/polynomial"
+	"github.com/consensys/gnark/internal/gkr/gkrcore"
+	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
-	"hash"
 	{{ if not .GenerateTestVectors}}
 	"{{ .FieldPackagePath }}"
 	"math/bits"
@@ -11,16 +12,16 @@ import (
 	"testing"
 )
 
-func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() hash.Hash) error {
-	poly := make(polynomial.MultiLin, len(polyInt))
+func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() fieldHasher) error {
+	poly := make(polynomial.MultiLin{{ .ExtensionSuffix }}, len(polyInt))
 	for i, n := range polyInt {
 		poly[i].SetUint64(n)
 	}
 
 	claim := singleMultilinClaim{g: poly.Clone()}
-	t := transcript{h: hashGenerator()}
+	t := {{ .NewTranscript }}(hashGenerator())
 
-	proof := sumcheckProve(&claim, &t)
+	proof := sumcheckProve(&claim, t)
 
 	var sb strings.Builder
 	for _, p := range proof.partialSumPolys {
@@ -36,15 +37,15 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() hash
 	}
 
 	lazyClaim := singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
-	t = transcript{h: hashGenerator()}
-	if err := sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, &t); err != nil {
+	t = {{ .NewTranscript }}(hashGenerator())
+	if err := sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t); err != nil {
 		return err
 	}
 
-	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], toElement(1))
+	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], gkrtesting.ToElement[{{ .ElementType }}](1))
 	lazyClaim = singleMultilinLazyClaim{g: poly, claimedSum: poly.Sum()}
-	t = transcript{h: hashGenerator()}
-	if sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, &t) == nil {
+	t = {{ .NewTranscript }}(hashGenerator())
+	if sumcheckVerify(lazyClaim, proof, lazyClaim.claimedSum, 1, t) == nil {
 		return fmt.Errorf("bad proof accepted")
 	}
 	return nil
@@ -60,7 +61,7 @@ func TestSumcheckDeterministicHashSingleClaimMultilin(t *testing.T) {
 
 	const MaxStep = 4
 	const MaxStart = 4
-	hashGens := make([]func() hash.Hash, 0, MaxStart*MaxStep)
+	hashGens := make([]func() fieldHasher, 0, MaxStart*MaxStep)
 
 	for step := 0; step < MaxStep; step++ {
 		for startState := 0; startState < MaxStart; startState++ {

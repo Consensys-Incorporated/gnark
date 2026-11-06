@@ -15,6 +15,7 @@ import (
 	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/backend/witness"
 	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
@@ -344,15 +345,36 @@ func (assert *Assert) compile(circuit frontend.Circuit, field *big.Int, backendI
 	return ccs, nil
 }
 
-func (assert *Assert) compileU32(circuit frontend.Circuit, field *big.Int, compileOpts []frontend.CompileOption) (constraint.ConstraintSystemU32, error) {
-	newBuilder := widecommitter.From(scs.NewBuilder)
-	// else compile it and ensure it is deterministic
-	ccs, err := frontend.CompileU32(field, newBuilder, circuit, compileOpts...)
+// smallFieldCS is the part of a compiled small-field constraint system the
+// small-field checks use. The constraint systems for the different element
+// types share no common interface, so we narrow to what is needed.
+type smallFieldCS interface {
+	Solve(witness witness.Witness, opts ...solver.Option) (any, error)
+}
+
+// compileSmallField compiles over a small field with the element type that
+// field's constraint system uses: U32 for the fields which fit a uint32, and
+// U64W1 for the wider ones such as mamabear.
+func (assert *Assert) compileSmallField(circuit frontend.Circuit, field *big.Int, compileOpts []frontend.CompileOption) (smallFieldCS, error) {
+	if constraint.FitsElement[constraint.U64W1](field) {
+		return compileSmallFieldGeneric[constraint.U64W1](field, circuit, compileOpts)
+	}
+	return compileSmallFieldGeneric[constraint.U32](field, circuit, compileOpts)
+}
+
+// compileSmallFieldGeneric compiles the circuit twice and ensures the two
+// constraint systems agree, so that compilation is checked to be deterministic.
+//
+// It is a function rather than a method on [Assert] because methods may not
+// take type parameters before Go 1.27.
+func compileSmallFieldGeneric[E constraint.Element](field *big.Int, circuit frontend.Circuit, compileOpts []frontend.CompileOption) (constraint.ConstraintSystemGeneric[E], error) {
+	newBuilder := widecommitter.From[E](scs.NewBuilder)
+	ccs, err := frontend.CompileGeneric(field, newBuilder, circuit, compileOpts...)
 	if err != nil {
 		return nil, err
 	}
 
-	_ccs, err := frontend.CompileU32(field, newBuilder, circuit, compileOpts...)
+	_ccs, err := frontend.CompileGeneric(field, newBuilder, circuit, compileOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCompilationNotDeterministic, err)
 	}

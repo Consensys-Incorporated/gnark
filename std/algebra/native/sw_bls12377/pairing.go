@@ -22,6 +22,11 @@ var loopCounter = [64]int8{
 
 // MillerLoop computes the product of n miller loops (n can be 1)
 // ∏ᵢ { fᵢ_{x₀,Q}(P) }
+//
+// When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
+// and Qᵢ.P is never read: the lines are not constrained to correspond to the
+// point — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
 func MillerLoop(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 
 	// check input size match
@@ -238,6 +243,14 @@ func FinalExponentiation(api frontend.API, e1 GT) GT {
 // ∏ᵢ e(Pᵢ, Qᵢ).
 //
 // This function doesn't check that the inputs are in the correct subgroup
+//
+// When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
+// and Qᵢ.P is never read: the lines are not constrained to correspond to the
+// point — precomputed lines are trusted input, see
+// [NewG2AffineFixedPlaceholder] for the security assumptions. To assert a
+// pairing equation over untrusted G2 inputs, prefer [PairingCheck], which
+// binds the result to the point coordinates even when precomputed lines are
+// supplied.
 func Pair(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 	f, err := MillerLoop(api, P, Q)
 	if err != nil {
@@ -248,6 +261,11 @@ func Pair(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 
 // PairingCheck calculates the reduced pairing for a set of points and asserts if the result is One
 // ∏ᵢ e(Pᵢ, Qᵢ) =? 1
+//
+// The non-residue witness hint is computed from the point coordinates, so the
+// asserted equation binds the result to the coordinates of Qᵢ.P even when Qᵢ
+// carries precomputed lines: lines not corresponding to Qᵢ.P make the circuit
+// unsatisfiable.
 //
 // This function doesn't check that the inputs are in the correct subgroups.
 // It uses the classical E12-based Miller loop.

@@ -8,9 +8,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ABIGEN_VERSION: v1.14.8
-  GO_VERSION: 1.25.x # NB! when updating also update matrix, we cannot refer to env variables in the matrix
-  GOLANGCI_LINT_VERSION: v2.10.1
+  GO_VERSION: 1.27.x # NB! when updating also update matrix, we cannot refer to env variables in the matrix
+  GOLANGCI_LINT_VERSION: v2.14.0
 
 jobs:
   staticcheck:
@@ -66,7 +65,6 @@ jobs:
 
       - name: install deps
         run: |
-          go install github.com/ethereum/go-ethereum/cmd/abigen@${{ env.ABIGEN_VERSION }}
           sudo add-apt-repository ppa:ethereum/ethereum
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends solc

@@ -18,6 +18,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	kzg_bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/kzg"
 	"github.com/consensys/gnark-crypto/field/koalabear"
+	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bls12381"
 	"github.com/consensys/gnark/std/math/emulated"
@@ -129,8 +130,15 @@ func TestKzgPointEvaluationPrecompile16(t *testing.T) {
 		ExpectedBlobSize:   witnessBlobSize,
 		ExpectedBlsModulus: witnessBlsModulus,
 	}
-	err = test.IsSolved(&kzgPointEvalCircuit16{}, &witness, koalabear.Modulus())
-	assert.NoError(err, "test solver")
+	// solved over both small native fields; the witness setup above is the
+	// expensive part and is shared
+	for _, nf := range []struct {
+		name    string
+		modulus *big.Int
+	}{{"koalabear", koalabear.Modulus()}, {"mamabear", mamabear.Modulus()}} {
+		err = test.IsSolved(&kzgPointEvalCircuit16{}, &witness, nf.modulus)
+		assert.NoError(err, "test solver over %s", nf.name)
+	}
 }
 
 type kzgPointEvalFailureCircuit16 struct {
@@ -188,7 +196,10 @@ func runFailureCircuit16(_ *test.Assert, evaluationPoint fr.Element, claimedValu
 		ExpectedBlobSize:   witnessBlobSize,
 		ExpectedBlsModulus: witnessBlsModulus,
 	}
-	return test.IsSolved(&kzgPointEvalFailureCircuit16{}, &witness, koalabear.Modulus())
+	if err := test.IsSolved(&kzgPointEvalFailureCircuit16{}, &witness, koalabear.Modulus()); err != nil {
+		return err
+	}
+	return test.IsSolved(&kzgPointEvalFailureCircuit16{}, &witness, mamabear.Modulus())
 }
 
 func TestKzgPointEvaluationPrecompileFailure16(t *testing.T) {

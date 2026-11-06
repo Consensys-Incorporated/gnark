@@ -87,8 +87,17 @@ type Option func(*HasherConfig) error
 // [BinaryFixedLengthHasher.FixedLengthSum] as we can avoid selecting between
 // the dummy padding and actual padding. If this option is not provided, then we
 // assume the minimal length is 0.
+//
+// The minimal length must be non-negative. It must also not exceed the number
+// of bytes written to the hasher before calling
+// [BinaryFixedLengthHasher.FixedLengthSum]; as the number of written bytes is
+// only known at that point, [BinaryFixedLengthHasher.FixedLengthSum] panics
+// otherwise.
 func WithMinimalLength(minimalLength int) Option {
 	return func(cfg *HasherConfig) error {
+		if minimalLength < 0 {
+			return fmt.Errorf("minimal length must be non-negative, got %d", minimalLength)
+		}
 		cfg.MinimalLength = minimalLength
 		return nil
 	}

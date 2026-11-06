@@ -2,15 +2,22 @@
 package gkrapi
 
 import (
-	"math/big"
-
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 )
 
 // Circuit is a circuit compiled by API.Compile, ready to prove and verify with gkr/<curve>.
-type Circuit = gkrcore.SerializableCircuit
+type Circuit = gkr.SerializableCircuit
+
+// PrimeField describes F_p itself.
+var PrimeField = gkr.PrimeField
+
+// KoalaBearE6 describes KoalaBear's degree-6 extension E6.
+var KoalaBearE6 = gkr.KoalaBearE6
+
+// MamaBearE3 describes MamaBear's degree-3 extension E3.
+var MamaBearE3 = gkr.MamaBearE3
 
 // ConsolidationMode selects which wires DefaultProvingSchedule consolidates into level 0.
 type ConsolidationMode = gkrcore.ConsolidationMode
@@ -64,8 +71,9 @@ func (api *API) Export(in ...gkr.Variable) {
 	api.circuit.Export(in...)
 }
 
-// Compile compiles the circuit for field, and builds its default proving schedule under mode.
-func (api *API) Compile(field *big.Int, mode ConsolidationMode) (Circuit, constraint.GkrProvingSchedule, error) {
+// Compile compiles the circuit for field, and builds its default proving schedule under mode. The
+// circuit must be proven and verified with the backend for field.
+func (api *API) Compile(field gkr.Field, mode ConsolidationMode) (Circuit, constraint.GkrProvingSchedule, error) {
 	_, circuit, err := api.circuit.Compile(field)
 	if err != nil {
 		return nil, nil, err

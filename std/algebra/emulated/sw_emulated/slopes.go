@@ -141,25 +141,28 @@ func tangentSlopeVal(p, x, y, a, out *big.Int) error {
 	return nil
 }
 
-// unifiedSlopeHint computes the slope of the j-invariant-0 unified addition:
-// the tangent 3x1²/(2y1) when x1 ≡ x2, the chord (y2−y1)/(x2−x1) otherwise.
+// unifiedSlopeHint computes the slope of the unified addition: the tangent
+// (3x1²+a)/(2y1) when x1 ≡ x2, the chord (y2−y1)/(x2−x1) otherwise. The curve
+// coefficient a is an optional fifth input — the j=0 path omits it, the j≠0
+// path supplies it.
 // When x1 ≡ x2 but the tangent denominator 2y1 vanishes (doubling a rational
-// 2-torsion point such as (1,0) on BW6-761), it returns the numerator 3x1²:
-// the caller substitutes a dummy denominator denSafe = 1 in that case, so the
-// deferred assertion λ·denSafe − 3x1² ≡ 0 demands λ = 3x1² for the honest
-// prover. Returning 0 there (as a plain tangent hint would) makes the honest
-// witness fail while a forged hint could pass, so we mirror denSafe = 1 here.
-// The λ this yields is discarded by the caller's select and the result is
-// overridden with O. Inputs: x1, y1, x2, y2.
+// 2-torsion point such as (1,0) on BW6-761), it returns the bare numerator
+// 3x1²+a to mirror the caller's dummy denominator denSafe = 1: returning 0
+// there would fail the honest witness while a forged hint could pass. That λ
+// is discarded by the caller's select. Inputs: x1, y1, x2, y2 [, a].
 func unifiedSlopeHint(_ *big.Int, inputs, outputs []*big.Int) error {
 	return emulated.UnwrapHint(inputs, outputs, func(p *big.Int, in, out []*big.Int) error {
-		if len(in) != 4 || len(out) != 1 {
-			return errors.New("expecting four inputs and one output")
+		if (len(in) != 4 && len(in) != 5) || len(out) != 1 {
+			return errors.New("expecting four or five inputs and one output")
 		}
 		x1 := new(big.Int).Mod(in[0], p)
 		y1 := new(big.Int).Mod(in[1], p)
 		x2 := new(big.Int).Mod(in[2], p)
 		y2 := new(big.Int).Mod(in[3], p)
+		var a *big.Int
+		if len(in) == 5 {
+			a = new(big.Int).Mod(in[4], p)
+		}
 		dx := new(big.Int).Sub(x2, x1)
 		dx.Mod(dx, p)
 		if dx.Sign() == 0 {
@@ -167,48 +170,20 @@ func unifiedSlopeHint(_ *big.Int, inputs, outputs []*big.Int) error {
 			den.Mod(den, p)
 			if den.Sign() == 0 {
 				// degenerate tangent (2y1 ≡ 0): denSafe = 1 downstream, so
-				// return the bare numerator 3x1².
+				// return the bare numerator 3x1²+a.
 				out[0].Mul(x1, x1)
-				out[0].Mul(out[0], big.NewInt(3)).Mod(out[0], p)
+				out[0].Mul(out[0], big.NewInt(3))
+				if a != nil {
+					out[0].Add(out[0], a)
+				}
+				out[0].Mod(out[0], p)
 				return nil
 			}
-			return tangentSlopeVal(p, x1, y1, nil, out[0])
+			return tangentSlopeVal(p, x1, y1, a, out[0])
 		}
 		dx.ModInverse(dx, p)
 		out[0].Sub(y2, y1)
 		out[0].Mul(out[0], dx).Mod(out[0], p)
-		return nil
-	})
-}
-
-// bjSlopeHint computes the Brier-Joye unified slope
-// ((x1+x2)² − x1·x2 + a)/(y1 + y2) used on j ≠ 0 curves. When y1 + y2 ≡ 0 it
-// returns the numerator itself, matching the dummy-1-denominator semantics of
-// the caller (the result is then discarded by a select). Inputs: x1, y1, x2,
-// y2, a.
-func bjSlopeHint(_ *big.Int, inputs, outputs []*big.Int) error {
-	return emulated.UnwrapHint(inputs, outputs, func(p *big.Int, in, out []*big.Int) error {
-		if len(in) != 5 || len(out) != 1 {
-			return errors.New("expecting five inputs and one output")
-		}
-		x1 := new(big.Int).Mod(in[0], p)
-		y1 := new(big.Int).Mod(in[1], p)
-		x2 := new(big.Int).Mod(in[2], p)
-		y2 := new(big.Int).Mod(in[3], p)
-		num := new(big.Int).Add(x1, x2)
-		num.Mul(num, num)
-		tmp := new(big.Int).Mul(x1, x2)
-		num.Sub(num, tmp)
-		num.Add(num, in[4])
-		num.Mod(num, p)
-		den := new(big.Int).Add(y1, y2)
-		den.Mod(den, p)
-		if den.Sign() == 0 {
-			out[0].Set(num)
-			return nil
-		}
-		den.ModInverse(den, p)
-		out[0].Mul(num, den).Mod(out[0], p)
 		return nil
 	})
 }

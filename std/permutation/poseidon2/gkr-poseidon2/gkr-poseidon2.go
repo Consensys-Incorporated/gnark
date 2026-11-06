@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	gcHash "github.com/consensys/gnark-crypto/hash"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/internal/kvstore"
@@ -265,7 +266,7 @@ func defineCircuit(api frontend.API) (gkrCircuit *gkrapi.Circuit, in1, in2, out 
 	// apply the external matrix one last time to obtain the final value of y
 	out = gkrApi.Gate(extAddGate, y, x, in2)
 
-	gkrCircuit, err = gkrApi.Compile("MIMC")
+	gkrCircuit, err = gkrApi.Compile(gcHash.FieldHasherMiMC)
 
 	return
 }

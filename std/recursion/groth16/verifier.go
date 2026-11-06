@@ -286,9 +286,17 @@ func ValueOfVerifyingKey[G1El algebra.G1ElementT, G2El algebra.G2ElementT, GtEl 
 	return ret, nil
 }
 
-// ValueOfVerifyingKey initializes witness from the given Groth16 verifying key.
-// It returns an error if there is a mismatch between the type parameters and
-// the provided native verifying key.
+// ValueOfVerifyingKeyFixed initializes witness from the given Groth16
+// verifying key, with precomputed line evaluations for the G2 points for
+// efficient in-circuit pairing computation. It returns an error if there is a
+// mismatch between the type parameters and the provided native verifying key.
+//
+// The precomputed lines are not constrained to correspond to the point
+// coordinates when the verifying key is provided as a witness — the value is
+// intended to be embedded as a compile-time circuit constant (e.g. with the
+// `gnark:"-"` struct tag). For witness-provided verifying keys, use
+// [ValueOfVerifyingKey] so that the lines are computed in-circuit from the
+// constrained coordinates.
 func ValueOfVerifyingKeyFixed[G1El algebra.G1ElementT, G2El algebra.G2ElementT, GtEl algebra.GtElementT](vk groth16.VerifyingKey) (VerifyingKey[G1El, G2El, GtEl], error) {
 	var ret VerifyingKey[G1El, G2El, GtEl]
 	switch s := any(&ret).(type) {

@@ -209,6 +209,10 @@ func (c *Curve) MultiScalarMul(P []*G1Affine, scalars []*Scalar, opts ...algopts
 		if len(scalars) == 0 {
 			return nil, errors.New("need scalar for folding")
 		}
+		// with a single point the result is P[0] (gamma^0 * P[0])
+		if len(P) == 1 {
+			return P[0], nil
+		}
 		gamma := c.packScalarToVar(scalars[0])
 		// decompose gamma in the endomorphism eigenvalue basis and bit-decompose the sub-scalars
 		cc := getInnerCurveConfig(c.api.Compiler().Field())
@@ -289,6 +293,9 @@ func NewPairing(api frontend.API) *Pairing {
 // MillerLoop computes the Miller loop between the pairs of inputs. It doesn't
 // modify the inputs. It returns an error if there is a mismatch between the
 // lengths of the inputs.
+//
+// When the Qᵢ carry precomputed lines (G2Affine.Lines), they are trusted
+// input — see [NewG2AffineFixedPlaceholder] for the security assumptions.
 func (pr *Pairing) MillerLoop(P []*G1Affine, Q []*G2Affine) (*GT, error) {
 	inP := make([]G1Affine, len(P))
 	for i := range P {
@@ -310,6 +317,12 @@ func (pr *Pairing) FinalExponentiation(e *GT) *GT {
 }
 
 // Pair computes a full multi-pairing on the input pairs.
+//
+// When the Qᵢ carry precomputed lines (G2Affine.Lines), they are trusted
+// input — see [NewG2AffineFixedPlaceholder] for the security assumptions. To
+// assert a pairing equation over untrusted G2 inputs, prefer
+// [Pairing.PairingCheck], which binds the result to the point coordinates
+// even when precomputed lines are supplied.
 func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GT, error) {
 	inP := make([]G1Affine, len(P))
 	for i := range P {
@@ -326,6 +339,9 @@ func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GT, error) {
 // PairingCheck computes the multi-pairing of the input pairs and asserts that
 // the result is an identity element in the target group. It returns an error if
 // there is a mismatch between the lengths of the inputs.
+//
+// The asserted equation binds the result to the point coordinates even when
+// the Qᵢ carry precomputed lines — see the package-level [PairingCheck].
 func (pr *Pairing) PairingCheck(P []*G1Affine, Q []*G2Affine) error {
 	inP := make([]G1Affine, len(P))
 	for i := range P {
@@ -566,6 +582,11 @@ func NewG2Affine(v bls12377.G2Affine) G2Affine {
 
 // NewG2AffineFixed returns witness of v with precomputations for efficient
 // pairing computation.
+//
+// When the value is used as a witness, the precomputed lines are not
+// constrained to correspond to the point coordinates — see
+// [NewG2AffineFixedPlaceholder] for the security assumptions of precomputed
+// lines.
 func NewG2AffineFixed(v bls12377.G2Affine) G2Affine {
 	lines := precomputeLines(v)
 	return G2Affine{
@@ -577,6 +598,18 @@ func NewG2AffineFixed(v bls12377.G2Affine) G2Affine {
 // NewG2AffineFixedPlaceholder returns a placeholder for the circuit compilation
 // when witness will be given with line precomputations using
 // [NewG2AffineFixed].
+//
+// Security note: the placeholder allocates the point coordinates and all line
+// evaluations as witness variables. [MillerLoop] and [Pair] consume the line
+// evaluations directly: they neither constrain the lines to correspond to the
+// point coordinates nor check the coordinates are on the curve or in the
+// correct subgroup. The witness assignment is therefore trusted — use this
+// placeholder only when the assignment is fixed by the circuit author (e.g. a
+// hardcoded verifying key or SRS), or when the pairing result is checked with
+// [PairingCheck], which binds the result to the point coordinates. For
+// prover-supplied G2 points used with [Pair] or [MillerLoop], use
+// [NewG2Affine] instead so that the lines are computed in-circuit from the
+// constrained coordinates.
 func NewG2AffineFixedPlaceholder() G2Affine {
 	var lines lineEvaluations
 	for i := 0; i < len(bls12377.LoopCounter)-1; i++ {

@@ -4,7 +4,6 @@ import (
 	"math/big"
 
 	"github.com/consensys/gnark/constraint"
-	"github.com/consensys/gnark/internal/smallfields"
 	"github.com/consensys/gnark/internal/utils"
 )
 
@@ -21,14 +20,24 @@ type modulus[E constraint.Element] struct {
 // newModulus creates a typed modulus and computes Montgomery parameters
 func newModulus[E constraint.Element](q *big.Int) *modulus[E] {
 	res := &modulus[E]{q: q}
-	if smallfields.IsSmallField(q) {
+	// The Montgomery radix follows the element type, not the size of the
+	// modulus: the backing gnark-crypto field uses one limb of the element's
+	// word width per limb of E.
+	var e E
+	switch any(e).(type) {
+	case constraint.U32:
 		res.logR = 32
 		res.bytesLen = 4
-	} else {
+	case constraint.U64W1:
+		res.logR = 64
+		res.bytesLen = 8
+	case constraint.U64:
 		nbBits := q.BitLen()
 		nbLimbs := (nbBits + 63) / 64
 		res.logR = uint(nbLimbs * 64)
 		res.bytesLen = 48
+	default:
+		panic("unsupported type")
 	}
 
 	// Compute R = 2^logR
@@ -222,6 +231,10 @@ func (s *blueprintSolver[E]) Read(calldata []uint32) (E, int) {
 		}
 		canonicalValue = new(big.Int).SetBytes(r.Bytes())
 		nWords = len(r) * 2
+	case *constraint.U64W1:
+		t[0] = uint64(calldata[0])<<32 | uint64(calldata[1])
+		canonicalValue = new(big.Int).SetUint64(t[0])
+		nWords = 2
 	case *constraint.U32:
 		t[0] = uint32(calldata[0])
 		canonicalValue = new(big.Int).SetUint64(uint64(t[0]))
@@ -253,6 +266,8 @@ func (w wrappedBigInt[E]) Compress(to *[]uint32) {
 	switch e := any(e).(type) {
 	case constraint.U32:
 		*to = append(*to, uint32(e[0]))
+	case constraint.U64W1:
+		*to = append(*to, uint32(e[0]>>32), uint32(e[0]&0xffffffff))
 	case constraint.U64:
 		// append the uint32 words to the slice
 		for i := range e {

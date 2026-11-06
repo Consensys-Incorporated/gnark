@@ -2,6 +2,7 @@ package circuits
 
 import (
 	"github.com/consensys/gnark"
+	gcHash "github.com/consensys/gnark-crypto/hash"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/gkr"
 	"github.com/consensys/gnark/std/gkrapi"
@@ -25,7 +26,7 @@ func (c *gkrCubeCircuit) Define(api frontend.API) error {
 
 	gkrApi.Export(y)
 
-	gkrCircuit, err := gkrApi.Compile("MIMC")
+	gkrCircuit, err := gkrApi.Compile(gcHash.FieldHasherMiMC)
 	if err != nil {
 		return err
 	}
@@ -50,5 +51,5 @@ func init() {
 	good := &gkrCubeCircuit{X: []frontend.Variable{3, 5}, Square: []frontend.Variable{9, 25}, Cube: []frontend.Variable{27, 125}}
 	bad := &gkrCubeCircuit{X: []frontend.Variable{3, 5}, Square: []frontend.Variable{9, 25}, Cube: []frontend.Variable{27, 126}}
 
-	addEntry("gkr_cube", circuit, good, bad, gnark.Curves(), withU64Only())
+	addEntry("gkr_cube", circuit, good, bad, gnark.Curves(), withCurveOnly())
 }

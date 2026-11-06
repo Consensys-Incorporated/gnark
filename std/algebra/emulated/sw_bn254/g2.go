@@ -23,7 +23,7 @@ type G2 struct {
 
 	// Precomputed G2 generator and its multiple for GLV+FakeGLV
 	g2Gen      *g2AffP // G2 generator
-	g2GenNbits *g2AffP // [2^(nbits-1)]G2 where nbits = (r.BitLen()+3)/4 + 2
+	g2GenNbits *g2AffP // [2^(nbits-1)]G2 where nbits = (r.BitLen()+3)/4 + 1
 }
 
 type g2AffP struct {
@@ -31,6 +31,11 @@ type g2AffP struct {
 }
 
 // G2Affine represents G2 element with optional embedded line precomputations.
+//
+// When Lines is set, [Pairing.MillerLoop] and [Pairing.Pair] use the
+// precomputed lines directly and never read P: the lines are trusted input
+// and are not constrained to correspond to P. See
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
 type G2Affine struct {
 	P     g2AffP
 	Lines *lineEvaluations
@@ -82,16 +87,16 @@ func NewG2(api frontend.API) (*G2, error) {
 			A1: *fp.NewElement("4082367875863433681332203403145435568316851327593401208105741076214120093531"),
 		},
 	}
-	// [2^(nbits-1)]G2 where nbits = (254+3)/4 + 2 = 66, so this is [2^65]G2
+	// [2^(nbits-1)]G2 where nbits = (254+3)/4 + 1 = 65, so this is [2^64]G2
 	// The loop does nbits-1 doublings, so the generator accumulates to [2^(nbits-1)]G2
 	g2GenNbits := &g2AffP{
 		X: fields_bn254.E2{
-			A0: *fp.NewElement("6099622139700402640581725571890015148411145321742729577177999911575645303725"),
-			A1: *fp.NewElement("9870328428465937988383794519490899227160817120884239055108452134207619193487"),
+			A0: *fp.NewElement("1217614753444927156396476602882862845417913902931756228448021310943329887746"),
+			A1: *fp.NewElement("17212962051869088512269154357171035171174640071181769173167157021444635233641"),
 		},
 		Y: fields_bn254.E2{
-			A0: *fp.NewElement("16268382111792290652321980382595025991160708296314050973435867558225525677485"),
-			A1: *fp.NewElement("15377126855853471483498618408547895055706247905282062963450025729940352455943"),
+			A0: *fp.NewElement("6256619661487481776330987765107481955241329498344741334923344915358372250312"),
+			A1: *fp.NewElement("6522190482950680652192912716429811254935775044510284086077667530829579214531"),
 		},
 	}
 
@@ -118,6 +123,11 @@ func NewG2Affine(v bn254.G2Affine) G2Affine {
 
 // NewG2AffineFixed returns witness of v with precomputations for efficient
 // pairing computation.
+//
+// When the value is used as a witness, the precomputed lines are not
+// constrained to correspond to the point coordinates — see
+// [NewG2AffineFixedPlaceholder] for the security assumptions of precomputed
+// lines.
 func NewG2AffineFixed(v bn254.G2Affine) G2Affine {
 	if !v.IsInSubGroup() {
 		// for the pairing check we check that G2 point is already in the
@@ -138,6 +148,18 @@ func NewG2AffineFixed(v bn254.G2Affine) G2Affine {
 // NewG2AffineFixedPlaceholder returns a placeholder for the circuit compilation
 // when witness will be given with line precomputations using
 // [NewG2AffineFixed].
+//
+// Security note: the placeholder allocates the point coordinates and all line
+// evaluations as witness variables. [Pairing.MillerLoop] and [Pairing.Pair]
+// consume the line evaluations directly: they neither constrain the lines to
+// correspond to the point coordinates nor check the coordinates are on the
+// curve or in the correct subgroup. The witness assignment is therefore
+// trusted — use this placeholder only when the assignment is fixed by the
+// circuit author (e.g. a hardcoded verifying key or SRS), or when the pairing
+// result is checked with [Pairing.PairingCheck], which binds the result to
+// the point coordinates. For prover-supplied G2 points used with
+// [Pairing.Pair] or [Pairing.MillerLoop], use [NewG2Affine] instead so that
+// the lines are computed in-circuit from the constrained coordinates.
 func NewG2AffineFixedPlaceholder() G2Affine {
 	var lines lineEvaluations
 	for i := 0; i < len(bn254.LoopCounter); i++ {
@@ -558,8 +580,12 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 		panic(err)
 	}
 	var st ScalarField
-	// u1, u2, v1, v2 < c*r^{1/4} where c ≈ 1.25
-	nbits := (st.Modulus().BitLen()+3)/4 + 2
+	// u1, u2, v1, v2 < 1.2534·r^(1/4), the LLL δ=0.99 bound on the rank-4
+	// lattice of determinant r reduced by rationalReconstructExtG2; fits in
+	// (BitLen+3)/4 + 1 bits. The 1.2534 is the LLL approximation factor, not
+	// the Hermite constant — see the derivation on
+	// [sw_emulated.Curve.scalarMulGLVAndFakeGLV].
+	nbits := (st.Modulus().BitLen()+3)/4 + 1
 
 	// handle 0-scalar and (-1)-scalar cases
 	var isScalarZero, isScalarZeroOrMinusOne, isScalarOne, isScalarMinusOne frontend.Variable

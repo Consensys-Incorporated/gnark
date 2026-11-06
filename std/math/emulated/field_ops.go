@@ -112,6 +112,11 @@ func (f *Field[T]) inverse(a, _ *Element[T], _ uint) *Element[T] {
 }
 
 // Sqrt computes square root of a and returns it. It uses [SqrtHint].
+//
+// The result is not constrained to be less than the modulus, only to fit
+// the limb width and to square to a. When the canonical representative is
+// required (e.g. for comparison or bitwise decomposition), use
+// [Field.ReduceStrict] or [Field.ToBitsCanonical].
 func (f *Field[T]) Sqrt(a *Element[T]) *Element[T] {
 	// fast path when input is zero
 	if len(a.Limbs) == 0 {

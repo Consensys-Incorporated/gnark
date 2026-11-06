@@ -19,7 +19,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 )
 
-var Version = semver.MustParse("0.16.3")
+var Version = semver.MustParse("0.16.4")
 
 // Curves return the curves supported by gnark
 func Curves() []ecc.ID {

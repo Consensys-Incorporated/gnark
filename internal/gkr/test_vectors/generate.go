@@ -3,7 +3,7 @@ package main
 import (
 	"sync"
 
-	gkr "github.com/consensys/gnark/internal/gkr/small_rational"
+	gkr "github.com/consensys/gnark/internal/gkr/rational"
 	_ "github.com/consensys/gnark/std/hash/mimc" // register MIMC hash
 )
 

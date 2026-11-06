@@ -5,6 +5,7 @@ import (
 	"math/big"
 
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions"
+	mamabearextensions "github.com/consensys/gnark-crypto/field/mamabear/extensions"
 	"github.com/consensys/gnark/constraint/solver"
 )
 
@@ -19,6 +20,7 @@ func GetHints() []solver.Hint {
 	return []solver.Hint{
 		inverseE2Hint,
 		inverseE4Hint,
+		inverseE3Hint,
 	}
 }
 
@@ -62,6 +64,28 @@ func inverseE4Hint(_ *big.Int, inputs []*big.Int, res []*big.Int) error {
 	c.B0.A1.BigInt(res[1])
 	c.B1.A0.BigInt(res[2])
 	c.B1.A1.BigInt(res[3])
+
+	return nil
+}
+
+func inverseE3Hint(_ *big.Int, inputs []*big.Int, res []*big.Int) error {
+	if len(inputs) != 3 {
+		return fmt.Errorf("inverseE3Hint: expected 3 inputs, got %d", len(inputs))
+	}
+	if len(res) != 3 {
+		return fmt.Errorf("inverseE3Hint: expected 3 outputs, got %d", len(res))
+	}
+	var a, c mamabearextensions.E3
+
+	a.A0.SetBigInt(inputs[0])
+	a.A1.SetBigInt(inputs[1])
+	a.A2.SetBigInt(inputs[2])
+
+	c.Inverse(&a)
+
+	c.A0.BigInt(res[0])
+	c.A1.BigInt(res[1])
+	c.A2.BigInt(res[2])
 
 	return nil
 }

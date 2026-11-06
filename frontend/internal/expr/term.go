@@ -38,6 +38,10 @@ func (t Term[E]) HashCode() [16]byte {
 		for i := range coeff {
 			h.Write(binary.BigEndian.AppendUint32(nil, uint32(coeff[i])))
 		}
+	case constraint.U64W1:
+		for i := range coeff {
+			h.Write(binary.BigEndian.AppendUint64(nil, coeff[i]))
+		}
 	case constraint.U64:
 		for i := range coeff {
 			h.Write(binary.BigEndian.AppendUint64(nil, uint64(coeff[i])))

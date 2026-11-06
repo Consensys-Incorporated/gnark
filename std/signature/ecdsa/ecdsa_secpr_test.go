@@ -53,8 +53,12 @@ func TestEcdsaP256PreHashed(t *testing.T) {
 		},
 		Msg: emulated.ValueOf[emulated.P256Fr](msgHash[:]),
 		Pub: PublicKey[emulated.P256Fp, emulated.P256Fr]{
-			X: emulated.ValueOf[emulated.P256Fp](privKey.PublicKey.X),
-			Y: emulated.ValueOf[emulated.P256Fp](privKey.PublicKey.Y),
+			// The deprecation of PublicKey.X/Y (Go 1.26) is about *modifying*
+			// the raw coordinates, which can produce invalid keys. Here they are
+			// only read, to build the circuit witness for a key that crypto/ecdsa
+			// itself generated and verified above.
+			X: emulated.ValueOf[emulated.P256Fp](privKey.PublicKey.X), //nolint:staticcheck // SA1019: read-only, see above
+			Y: emulated.ValueOf[emulated.P256Fp](privKey.PublicKey.Y), //nolint:staticcheck // SA1019: read-only, see above
 		},
 	}
 	assert := test.NewAssert(t)
@@ -100,8 +104,12 @@ func TestEcdsaP384PreHashed(t *testing.T) {
 		},
 		Msg: emulated.ValueOf[emulated.P384Fr](msgHash[:]),
 		Pub: PublicKey[emulated.P384Fp, emulated.P384Fr]{
-			X: emulated.ValueOf[emulated.P384Fp](privKey.PublicKey.X),
-			Y: emulated.ValueOf[emulated.P384Fp](privKey.PublicKey.Y),
+			// The deprecation of PublicKey.X/Y (Go 1.26) is about *modifying*
+			// the raw coordinates, which can produce invalid keys. Here they are
+			// only read, to build the circuit witness for a key that crypto/ecdsa
+			// itself generated and verified above.
+			X: emulated.ValueOf[emulated.P384Fp](privKey.PublicKey.X), //nolint:staticcheck // SA1019: read-only, see above
+			Y: emulated.ValueOf[emulated.P384Fp](privKey.PublicKey.Y), //nolint:staticcheck // SA1019: read-only, see above
 		},
 	}
 	assert := test.NewAssert(t)

@@ -1,6 +1,8 @@
 package test
 
 import (
+	"math/big"
+
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -135,10 +137,10 @@ func NoTestEngine() TestingOption {
 // NoSolidityChecks is a testing option which disables solidity checks,
 // even when the build tags "solccheck" and "release_checks" are set.
 //
-// When the tags are set; this requires gnark-solidity-checker to be installed, which in turns
-// requires solc and abigen to be reachable in the PATH.
+// When the tags are set, solc must be reachable in the PATH, and network
+// access is needed to fetch go-ethereum for abigen and the simulated backend.
 //
-// See https://github.com/Consensys/gnark-solidity-checker for more details.
+// See package github.com/consensys/gnark/test/solcheck for more details.
 func NoSolidityChecks() TestingOption {
 	return func(opt *testingConfig) error {
 		opt.checkSolidity = false
@@ -197,9 +199,14 @@ func WithSolidityExportOptions(solidityOpts ...solidity.ExportOption) TestingOpt
 // compilation and solving in a small field. If not set then the small field
 // checks are skipped. We can enforce small field checks by using the
 // "smallfield_checks" build tag.
-func WithSmallfieldCheck() TestingOption {
+//
+// The fields to check over may be given explicitly; with no argument the
+// default (koalabear) is used. Pass a field when the circuit under test is
+// specific to it, for example an extension defined only over mamabear.
+func WithSmallfieldCheck(fields ...*big.Int) TestingOption {
 	return func(tc *testingConfig) error {
 		tc.checkSmallField = true
+		tc.smallFields = fields
 		return nil
 	}
 }

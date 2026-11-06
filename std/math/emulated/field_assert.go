@@ -163,6 +163,13 @@ func (f *Field[T]) IsZero(a *Element[T]) frontend.Variable {
 	// so we check that the reduced value limbs are either all zeros or
 	// correspond to the modulus limbs.
 	ca := f.Reduce(a)
+	// Reduce can fold a constant input down to the canonical zero, which is
+	// on zero limbs even when the input was not, and the checks below index
+	// Limbs[0] unguarded. Reached e.g. by AddUnified(p, p), where q.X - p.X
+	// constant-folds.
+	if ca.isStrictZero() {
+		return 1
+	}
 	p := f.Modulus()
 
 	// we use two approaches for checking if the element is exactly zero. The

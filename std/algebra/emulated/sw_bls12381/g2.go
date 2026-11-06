@@ -27,7 +27,7 @@ type G2 struct {
 
 	// Precomputed constants for the GLV+FakeGLV scalar mul ([EEMP25] §3.3).
 	g2Gen      *g2AffP // G2 generator
-	g2GenNbits *g2AffP // [2^(nbits-1)]G2 with nbits = (r.BitLen()+3)/4 + 2
+	g2GenNbits *g2AffP // [2^(nbits-1)]G2 with nbits = (r.BitLen()+3)/4 + 1
 }
 
 type g2AffP struct {
@@ -35,6 +35,11 @@ type g2AffP struct {
 }
 
 // G2Affine represents G2 element with optional embedded line precomputations.
+//
+// When Lines is set, [Pairing.MillerLoop] and [Pairing.Pair] use the
+// precomputed lines directly and never read P: the lines are trusted input
+// and are not constrained to correspond to P. See
+// [NewG2AffineFixedPlaceholder] for the security assumptions.
 type G2Affine struct {
 	P     g2AffP
 	Lines *lineEvaluations
@@ -96,15 +101,15 @@ func NewG2(api frontend.API) (*G2, error) {
 			A1: *fp.NewElement("927553665492332455747201965776037880757740193453592970025027978793976877002675564980949289727957565575433344219582"),
 		},
 	}
-	// [2^(nbits-1)]G2 where nbits = (255+3)/4 + 2 = 66, so this is [2^65]G2.
+	// [2^(nbits-1)]G2 where nbits = (255+3)/4 + 1 = 65, so this is [2^64]G2.
 	g2GenNbits := &g2AffP{
 		X: fields_bls12381.E2{
-			A0: *fp.NewElement("1307001654908388153254394944417118155033503188409787277795273489312551176370209873126740711463572657296916966732684"),
-			A1: *fp.NewElement("1066804690119577865989830850277879393407029322116864061755683314318400220056817483617033672656485029228353937929571"),
+			A0: *fp.NewElement("3301848440670724259140706638333507017270073840991444062130369473322504802279997762071965204605602880645098143635804"),
+			A1: *fp.NewElement("1433247473484811575122071252549581543219505413215333519923845874993611449657376371132448509415226221815572147621561"),
 		},
 		Y: fields_bls12381.E2{
-			A0: *fp.NewElement("1233864651366532660795929818904272589705597977637697925481983092108793193162343169655985724823869788077854535468808"),
-			A1: *fp.NewElement("2703972434797875065063829955607449483769333186572810763171217085444622779819503421195150761462859837038921185079043"),
+			A0: *fp.NewElement("1426074667836811492054371797466616700133886925793677035626411405456898211637926213257131071435551354558768304539958"),
+			A1: *fp.NewElement("1551115808906539952939058035985599484510999034415063709273127009249540606507540031231198724146141840052652374305625"),
 		},
 	}
 
@@ -136,6 +141,11 @@ func NewG2Affine(v bls12381.G2Affine) G2Affine {
 
 // NewG2AffineFixed returns witness of v with precomputations for efficient
 // pairing computation.
+//
+// When the value is used as a witness, the precomputed lines are not
+// constrained to correspond to the point coordinates — see
+// [NewG2AffineFixedPlaceholder] for the security assumptions of precomputed
+// lines.
 func NewG2AffineFixed(v bls12381.G2Affine) G2Affine {
 	if !v.IsInSubGroup() {
 		// for the pairing check we check that G2 point is already in the
@@ -156,6 +166,18 @@ func NewG2AffineFixed(v bls12381.G2Affine) G2Affine {
 // NewG2AffineFixedPlaceholder returns a placeholder for the circuit compilation
 // when witness will be given with line precomputations using
 // [NewG2AffineFixed].
+//
+// Security note: the placeholder allocates the point coordinates and all line
+// evaluations as witness variables. [Pairing.MillerLoop] and [Pairing.Pair]
+// consume the line evaluations directly: they neither constrain the lines to
+// correspond to the point coordinates nor check the coordinates are on the
+// curve or in the correct subgroup. The witness assignment is therefore
+// trusted — use this placeholder only when the assignment is fixed by the
+// circuit author (e.g. a hardcoded verifying key or SRS), or when the pairing
+// result is checked with [Pairing.PairingCheck], which binds the result to
+// the point coordinates. For prover-supplied G2 points used with
+// [Pairing.Pair] or [Pairing.MillerLoop], use [NewG2Affine] instead so that
+// the lines are computed in-circuit from the constrained coordinates.
 func NewG2AffineFixedPlaceholder() G2Affine {
 	var lines lineEvaluations
 	for i := 0; i < len(bls12381.LoopCounter)-1; i++ {
@@ -809,8 +831,11 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 		panic(err)
 	}
 	var st ScalarField
-	// LLL Hermite bound: u_i, v_i < γ₄·r^(1/4), fits in (BitLen+3)/4 + 2 bits.
-	nbits := (st.Modulus().BitLen()+3)/4 + 2
+	// u_i, v_i < 1.2534·r^(1/4), the LLL δ=0.99 bound on the rank-4 lattice of
+	// determinant r reduced by rationalReconstructExtG2; fits in
+	// (BitLen+3)/4 + 1 bits. Not the Hermite constant — see the derivation on
+	// [sw_emulated.Curve.scalarMulGLVAndFakeGLV].
+	nbits := (st.Modulus().BitLen()+3)/4 + 1
 
 	// handle 0-scalar and (-1)-scalar cases
 	var isScalarZero, isScalarZeroOrMinusOne, isScalarOne, isScalarMinusOne frontend.Variable
@@ -1111,6 +1136,10 @@ func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.Algebra
 		// scalars are powers
 		if len(s) == 0 {
 			return nil, fmt.Errorf("need scalar for folding")
+		}
+		// with a single point the result is p[0] (gamma^0 * p[0])
+		if len(p) == 1 {
+			return p[0], nil
 		}
 		gamma := s[0]
 		res := g2.ScalarMul(p[len(p)-1], gamma, opts...)

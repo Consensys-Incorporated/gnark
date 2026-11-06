@@ -1,10 +1,10 @@
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/consensys/gnark/internal/small_rational"
-	"github.com/consensys/gnark/internal/small_rational/polynomial"
+	"github.com/consensys/gnark/internal/gkr/gkrcore"
+	"github.com/consensys/gnark/internal/rational"
+	"github.com/consensys/gnark/internal/rational/polynomial"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
-	"hash"
 	"math/bits"
 	"os"
 	"path/filepath"
@@ -14,14 +14,14 @@ import (
 func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 
 	var poly polynomial.MultiLin
-	if v, err := sliceToElementSlice(testCaseInfo.Values); err == nil {
+	if v, err := gkrtesting.SliceToElementSlice[{{ .ElementType }}](testCaseInfo.Values); err == nil {
 		poly = v
 	} else {
 		return err
 	}
 
 	var (
-		hsh hash.Hash
+		hsh fieldHasher
 		err error
 	)
 
@@ -30,17 +30,17 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	}
 
 	claim := singleMultilinClaim{poly}
-	t := transcript{h: hsh}
-	proof := sumcheckProve(&claim, &t)
+	t := gkrcore.NewNativeTranscript(hsh)
+	proof := sumcheckProve(&claim, t)
 	testCaseInfo.Proof = sumcheckToPrintableProof(proof)
 
 	// Verification
-	if v, _err := sliceToElementSlice(testCaseInfo.Values); _err == nil {
+	if v, _err := gkrtesting.SliceToElementSlice[{{ .ElementType }}](testCaseInfo.Values); _err == nil {
 		poly = v
 	} else {
 		return _err
 	}
-	var claimedSum small_rational.SmallRational
+	var claimedSum rational.Element
 	if _, err = claimedSum.SetInterface(testCaseInfo.ClaimedSum); err != nil {
 		return err
 	}
@@ -48,17 +48,17 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}
-	t = transcript{h: hsh}
-	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, &t); err != nil {
+	t = gkrcore.NewNativeTranscript(hsh)
+	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, t); err != nil {
 		return fmt.Errorf("proof rejected: %v", err)
 	}
 
-	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], toElement(1))
+	proof.partialSumPolys[0][0].Add(&proof.partialSumPolys[0][0], gkrtesting.ToElement[{{ .ElementType }}](1))
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}
-	t = transcript{h: hsh}
-	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, &t); err == nil {
+	t = gkrcore.NewNativeTranscript(hsh)
+	if err = sumcheckVerify(singleMultilinLazyClaim{g: poly, claimedSum: claimedSum}, proof, claimedSum, 1, t); err == nil {
 		return fmt.Errorf("bad proof accepted")
 	}
 
