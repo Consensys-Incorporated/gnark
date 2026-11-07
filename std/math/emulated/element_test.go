@@ -1760,3 +1760,51 @@ func testLookup2AndMuxOnAllLimbs[T FieldParams](t *testing.T) {
 	assignment := &TestLookup2AndMuxOnAllLimbsCircuit[T]{A: ValueOf[T](a)}
 	assert.CheckCircuit(&TestLookup2AndMuxOnAllLimbsCircuit[T]{}, test.WithValidAssignment(assignment))
 }
+
+type evalAllZeroCircuit struct {
+	X Element[emparams.BabyBear]
+}
+
+func (c *evalAllZeroCircuit) Define(api frontend.API) error {
+	f, err := NewField[emparams.BabyBear](api)
+	if err != nil {
+		return err
+	}
+	zero := f.Zero()
+	r := f.Eval([][]*Element[emparams.BabyBear]{{zero, zero}, {zero}}, []int{1, 1})
+	f.AssertIsEqual(f.Add(r, &c.X), &c.X)
+	f.AssertEvalIsZero([][]*Element[emparams.BabyBear]{{zero, zero}}, []int{1})
+	// empty terms are constants: 0*zero + 3 + 4 = 7
+	k := f.Eval([][]*Element[emparams.BabyBear]{{zero}, {}, {}}, []int{5, 3, 4})
+	f.AssertIsEqual(k, f.NewElement(7))
+	f.AssertEvalIsZero([][]*Element[emparams.BabyBear]{{zero}, {}, {}}, []int{5, 3, -3})
+	return nil
+}
+
+type evalConstantNotZeroCircuit struct {
+	X Element[emparams.BabyBear]
+}
+
+func (c *evalConstantNotZeroCircuit) Define(api frontend.API) error {
+	f, err := NewField[emparams.BabyBear](api)
+	if err != nil {
+		return err
+	}
+	f.AssertEvalIsZero([][]*Element[emparams.BabyBear]{{f.Zero()}, {}}, []int{1, 2})
+	return nil
+}
+
+// Eval and AssertEvalIsZero over constant zero elements, which have no limbs.
+func TestEvalAllZero(t *testing.T) {
+	assert := test.NewAssert(t)
+	assert.CheckCircuit(&evalAllZeroCircuit{},
+		test.WithValidAssignment(&evalAllZeroCircuit{X: ValueOf[emparams.BabyBear](5)}),
+		test.WithCurves(ecc.BN254), test.WithBackends(backend.GROTH16, backend.PLONK))
+}
+
+func TestAssertEvalIsZeroNonzeroConstant(t *testing.T) {
+	err := test.IsSolved(&evalConstantNotZeroCircuit{}, &evalConstantNotZeroCircuit{X: ValueOf[emparams.BabyBear](1)}, ecc.BN254.ScalarField())
+	if err == nil {
+		t.Fatal("expected failure: the polynomial is the constant 2")
+	}
+}

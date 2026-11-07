@@ -1140,6 +1140,10 @@ func (f *Field[T]) Eval(at [][]*Element[T], coefs []int) *Element[T] {
 		return f.Zero()
 	}
 	mv, allElems := f.polyMvPrep(at, coefs)
+	// every input is the constant zero, so only the constant terms remain.
+	if allZeroLimbs(allElems) {
+		return f.NewElement(f.constantTerms(at, coefs))
+	}
 
 	// A high-degree identity may have coefficients wider than the native field
 	// even when every input is reduced. Evaluate it through ordinary reduced
@@ -1198,6 +1202,10 @@ func (f *Field[T]) AssertEvalIsZero(at [][]*Element[T], coefs []int) {
 		return
 	}
 	mv, allElems := f.polyMvPrep(at, coefs)
+	if allZeroLimbs(allElems) {
+		f.AssertIsEqual(f.NewElement(f.constantTerms(at, coefs)), f.Zero())
+		return
+	}
 
 	// A high-degree identity may have coefficients wider than the native field
 	// even when every input is reduced. Evaluate it through ordinary reduced
@@ -1235,6 +1243,30 @@ func (f *Field[T]) AssertEvalIsZero(at [][]*Element[T], coefs []int) {
 	}
 	nbLimbs += len(k.Limbs) + len(c.Limbs)
 	profile.RecordOperation("emulated.AssertEvalIsZero", nbLimbs)
+}
+
+// allZeroLimbs returns true if every element is the constant zero stored on
+// zero limbs. Such elements have no limbs to size the carries from.
+func allZeroLimbs[T FieldParams](elems []*Element[T]) bool {
+	for _, e := range elems {
+		if len(e.Limbs) != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// constantTerms returns the value of the polynomial modulo the field modulus
+// when all of its inputs are the constant zero: terms that contain an element
+// vanish, and the empty terms contribute their coefficient.
+func (f *Field[T]) constantTerms(at [][]*Element[T], coefs []int) *big.Int {
+	res := new(big.Int)
+	for i := range at {
+		if len(at[i]) == 0 {
+			res.Add(res, big.NewInt(int64(coefs[i])))
+		}
+	}
+	return res.Mod(res, f.fParams.Modulus())
 }
 
 // polyMvPrep prepares the multivariate polynomial evaluation of the terms at
