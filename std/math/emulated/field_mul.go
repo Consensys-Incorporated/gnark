@@ -1140,6 +1140,10 @@ func (f *Field[T]) Eval(at [][]*Element[T], coefs []int) *Element[T] {
 		return f.Zero()
 	}
 	mv, allElems := f.polyMvPrep(at, coefs)
+	// every input is the constant zero, so is the polynomial.
+	if allZeroLimbs(allElems) {
+		return f.Zero()
+	}
 
 	// A high-degree identity may have coefficients wider than the native field
 	// even when every input is reduced. Evaluate it through ordinary reduced
@@ -1198,6 +1202,9 @@ func (f *Field[T]) AssertEvalIsZero(at [][]*Element[T], coefs []int) {
 		return
 	}
 	mv, allElems := f.polyMvPrep(at, coefs)
+	if allZeroLimbs(allElems) {
+		return
+	}
 
 	// A high-degree identity may have coefficients wider than the native field
 	// even when every input is reduced. Evaluate it through ordinary reduced
@@ -1235,6 +1242,18 @@ func (f *Field[T]) AssertEvalIsZero(at [][]*Element[T], coefs []int) {
 	}
 	nbLimbs += len(k.Limbs) + len(c.Limbs)
 	profile.RecordOperation("emulated.AssertEvalIsZero", nbLimbs)
+}
+
+// allZeroLimbs returns true if every element is the constant zero stored on
+// zero limbs. A polynomial over such elements is identically zero and has no
+// limbs to size the carries from.
+func allZeroLimbs[T FieldParams](elems []*Element[T]) bool {
+	for _, e := range elems {
+		if len(e.Limbs) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // polyMvPrep prepares the multivariate polynomial evaluation of the terms at

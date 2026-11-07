@@ -1760,3 +1760,27 @@ func testLookup2AndMuxOnAllLimbs[T FieldParams](t *testing.T) {
 	assignment := &TestLookup2AndMuxOnAllLimbsCircuit[T]{A: ValueOf[T](a)}
 	assert.CheckCircuit(&TestLookup2AndMuxOnAllLimbsCircuit[T]{}, test.WithValidAssignment(assignment))
 }
+
+type evalAllZeroCircuit struct {
+	X Element[emparams.BabyBear]
+}
+
+func (c *evalAllZeroCircuit) Define(api frontend.API) error {
+	f, err := NewField[emparams.BabyBear](api)
+	if err != nil {
+		return err
+	}
+	zero := f.Zero()
+	r := f.Eval([][]*Element[emparams.BabyBear]{{zero, zero}, {zero}}, []int{1, 1})
+	f.AssertIsEqual(f.Add(r, &c.X), &c.X)
+	f.AssertEvalIsZero([][]*Element[emparams.BabyBear]{{zero, zero}}, []int{1})
+	return nil
+}
+
+// Eval and AssertEvalIsZero over constant zero elements, which have no limbs.
+func TestEvalAllZero(t *testing.T) {
+	assert := test.NewAssert(t)
+	assert.CheckCircuit(&evalAllZeroCircuit{},
+		test.WithValidAssignment(&evalAllZeroCircuit{X: ValueOf[emparams.BabyBear](5)}),
+		test.WithCurves(ecc.BN254), test.WithBackends(backend.GROTH16, backend.PLONK))
+}
