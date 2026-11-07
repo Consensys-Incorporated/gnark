@@ -9,6 +9,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377"
 	fr_bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
+	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/test"
 )
@@ -159,4 +160,24 @@ func TestPairingMuxes(t *testing.T) {
 			assert.NoError(err)
 		}, fmt.Sprintf("nbPairs=%d", nbPairs))
 	}
+}
+
+type assertIsOnG1InfinityCircuit struct {
+	P G1Affine
+}
+
+func (c *assertIsOnG1InfinityCircuit) Define(api frontend.API) error {
+	pr := NewPairing(api)
+	pr.AssertIsOnG1(&c.P)
+	return nil
+}
+
+func TestAssertIsOnG1Infinity(t *testing.T) {
+	assert := test.NewAssert(t)
+	var inf bls12377.G1Affine
+	_, _, g1, _ := bls12377.Generators()
+	assert.CheckCircuit(&assertIsOnG1InfinityCircuit{},
+		test.WithValidAssignment(&assertIsOnG1InfinityCircuit{P: NewG1Affine(inf)}),
+		test.WithValidAssignment(&assertIsOnG1InfinityCircuit{P: NewG1Affine(g1)}),
+		test.WithCurves(ecc.BW6_761), test.WithBackends(backend.GROTH16, backend.PLONK))
 }
