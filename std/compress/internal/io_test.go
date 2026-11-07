@@ -7,6 +7,7 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend"
+	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/scs"
 	"github.com/consensys/gnark/std/compress"
@@ -158,4 +159,48 @@ func (c *breakUpBytesIntoWordsCustomCircuit) Define(api frontend.API) error {
 	r := internal.NewRangeChecker(api)
 	_, _ = r.BreakUpBytesIntoWords(1, c.Bytes...)
 	return nil
+}
+
+type assertLessThanTableCircuit struct {
+	A, B []frontend.Variable
+}
+
+func (c *assertLessThanTableCircuit) Define(api frontend.API) error {
+	r := internal.NewRangeChecker(api)
+	// a bound outside {1, 2, 4} goes through the lookup table; the second call must reuse it
+	r.AssertLessThan(16, c.A...)
+	r.AssertLessThan(16, c.B...)
+	return nil
+}
+
+func TestRangeChecker_AssertLessThanTable(t *testing.T) {
+	circuit := assertLessThanTableCircuit{A: make([]frontend.Variable, 3), B: make([]frontend.Variable, 2)}
+	valid := assertLessThanTableCircuit{A: []frontend.Variable{0, 7, 15}, B: []frontend.Variable{1, 15}}
+	invalid := assertLessThanTableCircuit{A: []frontend.Variable{0, 7, 16}, B: []frontend.Variable{1, 15}}
+	invalid2 := assertLessThanTableCircuit{A: []frontend.Variable{0, 7, 15}, B: []frontend.Variable{1, 17}}
+	test.NewAssert(t).CheckCircuit(&circuit,
+		test.WithValidAssignment(&valid),
+		test.WithInvalidAssignment(&invalid),
+		test.WithInvalidAssignment(&invalid2),
+		test.WithBackends(backend.GROTH16, backend.PLONK),
+		test.WithCurves(ecc.BN254))
+}
+
+type breakUpNibblesCircuit struct {
+	Bytes []frontend.Variable
+}
+
+func (c *breakUpNibblesCircuit) Define(api frontend.API) error {
+	r := internal.NewRangeChecker(api)
+	_, _ = r.BreakUpBytesIntoWords(4, c.Bytes...)
+	return nil
+}
+
+func TestBreakUpBytesIntoNibbles(t *testing.T) {
+	solver.RegisterHint(internal.BreakUpBytesIntoHalfHint)
+	circuit := breakUpNibblesCircuit{Bytes: make([]frontend.Variable, 2)}
+	test.NewAssert(t).CheckCircuit(&circuit,
+		test.WithValidAssignment(&breakUpNibblesCircuit{Bytes: []frontend.Variable{0x12, 0xab}}),
+		test.WithBackends(backend.GROTH16, backend.PLONK),
+		test.WithCurves(ecc.BN254))
 }
