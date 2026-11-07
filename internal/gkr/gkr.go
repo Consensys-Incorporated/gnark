@@ -210,7 +210,6 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 	degree := r.circuit.ZeroCheckDegree(level)
 
 	challenges := make([]frontend.Variable, r.nbVars)
-	gPrime := make(polynomial.Polynomial, degree+1)
 
 	for j := range r.nbVars {
 		partialSumPoly := proof[levelI].PartialSumPolys[j]
@@ -218,21 +217,16 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 			return errors.New("malformed proof")
 		}
 
-		// Recover g'(0) from (1-q_j)*g'(0) + q_j*g'(1) = claimedSum
-		// g'(0) = (claimedSum - q_j * g'(1)) / (1 - q_j)
-		qjTimesGPrime1 := r.api.Mul(q[j], partialSumPoly[0]) // partialSumPoly[0] = g'(1)
-		numerator := r.api.Sub(claimedSum, qjTimesGPrime1)
-		oneMinusQj := r.api.Sub(1, q[j])
-		gPrime[0] = r.api.Div(numerator, oneMinusQj)
-
-		copy(gPrime[1:], partialSumPoly)
+		// (1-qⱼ)·g'(0) + qⱼ·g'(1) = claimedSum, with g'(0) = c₀ and g'(1) = ∑ᵢ₌₀ cᵢ,
+		// gives c₀ = claimedSum - qⱼ · ∑ᵢ₌₁ cᵢ
+		c0 := r.api.Sub(claimedSum, r.api.Mul(q[j], partialSumPoly.Eval(r.api, 1)))
 
 		challenges[j] = r.t.Squeeze(proof[levelI].PartialSumPolys[j]...)
-		claimedSum = polynomial.InterpolateLDE(r.api, challenges[j], gPrime[:(degree+1)])
+		claimedSum = r.api.Add(r.api.Mul(partialSumPoly.Eval(r.api, challenges[j]), challenges[j]), c0)
 	}
 
-	// claimedSum is now Σ_w c^w · gate_w(inputs(r)), without the eq factor.
-	// verifyFinalEval expects Σ_w c^w · eq(q, r) · gate_w(inputs(r)), so multiply.
+	// claimedSum is now Σ_w cʷ · gate_w(inputs(r)), without the eq factor.
+	// verifyFinalEval expects Σ_w cʷ · eq(q, r) · gate_w(inputs(r)), so multiply.
 	eqAtQR := polynomial.EvalEq(r.api, q, challenges)
 	claimedSum = r.api.Mul(eqAtQR, claimedSum)
 

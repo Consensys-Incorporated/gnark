@@ -10,7 +10,7 @@ import (
 // Circuit is a circuit compiled by API.Compile, ready to prove and verify with gkr/<curve>.
 type Circuit = gkr.SerializableCircuit
 
-// PrimeField describes F_p itself.
+// PrimeField describes Fₚ itself.
 var PrimeField = gkr.PrimeField
 
 // KoalaBearE6 describes KoalaBear's degree-6 extension E6.
