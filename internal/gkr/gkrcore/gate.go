@@ -255,6 +255,11 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 	// All instructions after the output are no-ops. Prune them and the corresponding variables.
 	// Henceforth, we guarantee that the variable with the highest index is the gate output.
 	lastEffectiveInstructionIndex := int(outVar.id) - compiler.nbInputs
+	if lastEffectiveInstructionIndex < -1 {
+		// The output is an input other than the last one. The evaluator returns the last stack
+		// frame element, so there is no way to express this in bytecode.
+		return SerializableGate{}, errors.New("only non-trivial or last-reflective gate functions supported")
+	}
 	compiler.instructions = compiler.instructions[:lastEffectiveInstructionIndex+1]
 
 	// Drop the constants used only by pruned instructions.
