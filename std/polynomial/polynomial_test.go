@@ -112,6 +112,19 @@ func testInterpolateLDE(t *testing.T, at int64, values []int64, expectedInterpol
 	)
 }
 
+func TestInterpolateLDEManyValues(t *testing.T) {
+	// 21! does not fit in an int64, the interpolant through equal values is constant
+	values := make([]int64, 22)
+	for i := range values {
+		values[i] = 5
+	}
+	testInterpolateLDE(t, 100, values, 5)
+}
+
+func TestInterpolateLDESingleValue(t *testing.T) {
+	testInterpolateLDE(t, 5, []int64{7}, 7)
+}
+
 func TestInterpolateLDEOnRange(t *testing.T) {
 	// The polynomial is 2 X⁴ - X³ - 9 X² + 9 X - 6
 	testInterpolateLDE(
