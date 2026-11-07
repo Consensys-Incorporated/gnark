@@ -187,11 +187,23 @@ func (nr *NumReader) SetNumNbBits(numNbBits int) {
 		panic("decreasing wordsPerNum not supported")
 	}
 
-	if nr.last != nil { // nothing to compensate for if no values have yet been read
-		nbToRead := min(len(nr.toRead), wordsPerNum-nr.wordsPerNum)
-		delta := ReadNum(nr.api, nr.toRead[:nbToRead], nr.radix)
-		nr.toRead = nr.toRead[:nbToRead]
-		nr.last = nr.api.Add(nr.api.Mul(nr.last, twoPow(wordsPerNum-nr.wordsPerNum)), delta)
+	if nr.last != nil && wordsPerNum > nr.wordsPerNum { // nothing to compensate for if no values have yet been read
+		// nr.last currently holds (b₀ b₁ ... bₙ₋₁)ᵣ where n = nr.wordsPerNum and r = nr.radix.
+		// it must become (b₀ b₁ ... bₙ'₋₁)ᵣ where n' = wordsPerNum, i.e. the window is widened
+		// in place: the reader head stays put and the words bₙ ... bₙ'₋₁ are the ones sitting
+		// right after the current window. Words past the end of toRead are taken to be zero,
+		// as in next(). Note that toRead is not consumed here: the window it defines always
+		// starts at index 0, and next() is what shifts it.
+		nbNewWords := wordsPerNum - nr.wordsPerNum
+		nr.last = nr.api.Mul(nr.last, twoPow(nbNewWords*wordNbBits)) // × rⁿ'⁻ⁿ
+		nbToRead := min(max(len(nr.toRead)-nr.wordsPerNum, 0), nbNewWords)
+		if nbToRead > 0 {
+			delta := ReadNum(nr.api, nr.toRead[nr.wordsPerNum:nr.wordsPerNum+nbToRead], nr.radix)
+			if nbToRead < nbNewWords { // pad the missing least significant words with zeros
+				delta = nr.api.Mul(delta, twoPow((nbNewWords-nbToRead)*wordNbBits))
+			}
+			nr.last = nr.api.Add(nr.last, delta)
+		}
 	}
 
 	nr.wordsPerNum, nr.numBound = wordsPerNum, twoPow(numNbBits)
