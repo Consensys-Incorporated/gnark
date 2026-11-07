@@ -66,6 +66,10 @@ type Field[T FieldParams] struct {
 	nbRangeChecks    int
 
 	deferredChecks []deferredChecker
+	// debugStacks maps the deferred checks to the call stacks where they were
+	// created. Only populated with the debug build tag, see
+	// [Field.addDeferredCheck].
+	debugStacks map[deferredChecker][]uintptr
 
 	// smallFieldMode indicates that the emulated field is small enough that
 	// products fit in the native field and we can use scalar batched verification
