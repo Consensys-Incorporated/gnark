@@ -32,10 +32,11 @@ type (
 // MemoryRequirements returns the strictly increasing vector of memory
 // allocation sizes required for proving a GKR statement on this circuit.
 func MemoryRequirements(c gkr.SerializableCircuit, nbInstances int) []int {
-	largest := gkr.IdentityBytecode().EvaluatorSize(1)
+	identity := gkr.IdentityBytecode()
+	largest := identity.EvaluatorSize()
 	for i := range c {
 		if !c[i].IsInput() {
-			largest = max(largest, c[i].Gate.Evaluate.EvaluatorSize(len(c[i].Inputs)))
+			largest = max(largest, c[i].Gate.Evaluate.EvaluatorSize())
 		}
 	}
 
@@ -113,7 +114,6 @@ func (c RawCircuit) Compile(field Field) (gkr.GadgetCircuit, gkr.SerializableCir
 
 		gadget[i].Gate = gkr.GadgetGate{
 			Evaluate:    c[i].Gate,
-			NbIn:        nbIn,
 			Degree:      compiledGate.Degree,
 			SolvableVar: compiledGate.SolvableVar,
 		}

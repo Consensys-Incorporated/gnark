@@ -130,7 +130,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []{{ .ElementType }}, purportedV
 		for _, wI := range group.Wires {
 			wire := e.resources.circuit[wI]
 
-			evaluator := {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}(wire.Gate.Evaluate, len(wire.Inputs))
+			evaluator := {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}(wire.Gate.Evaluate)
 			for _, v := range gateInputEvals[levelWireI] {
 				evaluator.PushInput(v)
 			}
@@ -373,9 +373,9 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			wire := r.circuit[wI]
-			c.gateEvaluatorPools[levelWireI] = {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}Pool(wire.Gate.Evaluate, len(inputIndices[levelWireI]), &r.memPool)
+			c.gateEvaluatorPools[levelWireI] = {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}Pool(wire.Gate.Evaluate, &r.memPool)
 			{{- if .Mixed }}
-			c.baseGateEvaluatorPools[levelWireI] = {{ .EvaluatorQualifier }}NewGateEvaluatorPool(wire.Gate.Evaluate, len(inputIndices[levelWireI]))
+			c.baseGateEvaluatorPools[levelWireI] = {{ .EvaluatorQualifier }}NewGateEvaluatorPool(wire.Gate.Evaluate)
 			{{- end }}
 			levelWireI++
 		}

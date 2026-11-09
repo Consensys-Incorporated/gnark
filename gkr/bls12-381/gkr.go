@@ -87,7 +87,7 @@ type resources struct {
 // identityGate is the identity gate LevelCircuit and consolidationView use to build level 0's
 // view of the circuit.
 func identityGate() gkr.SerializableGate {
-	return gkr.SerializableGate{Evaluate: gkr.IdentityBytecode(), NbIn: 1, Degree: 1}
+	return gkr.SerializableGate{Evaluate: gkr.IdentityBytecode(), Degree: 1}
 }
 
 // newResources builds the resources shared by Prove and Verify. It takes no assignment and
@@ -141,7 +141,7 @@ func (r *resources) verifySkipLevel(levelI int, proof Proof) error {
 
 	for levelWireI, wI := range group.Wires {
 		wire := r.circuit[wI]
-		evaluator := evaluator.NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
+		evaluator := evaluator.NewGateEvaluator(wire.Gate.Evaluate)
 		for claimI, src := range group.ClaimSources {
 			for _, inI := range inputIndices[levelWireI] {
 				evaluator.PushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
@@ -213,7 +213,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 			const minBlockSize = 64
 			assignment[wireI] = make([]fr.Element, nbInstances)
 			r.workers.Submit(nbInstances, func(start, end int) {
-				gateEval := evaluator.NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
+				gateEval := evaluator.NewGateEvaluator(c[wireI].Gate.Evaluate, &r.memPool)
 				for instanceI := start; instanceI < end; instanceI++ {
 					for _, inputWireI := range c[wireI].Inputs {
 						gateEval.PushInput(assignment[inputWireI][instanceI])
@@ -365,7 +365,7 @@ func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 			a[i] = make([]fr.Element, nbInstances)
 		}
 		if !circuit[i].IsInput() {
-			evaluators[i] = evaluator.NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
+			evaluators[i] = evaluator.NewGateEvaluator(circuit[i].Gate.Evaluate)
 		}
 	}
 

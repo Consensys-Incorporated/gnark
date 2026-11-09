@@ -65,16 +65,16 @@ func writeBigInt(w io.Writer, x *big.Int) error {
 // primarily for hashing circuits to create unique identifiers.
 //
 // The encoding is compact (uint16 for counts/indices, uint8 for bigint byte lengths) and
-// uses little-endian throughout. Gate metadata (NbIn, Degree, SolvableVar) is omitted
+// uses little-endian throughout. Gate metadata (Degree, SolvableVar) is omitted
 // since it can be recomputed from bytecode on deserialization.
 //
 // Format:
 //
 //	Circuit: [wire_count:u16] [wire...]
 //	Wire: [input_count:u16] [input_indices:u16...] [exported:bool] [gate]
-//	Gate (non-input only): [const_count:u16] [constants...] [inst_count:u16] [instructions...]
+//	Gate (non-input only): [const_count:u16] [constants...] [nb_in:u16] [inst_count:u16] [instructions...]
 //	Constant: [byte_len:u8] [bytes...]
-//	Instruction: [op:u8] [input_count:u16] [input_indices:u16...]
+//	Instruction: [op:u8] [input_count:u16] [input_indices:u16...] [dst:u16]
 func SerializeCircuit(w io.Writer, c gkr.SerializableCircuit) error {
 	if len(c) >= 1<<16 {
 		return fmt.Errorf("circuit length too large: %d", len(c))
@@ -114,6 +114,11 @@ func SerializeCircuit(w io.Writer, c gkr.SerializableCircuit) error {
 				}
 			}
 
+			// Write the number of inputs
+			if err := writeUint16(w, bytecode.NbIn); err != nil {
+				return err
+			}
+
 			// Write the instructions
 			if err := writeUint16(w, len(bytecode.Instructions)); err != nil {
 				return err
@@ -126,6 +131,11 @@ func SerializeCircuit(w io.Writer, c gkr.SerializableCircuit) error {
 
 				// Write the instruction inputs
 				if err := writeUint16Slice(w, inst.Inputs); err != nil {
+					return err
+				}
+
+				// Write the destination register
+				if err := writeUint16(w, inst.Dst); err != nil {
 					return err
 				}
 			}

@@ -1,6 +1,9 @@
 package gkr
 
-import "math/big"
+import (
+	"fmt"
+	"math/big"
+)
 
 // GateOp represents an arithmetic operation in a compiled gate.
 type GateOp uint8
@@ -16,29 +19,35 @@ const (
 )
 
 // GateInstruction represents a single operation in a compiled gate.
-// Each instruction produces a new variable (no explicit dst field).
-// Index space layout:
-//   - [0, nbConsts): constant values (from GateBytecode.Constants)
-//   - [nbConsts, nbConsts+nbInputs): gate inputs
-//   - [nbConsts+nbInputs, ...): instruction results
+// Operand space layout:
+//   - [0, NbRegisters()): registers
+//   - [NbRegisters(), NbRegisters()+nbConsts): constant values (from GateBytecode.Constants)
+//
+// An operand is a constant exactly when its index is at least NbRegisters(). On entry, registers
+// 0, …, NbIn-1 hold the gate's inputs. An instruction writes its result to the register Dst. Its
+// first two operands are read before the result is written, so Dst may be the register of its
+// first operand; later operands of an Add, Sub or Mul are read after the first write.
 type GateInstruction struct {
 	Op     GateOp
-	Inputs []uint16 // indices into the unified value space
+	Inputs []uint16 // indices into the operand space
+	Dst    uint16   // register the result is written to
 }
 
 // GateBytecode represents a gate executable compiled into a sequence of instructions.
 // The compiled form is independent of curve-specific types and can be serialized.
-// The index space is unified: constants (0..nbConsts-1), inputs (nbConsts..nbConsts+nbInputs-1),
-// then instruction results.
+// The operand space is the registers, then the constants.
+// The gate's result is the Dst of the last instruction, or the last input's register if there is no
+// instruction.
 type GateBytecode struct {
 	Instructions []GateInstruction // sequence of operations
-	Constants    []*big.Int        // constant values at indices [0, nbConsts)
+	Constants    []*big.Int        // constant values at indices [NbRegisters(), NbRegisters()+nbConsts)
+	NbIn         int               // number of inputs
 }
 
 // IdentityBytecode returns the compiled form of the identity gate (x → x).
 // A GateBytecode with no instructions returns its sole input directly.
 func IdentityBytecode() GateBytecode {
-	return GateBytecode{}
+	return GateBytecode{NbIn: 1}
 }
 
 // NbConstants returns the number of constants in the gate
@@ -46,20 +55,61 @@ func (g *GateBytecode) NbConstants() int {
 	return len(g.Constants)
 }
 
+// NbRegisters returns the number of registers: the inputs', or one more than the largest Dst if that
+// is more.
+func (g *GateBytecode) NbRegisters() int {
+	res := g.NbIn
+	for _, inst := range g.Instructions {
+		res = max(res, int(inst.Dst)+1)
+	}
+	return res
+}
+
 // EvaluatorSize returns the scratch size a gateEvaluator needs to evaluate this
-// gate on nbIn inputs: one slot per constant, per input, and per instruction.
-func (g GateBytecode) EvaluatorSize(nbIn int) int {
-	return g.NbConstants() + nbIn + len(g.Instructions)
+// gate: one slot per register and per constant.
+func (g *GateBytecode) EvaluatorSize() int {
+	return g.NbRegisters() + g.NbConstants()
+}
+
+// CheckConstantPositions returns an error naming the first instruction whose constant operands are
+// not where the evaluators read them first: an Add or Mul can only have them at index 0, and a Sub
+// can only have them at index 0 or 1.
+func (g *GateBytecode) CheckConstantPositions() error {
+	nbRegisters := g.NbRegisters()
+	for i, inst := range g.Instructions {
+		var lastPosition int // the last position a constant may take
+		switch inst.Op {
+		case OpAdd, OpMul:
+			lastPosition = 0
+		case OpSub:
+			lastPosition = 1
+		default:
+			continue
+		}
+		for j := lastPosition + 1; j < len(inst.Inputs); j++ {
+			if int(inst.Inputs[j]) >= nbRegisters {
+				return fmt.Errorf("instruction %d (%s): constant operand at position %d", i, inst.Op, j)
+			}
+		}
+	}
+	return nil
+}
+
+// ResultRegister returns the register of the value the gate returns.
+func (g *GateBytecode) ResultRegister() uint16 {
+	if len(g.Instructions) == 0 {
+		return uint16(g.NbIn - 1)
+	}
+	return g.Instructions[len(g.Instructions)-1].Dst
 }
 
 // EstimateDegree returns an upper bound on the degree of the gate
-func (g *GateBytecode) EstimateDegree(nbIn int) int {
-	frameSize := len(g.Constants) + nbIn
-	deg := make([]int, frameSize+len(g.Instructions))
-	for i := range nbIn {
-		deg[i+len(g.Constants)] = 1
+func (g *GateBytecode) EstimateDegree() int {
+	deg := make([]int, g.EvaluatorSize())
+	for i := range g.NbIn {
+		deg[i] = 1
 	}
-	for i, inst := range g.Instructions {
+	for _, inst := range g.Instructions {
 		var curr int
 		switch inst.Op {
 		case OpAdd, OpSub, OpNeg, OpSumExp17:
@@ -78,9 +128,9 @@ func (g *GateBytecode) EstimateDegree(nbIn int) int {
 		if inst.Op == OpSumExp17 {
 			curr *= 17
 		}
-		deg[frameSize+i] = curr
+		deg[inst.Dst] = curr
 	}
-	return deg[len(deg)-1]
+	return deg[g.ResultRegister()]
 }
 
 // String returns a human-readable representation of the operation

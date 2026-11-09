@@ -378,7 +378,7 @@ func LevelWires[G any](c gkr.Circuit[G], level constraint.GkrProvingLevel) []boo
 // never called, so its zero value does for G.
 func ProofSize[G any](c gkr.Circuit[G], schedule constraint.GkrProvingSchedule, logNbInstances int) int {
 	size := len(c.Outputs())
-	identity := gkr.Gate[G]{Degree: 1, NbIn: 1}
+	identity := gkr.Gate[G]{Degree: 1}
 	for levelI, level := range schedule {
 		lc := c.LevelCircuit(schedule, levelI, identity)
 		// For every outgoing claim and unique input wire, there will be

@@ -4,7 +4,6 @@ type (
 	// A Gate is a low-degree multivariate polynomial
 	Gate[GateExecutable any] struct {
 		Evaluate    GateExecutable
-		NbIn        int // number of inputs
 		Degree      int // total Degree of the polynomial
 		SolvableVar int // if there is a variable whose value can be uniquely determined from the value of the gate and the other inputs, its index, -1 otherwise
 	}
