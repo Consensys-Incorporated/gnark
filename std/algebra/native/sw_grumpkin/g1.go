@@ -28,10 +28,14 @@ func (p *G1Affine) Neg(api frontend.API, p1 G1Affine) *G1Affine {
 }
 
 // AddAssign adds p1 to p using the affine formulas with division, and return p
+//
+// ⚠️  p and p1 must have distinct x-coordinates (p ≠ ±p1, both finite):
+// otherwise the circuit is unsatisfiable. The chord slope is computed with a
+// checked division, so equal inputs cannot leave it unconstrained.
 func (p *G1Affine) AddAssign(api frontend.API, p1 G1Affine) *G1Affine {
 
 	// compute lambda = (p1.y-p.y)/(p1.x-p.x)
-	lambda := api.DivUnchecked(api.Sub(p1.Y, p.Y), api.Sub(p1.X, p.X))
+	lambda := api.Div(api.Sub(p1.Y, p.Y), api.Sub(p1.X, p.X))
 
 	// xr = lambda**2-p.x-p1.x
 	xr := api.Sub(api.Mul(lambda, lambda), api.Add(p.X, p1.X))
@@ -125,6 +129,10 @@ func (p *G1Affine) Lookup2(api frontend.API, b1, b2 frontend.Variable, p1, p2, p
 }
 
 // Double double a point in affine coords
+//
+// ⚠️  p1 must have y ≠ 0 (in particular p1 ≠ (0,0), the infinity encoding):
+// otherwise the circuit is unsatisfiable. The tangent slope is computed with a
+// checked division, so (0,0) cannot leave it unconstrained.
 func (p *G1Affine) Double(api frontend.API, p1 G1Affine) *G1Affine {
 
 	var three, two big.Int
@@ -132,7 +140,7 @@ func (p *G1Affine) Double(api frontend.API, p1 G1Affine) *G1Affine {
 	two.SetInt64(2)
 
 	// compute lambda = (3*p1.x**2+a)/2*p1.y, here we assume a=0 (j invariant 0 curve)
-	lambda := api.DivUnchecked(api.Mul(p1.X, p1.X, three), api.Mul(p1.Y, two))
+	lambda := api.Div(api.Mul(p1.X, p1.X, three), api.Mul(p1.Y, two))
 
 	// xr = lambda**2-2*p1.x
 	xr := api.Sub(api.Mul(lambda, lambda), api.Mul(p1.X, two))
@@ -323,10 +331,14 @@ func (p *G1Affine) AssertIsEqual(api frontend.API, other G1Affine) {
 }
 
 // DoubleAndAdd computes 2*p1+p in affine coords
+//
+// ⚠️  p1 and p2 must have distinct x-coordinates (p1 ≠ ±p2, both finite):
+// otherwise the circuit is unsatisfiable. The first chord slope is computed
+// with a checked division, so equal inputs cannot leave it unconstrained.
 func (p *G1Affine) DoubleAndAdd(api frontend.API, p1, p2 *G1Affine) *G1Affine {
 
 	// compute lambda1 = (y2-y1)/(x2-x1)
-	l1 := api.DivUnchecked(api.Sub(p1.Y, p2.Y), api.Sub(p1.X, p2.X))
+	l1 := api.Div(api.Sub(p1.Y, p2.Y), api.Sub(p1.X, p2.X))
 
 	// compute x3 = lambda1**2-x1-x2
 	x3 := api.Mul(l1, l1)
@@ -353,10 +365,14 @@ func (p *G1Affine) DoubleAndAdd(api frontend.API, p1, p2 *G1Affine) *G1Affine {
 }
 
 // DoubleAndAddSelect computes 2*p1+p2 or condtionally 2*p2+p1 in affine coords
+//
+// ⚠️  p1 and p2 must have distinct x-coordinates (p1 ≠ ±p2, both finite):
+// otherwise the circuit is unsatisfiable. The first chord slope is computed
+// with a checked division, so equal inputs cannot leave it unconstrained.
 func (p *G1Affine) DoubleAndAddSelect(api frontend.API, b frontend.Variable, p1, p2 *G1Affine) *G1Affine {
 
 	// compute lambda1 = (y2-y1)/(x2-x1)
-	l1 := api.DivUnchecked(api.Sub(p1.Y, p2.Y), api.Sub(p1.X, p2.X))
+	l1 := api.Div(api.Sub(p1.Y, p2.Y), api.Sub(p1.X, p2.X))
 
 	// compute x3 = lambda1**2-x1-x2
 	x3 := api.Mul(l1, l1)

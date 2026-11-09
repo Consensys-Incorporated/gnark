@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/std/algebra/algopts"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bls12381"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
 	"github.com/consensys/gnark/std/math/emulated"
@@ -26,8 +27,9 @@ func ECG1ScalarMulSumBLS(api frontend.API, prev, P *sw_bls12381.G1Affine, s *emu
 	}
 	// Check the point is in G1
 	g1.AssertIsOnG1(P)
-	// Compute the scalar multiplication
-	res := curve.ScalarMul(P, s)
+	// Compute the scalar multiplication. P was checked to be in G1 above, so
+	// skip ScalarMul's own (identical) subgroup check.
+	res := curve.ScalarMul(P, s, algopts.WithNoSubgroupMembershipCheck())
 	// Compute the aggregate
 	sum := curve.AddUnified(prev, res)
 	// Assert that the sum is as expected

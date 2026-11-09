@@ -36,7 +36,18 @@ func (p *g2AffP) Neg(api frontend.API, p1 g2AffP) *g2AffP {
 	return p
 }
 
+// assertE2NonZero asserts d ≠ 0 in E2 = Fp[u]/(u² + 5) via its norm
+// N(d) = d.A0² + 5·d.A1²: u² = −5 is a non-residue in Fp, so N(d) = 0 iff d = 0.
+// Cheaper than testing both coordinates with IsZero.
+func assertE2NonZero(api frontend.API, d fields_bls12377.E2) {
+	api.AssertIsDifferent(api.Add(api.Mul(d.A0, d.A0), api.Mul(d.A1, d.A1, 5)), 0)
+}
+
 // AddAssign add p1 to p and return p
+//
+// ⚠️  p and p1 must have distinct x-coordinates (p ≠ ±p1, both finite):
+// otherwise the circuit is unsatisfiable. The chord slope is computed with a
+// checked division, so equal inputs cannot leave it unconstrained.
 func (p *g2AffP) AddAssign(api frontend.API, p1 g2AffP) *g2AffP {
 
 	var n, d, l, xr, yr fields_bls12377.E2
@@ -44,6 +55,7 @@ func (p *g2AffP) AddAssign(api frontend.API, p1 g2AffP) *g2AffP {
 	// compute lambda = (p1.y-p.y)/(p1.x-p.x)
 	n.Sub(api, p1.Y, p.Y)
 	d.Sub(api, p1.X, p.X)
+	assertE2NonZero(api, d)
 	l.DivUnchecked(api, n, d)
 
 	// xr =lambda**2-p1.x-p.x
@@ -147,6 +159,10 @@ func (p *g2AffP) Select(api frontend.API, b frontend.Variable, p1, p2 g2AffP) *g
 
 // Double compute 2*p1, assign the result to p and return it
 // Only for curve with j invariant 0 (a=0).
+//
+// ⚠️  p1 must have y ≠ 0 (in particular p1 ≠ (0,0), the infinity encoding):
+// otherwise the circuit is unsatisfiable. The tangent slope is computed with a
+// checked division, so (0,0) cannot leave it unconstrained.
 func (p *g2AffP) Double(api frontend.API, p1 g2AffP) *g2AffP {
 
 	var n, d, l, xr, yr fields_bls12377.E2
@@ -154,6 +170,7 @@ func (p *g2AffP) Double(api frontend.API, p1 g2AffP) *g2AffP {
 	// lambda = 3*p1.x**2/2*p.y
 	n.Square(api, p1.X).MulByFp(api, n, 3)
 	d.MulByFp(api, p1.Y, 2)
+	assertE2NonZero(api, d)
 	l.DivUnchecked(api, n, d)
 
 	// xr = lambda**2-2*p1.x
@@ -483,6 +500,10 @@ func (p *g2AffP) AssertIsEqual(api frontend.API, other g2AffP) {
 }
 
 // DoubleAndAdd computes 2*p1+p2 in affine coords
+//
+// ⚠️  p1 and p2 must have distinct x-coordinates (p1 ≠ ±p2, both finite):
+// otherwise the circuit is unsatisfiable. The first chord slope is computed
+// with a checked division, so equal inputs cannot leave it unconstrained.
 func (p *g2AffP) DoubleAndAdd(api frontend.API, p1, p2 *g2AffP) *g2AffP {
 
 	var n, d, l1, l2, x3, x4, y4 fields_bls12377.E2
@@ -490,6 +511,7 @@ func (p *g2AffP) DoubleAndAdd(api frontend.API, p1, p2 *g2AffP) *g2AffP {
 	// compute lambda1 = (y2-y1)/(x2-x1)
 	n.Sub(api, p1.Y, p2.Y)
 	d.Sub(api, p1.X, p2.X)
+	assertE2NonZero(api, d)
 	l1.DivUnchecked(api, n, d)
 
 	// compute x3 = lambda1**2-x1-x2
