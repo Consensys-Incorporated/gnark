@@ -335,6 +335,16 @@ func (g2 G2) add(p, q *G2Affine) *G2Affine {
 	}
 }
 
+// addGuarded is the incomplete [G2.add] with an assertion p.x ≠ q.x. The chord
+// slope is pinned by λ·(q.x−p.x) = q.y−p.y, which leaves λ free exactly when
+// p = q; the guard closes that case (and p = −q, whose sum is not
+// representable). It only rejects, so the result is the exact chord sum for
+// any adversarial inputs, or the circuit is unsatisfiable.
+func (g2 *G2) addGuarded(p, q *G2Affine) *G2Affine {
+	g2.api.AssertIsEqual(g2.Ext2.IsEqual(&p.P.X, &q.P.X), 0)
+	return g2.add(p, q)
+}
+
 func (g2 G2) neg(p *G2Affine) *G2Affine {
 	xr := &p.P.X
 	yr := g2.Ext2.Neg(&p.P.Y)
@@ -1106,9 +1116,13 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 //
 // ⚠️  When [algopts.WithIncompleteArithmetic] is set, this method is faster but
 // not complete. It inherits the exceptional sets of the underlying scalar-mul
-// calls and additionally depends on internal accumulator collisions, so the
-// incomplete exceptional set is not fully characterized at the API level. Zero
-// and ±1 scalars and the point (0,0) are exceptional inputs in this mode.
+// calls, so the incomplete exceptional set is not fully characterized at the
+// API level. Zero and ±1 scalars and the point (0,0) are exceptional inputs in
+// this mode. The summands are aggregated with an incomplete addition guarded by
+// an x-coordinate inequality: if a partial sum equals ± the next summand (e.g.
+// MSM([Q, Q], [s, s])), the circuit is unsatisfiable. Without the guard the
+// chord slope of a collision is unconstrained and a malicious prover could
+// choose the result.
 func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.AlgebraOption) (*G2Affine, error) {
 
 	if len(p) == 0 {
@@ -1124,7 +1138,11 @@ func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.Algebra
 	if err != nil {
 		return nil, fmt.Errorf("new config: %w", err)
 	}
-	addFn := g2.add
+	// In incomplete mode the aggregation adds are guarded: a collision between
+	// a partial sum and the next summand would leave the chord slope free, and
+	// the result is not always bound afterwards (no subgroup check for
+	// constant-only points nor in the folding path).
+	addFn := g2.addGuarded
 	if !cfg.IncompleteArithmetic {
 		addFn = g2.AddUnified
 	}
