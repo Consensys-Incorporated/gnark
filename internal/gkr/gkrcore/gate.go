@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"math/big"
+	"slices"
 
 	"github.com/consensys/gnark/frontend"
 
@@ -13,20 +14,20 @@ import (
 
 // gateCompiler is an implementation of gkr.GateAPI that records operations
 // instead of executing them. This is used to compile gate functions into
-// instruction sequences. During compilation, temporary indices are used:
-//   - Constants: high indices (starting at 0x8000)
-//   - Inputs: 0..nbInputs-1
-//   - Results: nbInputs onwards
-//
-// After compilation, indices are remapped to: constants, inputs, results.
+// instruction sequences. The values of a gate are numbered: the inputs 0..nbInputs-1, then the
+// results of the instructions in order. Registers and constants are assigned once the instructions
+// are final.
 type gateCompiler struct {
-	instructions  []gkr.GateInstruction // each instruction defines exactly one output variable
-	constants     []*big.Int            // constant values pool
-	constantIndex map[string]uint16     // map from constant value to its temp index (0x8000+)
-	nbInputs      int
+	instructions []recordedInstruction // each instruction defines exactly one output variable
+	nbInputs     int
 }
 
-const constMarker = 0x8000
+// recordedInstruction is an operation that a gateCompiler recorded.
+type recordedInstruction struct {
+	op       gkr.GateOp
+	operands []any
+	dst      uint16 // the register of the result, set by assignRegisters
+}
 
 // compilationVar represents a variable during gate compilation.
 type compilationVar struct {
@@ -34,17 +35,18 @@ type compilationVar struct {
 }
 
 func (gc *gateCompiler) addInstruction(op gkr.GateOp, inputs ...frontend.Variable) compilationVar {
-	ins := make([]uint16, len(inputs))
-	for i := range ins {
-		ins[i] = gc.getVarID(inputs[i])
+	operands := make([]any, len(inputs))
+	for i, in := range inputs {
+		if c, ok := constantValue(in); ok {
+			operands[i] = c
+		} else {
+			operands[i] = in
+		}
 	}
 
 	result := compilationVar{id: uint16(len(gc.instructions) + gc.nbInputs)}
 
-	gc.instructions = append(gc.instructions, gkr.GateInstruction{
-		Op:     op,
-		Inputs: ins,
-	})
+	gc.instructions = append(gc.instructions, recordedInstruction{op: op, operands: operands})
 
 	return result
 }
@@ -78,7 +80,7 @@ func (gc *gateCompiler) Neg(i1 frontend.Variable) frontend.Variable {
 }
 
 // Sub records a subtraction operation. A constant minuend absorbs the constant subtrahends;
-// otherwise they are summed into one, placed last. A subtraction of constants alone is itself a
+// otherwise they are summed into one, placed second. A subtraction of constants alone is itself a
 // constant.
 func (gc *gateCompiler) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) frontend.Variable {
 	operands := append([]frontend.Variable{i1, i2}, in...)
@@ -104,7 +106,7 @@ func (gc *gateCompiler) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) f
 		}
 		operands[0] = diff
 	} else if hasConst {
-		operands = append(operands, subtrahends)
+		operands = slices.Insert(operands, 1, frontend.Variable(subtrahends))
 	}
 	return gc.addInstruction(gkr.OpSub, operands...)
 }
@@ -162,56 +164,157 @@ func constantValue(v frontend.Variable) (*big.Int, bool) {
 	return &val, true
 }
 
-// getVarID extracts or creates a temporary index from a value.
-// Returns a temporary index: inputs at 0..nbInputs-1, constants at 0x8000+, results at nbInputs+.
-func (gc *gateCompiler) getVarID(v frontend.Variable) uint16 {
-	if rv, ok := v.(compilationVar); ok {
-		return rv.id
-	}
-
-	// Otherwise, it must be a constant value
-	// Convert to big.Int for curve-agnostic storage
-	val := utils.FromInterface(v)
-
-	// Check if we've seen this constant before
-	key := val.String()
-	if idx, exists := gc.constantIndex[key]; exists {
-		return idx
-	}
-
-	// Add new constant to the pool with temp index 0x8000+
-	tempIdx := uint16(len(gc.constants)) | constMarker
-	gc.constants = append(gc.constants, new(big.Int).Set(&val))
-	gc.constantIndex[key] = tempIdx
-	return tempIdx
-}
-
-// GetInstructions returns the recorded instructions
-func (gc *gateCompiler) GetInstructions() []gkr.GateInstruction {
-	return gc.instructions
-}
-
 // GetNbInputs returns the number of inputs
 func (gc *gateCompiler) GetNbInputs() int {
 	return gc.nbInputs
 }
 
-// remapIndices transforms temporary indices to final layout: constants, inputs, results.
-func (gc *gateCompiler) remapIndices() {
-	nbConsts := uint16(len(gc.constants))
-
-	// Remap all instruction inputs
-	for i := range gc.instructions {
-		for j := range gc.instructions[i].Inputs {
-			if gc.instructions[i].Inputs[j]&constMarker != 0 {
-				// constant
-				gc.instructions[i].Inputs[j] &= ^uint16(constMarker)
-			} else {
-				// variable
-				gc.instructions[i].Inputs[j] += nbConsts
+// removeDeadCode removes the instructions whose result does not reach the output, and renumbers the
+// remaining result operands. The output is the last instruction's result afterwards.
+func (gc *gateCompiler) removeDeadCode(output compilationVar) {
+	live := make([]bool, len(gc.instructions))
+	live[int(output.id)-gc.nbInputs] = true
+	for i := len(live) - 1; i >= 0; i-- {
+		if !live[i] {
+			continue
+		}
+		for _, o := range gc.instructions[i].operands {
+			if v, ok := o.(compilationVar); ok && int(v.id) >= gc.nbInputs {
+				live[int(v.id)-gc.nbInputs] = true
 			}
 		}
 	}
+
+	var (
+		instructions []recordedInstruction
+		resultID     = make([]uint16, len(gc.instructions)) // the new id of the result of a live instruction
+	)
+	for i, inst := range gc.instructions {
+		if !live[i] {
+			continue
+		}
+		for j, o := range inst.operands {
+			if v, ok := o.(compilationVar); ok && int(v.id) >= gc.nbInputs {
+				inst.operands[j] = compilationVar{resultID[int(v.id)-gc.nbInputs]}
+			}
+		}
+		resultID[i] = uint16(gc.nbInputs + len(instructions))
+		instructions = append(instructions, inst)
+	}
+	gc.instructions = instructions
+}
+
+// register returns the register that holds the value v: v itself for an input, otherwise the
+// register of the instruction that defines it.
+func (gc *gateCompiler) register(v compilationVar) uint16 {
+	if int(v.id) < gc.nbInputs {
+		return v.id
+	}
+	return gc.instructions[int(v.id)-gc.nbInputs].dst
+}
+
+// assignRegisters sets the register of each instruction's result. The inputs start in registers
+// 0, …, nbInputs-1. An instruction's register is that of its first or else its second operand if
+// that operand is a value read last by this instruction, and the lowest free register otherwise.
+// The registers of the operands that this instruction reads last are freed afterwards.
+//
+// The register is not that of an operand that is also a later operand.
+func (gc *gateCompiler) assignRegisters() {
+	nbValues := gc.nbInputs + len(gc.instructions)
+
+	// lastUse[v] is the last instruction that reads the value v: an input, or the result of an
+	// instruction, in this order. The output is read after the last instruction. It is -1 for an
+	// input that the gate does not read.
+	lastUse := make([]int, nbValues)
+	for v := range lastUse {
+		lastUse[v] = -1
+	}
+	for i, inst := range gc.instructions {
+		for _, o := range inst.operands {
+			if v, ok := o.(compilationVar); ok {
+				lastUse[v.id] = i
+			}
+		}
+	}
+	lastUse[nbValues-1] = len(gc.instructions)
+
+	// free[r] says whether r holds no value that is read later.
+	free := make([]bool, gc.nbInputs)
+	for v := range gc.nbInputs {
+		free[v] = lastUse[v] < 0
+	}
+
+	for i := range gc.instructions {
+		inst := &gc.instructions[i]
+
+		// tryInputAsDst returns the register of the operand j if it is a value that this instruction
+		// reads last, and is not also an operand at position 2 or later; otherwise -1.
+		tryInputAsDst := func(j int) int {
+			if j >= len(inst.operands) {
+				return -1
+			}
+			v, ok := inst.operands[j].(compilationVar)
+			if !ok || lastUse[v.id] != i || slices.Contains(inst.operands[min(2, len(inst.operands)):], inst.operands[j]) {
+				return -1
+			}
+			return int(gc.register(v))
+		}
+
+		dst := tryInputAsDst(0)
+		if dst == -1 {
+			dst = tryInputAsDst(1)
+		}
+		if dst == -1 {
+			dst = slices.Index(free, true)
+			if dst == -1 {
+				dst = len(free)
+				free = append(free, true)
+			}
+		}
+		inst.dst = uint16(dst)
+
+		for _, o := range inst.operands {
+			if v, ok := o.(compilationVar); ok && lastUse[v.id] == i {
+				free[gc.register(v)] = true
+			}
+		}
+		free[inst.dst] = false
+	}
+}
+
+// toBytecode returns the bytecode of the recorded instructions, once their registers are assigned.
+// The constants are pooled in the order of their first use, without duplicates, and follow the
+// registers in the operand space.
+func (gc *gateCompiler) toBytecode() gkr.GateBytecode {
+	bytecode := gkr.GateBytecode{
+		Instructions: make([]gkr.GateInstruction, len(gc.instructions)),
+		NbIn:         gc.nbInputs,
+	}
+	for i, inst := range gc.instructions {
+		bytecode.Instructions[i].Dst = inst.dst
+	}
+	nbRegisters := bytecode.NbRegisters()
+
+	constantIndex := make(map[string]int) // from a constant's value to its index in the pool
+	for i, inst := range gc.instructions {
+		bytecode.Instructions[i].Op = inst.op
+		bytecode.Instructions[i].Inputs = make([]uint16, len(inst.operands))
+		for j, o := range inst.operands {
+			switch o := o.(type) {
+			case compilationVar:
+				bytecode.Instructions[i].Inputs[j] = gc.register(o)
+			case *big.Int:
+				index, ok := constantIndex[o.String()]
+				if !ok {
+					index = len(bytecode.Constants)
+					constantIndex[o.String()] = index
+					bytecode.Constants = append(bytecode.Constants, o)
+				}
+				bytecode.Instructions[i].Inputs[j] = uint16(nbRegisters + index)
+			}
+		}
+	}
+	return bytecode
 }
 
 // CompileGateFunction converts a gate function into a gkr.SerializableGate.
@@ -219,10 +322,7 @@ func (gc *gateCompiler) remapIndices() {
 // such as degree and solvable var index for the given field.
 func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.SerializableGate, error) {
 	// Create compiling API
-	compiler := gateCompiler{
-		constantIndex: make(map[string]uint16),
-		nbInputs:      nbInputs,
-	}
+	compiler := gateCompiler{nbInputs: nbInputs}
 
 	// Create input variables
 	inputs := make([]frontend.Variable, nbInputs)
@@ -236,15 +336,14 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 	if !ok {
 		return gkr.SerializableGate{}, errors.New("gate function must return a variable; constant values must be hard-coded into the gates that use them")
 	}
-	if len(compiler.instructions) == 0 {
-		// No operations recorded, but not all is lost yet.
-		// If the output simply mirrors the last input, we can still represent
-		// it in bytecode, as the evaluator returns the last stack frame element.
-		if int(outVar.id) == len(compiler.constants)+nbInputs-1 {
+	if int(outVar.id) < nbInputs {
+		// The output is an input. If it is the last input, we can still represent the gate in
+		// bytecode, as the evaluator returns the last input's register.
+		if int(outVar.id) == nbInputs-1 {
 			// Identity-like gate: returns last input unchanged
 			// Degree is 1, and the returned variable is solvable
 			return gkr.SerializableGate{
-				NbIn:        nbInputs,
+				Evaluate:    gkr.GateBytecode{NbIn: nbInputs},
 				Degree:      1,
 				SolvableVar: nbInputs - 1,
 			}, nil
@@ -252,35 +351,17 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 		return gkr.SerializableGate{}, errors.New("only non-trivial or last-reflective gate functions supported")
 	}
 
-	// All instructions after the output are no-ops. Prune them and the corresponding variables.
-	// Henceforth, we guarantee that the variable with the highest index is the gate output.
-	lastEffectiveInstructionIndex := int(outVar.id) - compiler.nbInputs
-	compiler.instructions = compiler.instructions[:lastEffectiveInstructionIndex+1]
-
-	// Drop the constants used only by pruned instructions.
-	nbUsedConstants := 0
-	for _, inst := range compiler.instructions {
-		for _, in := range inst.Inputs {
-			if in&constMarker != 0 {
-				nbUsedConstants = max(nbUsedConstants, int(in&^constMarker)+1)
-			}
-		}
-	}
-	compiler.constants = compiler.constants[:nbUsedConstants]
-
-	// Remap indices from temporary layout to final layout
-	compiler.remapIndices()
-
-	bytecode := gkr.GateBytecode{
-		Instructions: compiler.GetInstructions(),
-		Constants:    compiler.constants,
-	}
+	// Only the instructions that the output depends on matter.
+	// Henceforth, we guarantee that the last instruction computes the gate output.
+	compiler.removeDeadCode(outVar)
+	compiler.assignRegisters()
+	bytecode := compiler.toBytecode()
 
 	// Compute degree and solvable variable
 	tester := gateTester{field: field}
-	tester.setGate(bytecode, nbInputs)
+	tester.setGate(bytecode)
 
-	degree := len(tester.fitPoly(bytecode.EstimateDegree(nbInputs))) - 1
+	degree := len(tester.fitPoly(bytecode.EstimateDegree())) - 1
 	if degree == -1 {
 		return gkr.SerializableGate{}, errors.New("cannot find degree for gate")
 	}
@@ -295,7 +376,6 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 
 	return gkr.SerializableGate{
 		Evaluate:    bytecode,
-		NbIn:        nbInputs,
 		Degree:      degree,
 		SolvableVar: solvableVar,
 	}, nil
@@ -312,17 +392,16 @@ type gateTester struct {
 	field Field
 	gate  gkr.GateBytecode
 	vars  [][]*big.Int
-	nbIn  int
 
 	invExponent *big.Int // pⁿ - 2, the exponent inverse raises to; computed once, on first use
 }
 
-func (t *gateTester) setGate(g gkr.GateBytecode, nbIn int) {
+func (t *gateTester) setGate(g gkr.GateBytecode) {
 	t.gate = g
-	t.nbIn = nbIn
-	t.vars = make([][]*big.Int, g.NbConstants()+nbIn+len(g.Instructions))
+	t.vars = make([][]*big.Int, g.EvaluatorSize())
+	nbRegisters := g.NbRegisters()
 	for i, c := range g.Constants {
-		t.vars[i] = t.embed(c)
+		t.vars[nbRegisters+i] = t.embed(c)
 	}
 }
 
@@ -480,12 +559,8 @@ func (t *gateTester) evalPoly(p [][]*big.Int, x []*big.Int) []*big.Int {
 
 // evaluate executes the gate bytecode with the given inputs.
 func (t *gateTester) evaluate(inputs ...[]*big.Int) []*big.Int {
-	frameSize := t.gate.NbConstants()
-
-	// Copy inputs into frame
-	copy(t.vars[t.gate.NbConstants():], inputs)
-
-	frameSize += len(inputs)
+	// Copy inputs into the first registers
+	copy(t.vars, inputs)
 
 	// Execute instructions
 	for _, inst := range t.gate.Instructions {
@@ -518,16 +593,15 @@ func (t *gateTester) evaluate(inputs ...[]*big.Int) []*big.Int {
 		default:
 			panic("unknown operation")
 		}
-		t.vars[frameSize] = dst
-		frameSize++
+		t.vars[inst.Dst] = dst
 	}
 
-	return t.vars[frameSize-1]
+	return t.vars[t.gate.ResultRegister()]
 }
 
 // isAdditive returns whether xᵢ occurs only in a monomial of total degree 1
 func (t *gateTester) isAdditive(i int) bool {
-	in := t.randomElements(t.nbIn)
+	in := t.randomElements(t.gate.NbIn)
 
 	x := t.randomElement()
 	in[i] = x
@@ -553,7 +627,7 @@ func (t *gateTester) isAdditive(i int) bool {
 	}
 
 	// check slope is independent of other variables
-	in = t.randomElements(t.nbIn)
+	in = t.randomElements(t.gate.NbIn)
 	in[i] = zero
 	y0 = t.evaluate(in...)
 
@@ -569,8 +643,8 @@ func (t *gateTester) fitPoly(maxDegree int) [][]*big.Int {
 
 	// turn f univariate by defining p(x) as f(x, rx, ..., sx)
 	// where r, s, ... are random constants
-	fIn := make([][]*big.Int, t.nbIn)
-	consts := t.randomElements(t.nbIn - 1)
+	fIn := make([][]*big.Int, t.gate.NbIn)
+	consts := t.randomElements(t.gate.NbIn - 1)
 
 	p := make([][]*big.Int, maxDegree+1)
 
