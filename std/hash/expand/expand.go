@@ -67,7 +67,7 @@ func ExpandMsgXmd(api frontend.API, msg []uints.U8, dst []byte, lenInBytes int) 
 	b1 := h.Sum()
 
 	res := make([]uints.U8, lenInBytes)
-	copy(res[:h.Size()], b1)
+	copy(res, b1)
 
 	for i := 2; i <= ell; i++ {
 		h, err = sha2.New(api)

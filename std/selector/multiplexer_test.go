@@ -2,11 +2,14 @@ package selector
 
 import (
 	"fmt"
+	"math/big"
 	"math/rand/v2"
 	"testing"
 	"time"
 
+	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/scs"
 	"github.com/consensys/gnark/test"
 )
 
@@ -212,4 +215,28 @@ func TestMap(t *testing.T) {
 			V0: 10, V1: 11,
 		})
 
+}
+
+type constSelectorCircuit struct {
+	Inputs []frontend.Variable
+	Sel    *big.Int
+}
+
+func (c *constSelectorCircuit) Define(api frontend.API) error {
+	Mux(api, c.Sel, c.Inputs...)
+	return nil
+}
+
+// TestMuxConstantSelectorOutOfRange checks that out-of-range constant selectors
+// are rejected, including values that would be truncated by big.Int.Int64().
+func TestMuxConstantSelectorOutOfRange(t *testing.T) {
+	assert := test.NewAssert(t)
+	for _, sel := range []*big.Int{
+		big.NewInt(3),
+		new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), 64), big.NewInt(1)), // Int64() == 1
+	} {
+		circuit := &constSelectorCircuit{Inputs: []frontend.Variable{0, 1, 2}, Sel: sel}
+		_, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, circuit)
+		assert.ErrorContains(err, "out of bounds", "sel=%s", sel)
+	}
 }

@@ -63,12 +63,18 @@ func Mux(api frontend.API, sel frontend.Variable, inputs ...frontend.Variable) f
 		return inputs[0]
 	}
 
-	// Fast path: if selector is a constant, return the selected input directly
+	// Fast path: if selector is a constant, return the selected input directly.
 	if s, ok := api.Compiler().ConstantValue(sel); ok {
-		idx := int(s.Int64())
-		if idx < 0 || idx >= len(inputs) {
-			panic(fmt.Sprintf("constant selector %d out of bounds [0, %d)", idx, len(inputs)))
+		// Range-check using big.Int: math/big.Int.Int64() silently truncates
+		// values outside the int64 range, which would alias an out-of-range field
+		// element (e.g. 2^64+1 on BN254, which is a perfectly valid constant) to a
+		// valid index and silently fold the circuit to the wrong input. We must
+		// reject anything outside [0, len(inputs)) using the full-precision value
+		// before converting to int.
+		if s.Sign() < 0 || s.Cmp(big.NewInt(int64(len(inputs)))) >= 0 {
+			panic(fmt.Sprintf("constant selector %s out of bounds [0, %d)", s.String(), len(inputs)))
 		}
+		idx := int(s.Int64())
 		return inputs[idx]
 	}
 

@@ -72,7 +72,7 @@ func main() {
 		},
 	}
 
-	const copyrightHolder = "Consensys Software Inc."
+	const copyrightHolder = "Consensys Incorporated"
 	bgen := bavard.NewBatchGenerator(copyrightHolder, 2026, "gnark")
 
 	rootEntries := []bavard.Entry{
