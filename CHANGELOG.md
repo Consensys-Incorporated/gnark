@@ -1,4 +1,48 @@
 
+<a name="v0.16.5"></a>
+## [v0.16.5] - 2026-11-09
+### Chore
+- gnark-crypto update
+- Update corporate entity ([#1892](https://github.com/Consensys/gnark/issues/1892))
+- fix Solidity tests ([#1886](https://github.com/Consensys/gnark/issues/1886))
+- **CI:** Upgrade toolchain ([#1885](https://github.com/Consensys/gnark/issues/1885))
+- **deps-dev:** bump brace-expansion from 1.1.18 to 1.1.21 in /backend/accelerated/webgpu/web in the npm_and_yarn group across 1 directory ([#1883](https://github.com/Consensys/gnark/issues/1883))
+### Docs
+- bump README Go requirement to match go.mod 1.26.8 ([#1880](https://github.com/Consensys/gnark/issues/1880))
+### Feat
+- **GKR:** Poseidon2 for small fields ([#1874](https://github.com/Consensys/gnark/issues/1874))
+- **GKR:** Koalabear ([#1868](https://github.com/Consensys/gnark/issues/1868))
+- Add MamaBear field support ([#1867](https://github.com/Consensys/gnark/issues/1867))
+### Fix
+- use canonical encoding of ECRecover square root for the parity bit ([#1870](https://github.com/Consensys/gnark/issues/1870))
+- accept the point at infinity in BW6-761 AssertIsOnG1 and AssertIsOnG2 ([#1910](https://github.com/Consensys/gnark/issues/1910))
+- reject small-order and off-curve public keys in EdDSA verification ([#1862](https://github.com/Consensys/gnark/issues/1862))
+- don't modify sha3 hasher state in Sum ([#1841](https://github.com/Consensys/gnark/issues/1841))
+- support empty and single-element inputs in selector.Partition ([#1873](https://github.com/Consensys/gnark/issues/1873))
+- bound split against decomposition width in bitslice.Partition ([#1875](https://github.com/Consensys/gnark/issues/1875))
+- **algebra:** return the point itself when folding a single point ([#1842](https://github.com/Consensys/gnark/issues/1842))
+- **backend:** serialize hash-to-field in concurrent commitment hints ([#1840](https://github.com/Consensys/gnark/issues/1840))
+- **constraint:** make lookup blueprint safe for concurrent Solve ([#1902](https://github.com/Consensys/gnark/issues/1902))
+- **conversion:** handle a partial top limb in EmulatedToBytes ([#1847](https://github.com/Consensys/gnark/issues/1847))
+- **ecdsa:** compare r with the nonce x-coordinate modulo the group order ([#1903](https://github.com/Consensys/gnark/issues/1903))
+- **expand:** allow ExpandMsgXmd outputs shorter than the hash size ([#1896](https://github.com/Consensys/gnark/issues/1896))
+- **frontend:** don't treat a literal % in Println as a format verb ([#1894](https://github.com/Consensys/gnark/issues/1894))
+- **groth16:** reset commitment keys when reading a key into a used object ([#1889](https://github.com/Consensys/gnark/issues/1889))
+- **io:** read the whole slice in ReadBytesShort ([#1849](https://github.com/Consensys/gnark/issues/1849))
+- **ioutils:** reject overflowing compressed integer lengths ([#1893](https://github.com/Consensys/gnark/issues/1893))
+- **logderivlookup:** skip the argument when a table has no queries ([#1887](https://github.com/Consensys/gnark/issues/1887))
+- **profile:** filter all anonymous function frames ([#1879](https://github.com/Consensys/gnark/issues/1879))
+- **scs:** don't panic on a recorded addition with a zero coefficient ([#1836](https://github.com/Consensys/gnark/issues/1836))
+- **sha3:** fixed length sum constraints ([#1908](https://github.com/Consensys/gnark/issues/1908))
+- **sw_bls12377:** handle constant G2 scalar multiple of the group order in constScalarMul ([#1901](https://github.com/Consensys/gnark/issues/1901))
+- **sw_bls12381:** bind G2 MultiScalarMul fake-GLV summands to the curve ([#1912](https://github.com/Consensys/gnark/issues/1912))
+- **test:** accept ToBinary bits in the engine's MustBeLessOrEqCst ([#1907](https://github.com/Consensys/gnark/issues/1907))
+### Perf
+- fold constant table column into denominator in logderivarg ([#1804](https://github.com/Consensys/gnark/issues/1804))
+### Refactor
+- **GKR:** Remove the Z/pZ assumption ([#1859](https://github.com/Consensys/gnark/issues/1859))
+### Test
+- **logderivlookup:** add second constraint for PLONK setup ([#1897](https://github.com/Consensys/gnark/issues/1897))
 <a name="v0.16.4"></a>
 ## [v0.16.4] - 2026-10-07
 ### Build
@@ -36,6 +80,8 @@
 ### Refactor
 - **GKR:** Re-surface Prover and Verifier ([#1852](https://github.com/Consensys/gnark/issues/1852))
 - **GKR:** Decouple I/O Claims from GKR Core ([#1844](https://github.com/Consensys/gnark/issues/1844))
+### Release
+- v0.16.4 ([#1876](https://github.com/Consensys/gnark/issues/1876))
 <a name="v0.16.3"></a>
 ## [v0.16.3] - 2026-08-24
 ### Chore
@@ -3179,6 +3225,7 @@
 - Merge pull request [#8](https://github.com/Consensys/gnark/issues/8) from ConsenSys/internal-curve-tests
 - Merge pull request [#7](https://github.com/Consensys/gnark/issues/7) from ConsenSys/develop Fixed [#6](https://github.com/Consensys/gnark/issues/6)
 - Merge pull request [#5](https://github.com/Consensys/gnark/issues/5) from ConsenSys/go1.14_deps
+[v0.16.5]: https://github.com/Consensys/gnark/compare/v0.16.4...v0.16.5
 [v0.16.4]: https://github.com/Consensys/gnark/compare/v0.16.3...v0.16.4
 [v0.16.3]: https://github.com/Consensys/gnark/compare/v0.16.2...v0.16.3
 [v0.16.2]: https://github.com/Consensys/gnark/compare/v0.16.1...v0.16.2
