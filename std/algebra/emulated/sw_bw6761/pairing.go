@@ -371,6 +371,12 @@ func (pr *Pairing) AssertIsOnG1(P *G1Affine) {
 	// 1- Check P is on the curve
 	pr.AssertIsOnCurve(P)
 
+	// The point at infinity (0,0) is in G1, but the incomplete additions in
+	// scalarMulBySeed can't handle it. In this case we run the check on the
+	// generator instead.
+	isInfinity := pr.api.And(pr.curveF.IsZero(&P.X), pr.curveF.IsZero(&P.Y))
+	P = pr.curve.Select(isInfinity, pr.curve.Generator(), P)
+
 	// 2- Check P has the right subgroup order
 	// we check that [x₀+1]P == [-x₀³+x₀²-1]ϕ(P)
 	xP := pr.g1.scalarMulBySeed(P)
@@ -389,6 +395,10 @@ func (pr *Pairing) AssertIsOnG1(P *G1Affine) {
 func (pr *Pairing) AssertIsOnG2(Q *G2Affine) {
 	// 1- Check Q is on the curve
 	pr.AssertIsOnTwist(Q)
+
+	// Same as in AssertIsOnG1, (0,0) is replaced by the generator.
+	isInfinity := pr.api.And(pr.curveF.IsZero(&Q.P.X), pr.curveF.IsZero(&Q.P.Y))
+	Q = pr.g2.Select(isInfinity, &G2Affine{P: *pr.g2.g2Gen}, Q)
 
 	// 2- Check Q has the right subgroup order
 	// we check that [x₀+1]Q == [-x₀³+x₀²-1]ϕ(Q)

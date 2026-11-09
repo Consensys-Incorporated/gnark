@@ -1,6 +1,7 @@
 package expand
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"testing"
 
@@ -151,5 +152,50 @@ func TestExpandMsgXmd(t *testing.T) {
 		}
 		err = test.IsSolved(&circuit, &witness, ecc.BN254.ScalarField())
 		assert.NoError(err, "circuit should be solved")
+	}
+}
+
+// expandMsgXmdSHA256 follows RFC 9380 section 5.3.1, gnark-crypto's version
+// panics for lenInBytes < 32 as well.
+func expandMsgXmdSHA256(msg, dst []byte, lenInBytes int) []byte {
+	ell := (lenInBytes + 31) / 32
+	dstPrime := append(append([]byte{}, dst...), byte(len(dst)))
+	h := sha256.New()
+	h.Write(make([]byte, h.BlockSize()))
+	h.Write(msg)
+	h.Write([]byte{byte(lenInBytes >> 8), byte(lenInBytes), 0})
+	h.Write(dstPrime)
+	b0 := h.Sum(nil)
+	bi := b0
+	var out []byte
+	for i := 1; i <= ell; i++ {
+		x := make([]byte, len(b0))
+		for j := range x {
+			x[j] = b0[j]
+			if i > 1 {
+				x[j] ^= bi[j]
+			}
+		}
+		h.Reset()
+		h.Write(x)
+		h.Write([]byte{byte(i)})
+		h.Write(dstPrime)
+		bi = h.Sum(nil)
+		out = append(out, bi...)
+	}
+	return out[:lenInBytes]
+}
+
+func TestExpandMsgXmdShortOutput(t *testing.T) {
+	assert := test.NewAssert(t)
+	dst := []byte("QUUX-V01-CS02-with-expander-SHA256-128")
+	msg := []byte("abc")
+	assert.Equal("d8ccab23b5985ccea865c6c97b6e5b8350e794e603b4b97902f53a8a0d605615", hex.EncodeToString(expandMsgXmdSHA256(msg, dst, 32)))
+	for _, l := range []int{1, 16, 31} {
+		expected := expandMsgXmdSHA256(msg, dst, l)
+		circuit := &expandMsgXmdCircuit{Msg: make([]uints.U8, len(msg)), Dst: dst, Len: l, Expected: make([]uints.U8, l)}
+		witness := &expandMsgXmdCircuit{Msg: uints.NewU8Array(msg), Dst: dst, Len: l, Expected: uints.NewU8Array(expected)}
+		err := test.IsSolved(circuit, witness, ecc.BN254.ScalarField())
+		assert.NoError(err, "lenInBytes=%d", l)
 	}
 }

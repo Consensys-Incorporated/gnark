@@ -26,7 +26,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-// Copyright 2020-2025 Consensys Software Inc.
+// Copyright 2020-2025 Consensys Incorporated
 // Licensed under the Apache License, Version 2.0. See the LICENSE file for details.
 
 // Package merkle provides a ZKP-circuit function to verify merkle proofs.

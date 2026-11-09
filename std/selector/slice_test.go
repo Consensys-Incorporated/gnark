@@ -204,3 +204,28 @@ func TestSlice(t *testing.T) {
 		WantSlice: [7]frontend.Variable{0, 1, 0, 0, 0, 0, 0},
 	})
 }
+
+type smallPartitionerCircuit struct {
+	Pivot, In, WantLeft, WantRight frontend.Variable
+}
+
+func (c *smallPartitionerCircuit) Define(api frontend.API) error {
+	for _, rightSide := range []bool{false, true} {
+		empty := selector.Partition(api, 0, rightSide, nil)
+		api.AssertIsEqual(len(empty), 0)
+	}
+	input := []frontend.Variable{c.In}
+	api.AssertIsEqual(selector.Partition(api, c.Pivot, false, input)[0], c.WantLeft)
+	api.AssertIsEqual(selector.Partition(api, c.Pivot, true, input)[0], c.WantRight)
+	return nil
+}
+
+func TestPartitionSmallInputs(t *testing.T) {
+	assert := test.NewAssert(t)
+	assert.ProverSucceeded(&smallPartitionerCircuit{}, &smallPartitionerCircuit{
+		Pivot: 0, In: 42, WantLeft: 0, WantRight: 42,
+	})
+	assert.ProverSucceeded(&smallPartitionerCircuit{}, &smallPartitionerCircuit{
+		Pivot: 1, In: 42, WantLeft: 42, WantRight: 0,
+	})
+}

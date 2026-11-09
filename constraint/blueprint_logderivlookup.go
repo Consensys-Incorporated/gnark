@@ -18,36 +18,18 @@ type BlueprintLookupHint[E Element] struct {
 	maxLevelPosition int
 	maxLevelOffset   int
 
-	// cache the resolved entries by the solver
-	cachedEntries []E
-	cachedOffset  int
-	lock          sync.Mutex
+	// entryOffsets[i] is the position in EntriesCalldata of the i-th entry. It
+	// only depends on the calldata, so it can be shared between concurrent calls
+	// to Solve. Entry values are not cached since they depend on the witness.
+	entryOffsets []int
+	lock         sync.Mutex
 }
-
-// ensures BlueprintLookupHint implements the BlueprintStateful interface
-var _ BlueprintStateful[U32] = (*BlueprintLookupHint[U32])(nil)
-var _ BlueprintStateful[U64] = (*BlueprintLookupHint[U64])(nil)
 
 func (b *BlueprintLookupHint[E]) Solve(s Solver[E], inst Instruction) error {
 	nbEntries := int(inst.Calldata[1])
 
-	// check if we already cached the entries
-	b.lock.Lock()
-	if len(b.cachedEntries) < nbEntries {
-		// we need to cache more entries
-		offset, delta := b.cachedOffset, 0
-		for i := len(b.cachedEntries); i < nbEntries; i++ {
-			var zero E
-			b.cachedEntries = append(b.cachedEntries, zero)
-			b.cachedEntries[i], delta = s.Read(b.EntriesCalldata[offset:])
-			offset += delta
-		}
-		b.cachedOffset = offset
-	}
-	b.lock.Unlock()
-
-	// we only append to the entries and never resize the slice; so we can access these indices safely
-	entries := b.cachedEntries[:nbEntries]
+	// make sure we know where the first nbEntries entries start in the calldata.
+	offsets := b.offsets(s, nbEntries)
 
 	nbInputs := int(inst.Calldata[2])
 
@@ -64,28 +46,34 @@ func (b *BlueprintLookupHint[E]) Solve(s Solver[E], inst Instruction) error {
 
 	for i := 0; i < nbOutputs; i++ {
 		idx, isUint64 := s.Uint64(inputs[i])
-		if !isUint64 || idx >= uint64(len(entries)) {
+		if !isUint64 || idx >= uint64(len(offsets)) {
 			return fmt.Errorf("lookup query too large")
 		}
 		// we set the output wire to the value of the entry
-		s.SetValue(uint32(i+int(inst.WireOffset)), entries[idx])
+		entry, _ := s.Read(b.EntriesCalldata[offsets[idx]:])
+		s.SetValue(uint32(i+int(inst.WireOffset)), entry)
 	}
 	return nil
 }
 
-func (b *BlueprintLookupHint[E]) Reset() {
-	// first we need to compute the capacity; that is 1 element per linear expression in the entries.
-	// this must be accurate since solver is multi threaded and we don't want to resize the slice
-	// while the solver is running.
-	capacity := 0
-	for i := 0; i < len(b.EntriesCalldata); i++ {
-		n := int(b.EntriesCalldata[i]) // length of the linear expression
-		capacity++
-		i += 2 * n // skip the linear expression
+// offsets returns the calldata offsets of the first nbEntries entries.
+// The size of an entry in the calldata is only given by the solver's Read, hence
+// the solver argument; but it never depends on the witness. Elements of
+// b.entryOffsets are written once and never modified afterwards, so the returned
+// slice can be read without holding the lock.
+func (b *BlueprintLookupHint[E]) offsets(s Solver[E], nbEntries int) []int {
+	b.lock.Lock()
+	defer b.lock.Unlock()
+	for len(b.entryOffsets) < nbEntries {
+		offset := 0
+		if n := len(b.entryOffsets); n > 0 {
+			// skip the last indexed entry
+			_, delta := s.Read(b.EntriesCalldata[b.entryOffsets[n-1]:])
+			offset = b.entryOffsets[n-1] + delta
+		}
+		b.entryOffsets = append(b.entryOffsets, offset)
 	}
-
-	b.cachedEntries = make([]E, 0, capacity)
-	b.cachedOffset = 0
+	return b.entryOffsets[:nbEntries]
 }
 
 func (b *BlueprintLookupHint[E]) CalldataSize() int {

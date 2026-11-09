@@ -51,7 +51,7 @@ func main() {
 	}
 	data := []templateData{bn254, bls12_377, bls12_381, bw6_761}
 
-	const copyrightHolder = "Consensys Software Inc."
+	const copyrightHolder = "Consensys Incorporated"
 	var bgen = bavard.NewBatchGenerator(copyrightHolder, 2025, "gnark")
 
 	for _, d := range data {
