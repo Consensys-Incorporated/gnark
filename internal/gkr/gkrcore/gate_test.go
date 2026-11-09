@@ -126,7 +126,7 @@ func TestBytecode(t *testing.T) {
 				return api.Add(in[0], 2, in[1], 3)
 			},
 			2, []int64{5},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 1, 0}, Dst: 1}},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 0, 1}}},
 			2,
 		},
 		{
@@ -135,7 +135,7 @@ func TestBytecode(t *testing.T) {
 				return api.Mul(in[0], 2, in[1], 3)
 			},
 			2, []int64{6},
-			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{2, 1, 0}, Dst: 1}},
+			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{2, 0, 1}}},
 			2,
 		},
 		{

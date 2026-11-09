@@ -44,19 +44,9 @@ func (gc *gateCompiler) addInstruction(op gkr.GateOp, inputs ...frontend.Variabl
 		}
 	}
 
-	result := compilationVar{id: uint16(len(gc.instructions) + gc.nbInputs)}
-
 	gc.instructions = append(gc.instructions, recordedInstruction{op: op, operands: operands})
 
-	return result
-}
-
-func (gc *gateCompiler) addInstruction2Plus(op gkr.GateOp, i1, i2 frontend.Variable, in ...frontend.Variable) compilationVar {
-	ins := make([]frontend.Variable, len(in)+2)
-	ins[0] = i1
-	ins[1] = i2
-	copy(ins[2:], in)
-	return gc.addInstruction(op, ins...)
+	return compilationVar{uint16(gc.nbInputs + len(gc.instructions) - 1)}
 }
 
 // Add records an addition operation. Its constant operands are summed into one, placed first. An
@@ -87,16 +77,17 @@ func (gc *gateCompiler) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) f
 	minuend, minuendIsConst := constantValue(operands[0])
 
 	subtrahends := new(big.Int)
+	hasConst := false
 	nbKept := 1
 	for _, v := range operands[1:] {
 		if c, ok := constantValue(v); ok {
 			subtrahends.Add(subtrahends, c)
+			hasConst = true
 		} else {
 			operands[nbKept] = v
 			nbKept++
 		}
 	}
-	hasConst := nbKept < len(operands)
 	operands = operands[:nbKept]
 
 	if minuendIsConst {
@@ -136,8 +127,7 @@ func (gc *gateCompiler) recordCommutative(op gkr.GateOp, identity *big.Int, comb
 		return folded
 	}
 	if hasConst {
-		vars = append(vars, vars[0])
-		vars[0] = folded
+		vars = slices.Insert(vars, 0, frontend.Variable(folded))
 	}
 	return gc.addInstruction(op, vars...)
 }
@@ -162,11 +152,6 @@ func constantValue(v frontend.Variable) (*big.Int, bool) {
 	}
 	val := utils.FromInterface(v)
 	return &val, true
-}
-
-// GetNbInputs returns the number of inputs
-func (gc *gateCompiler) GetNbInputs() int {
-	return gc.nbInputs
 }
 
 // removeDeadCode removes the instructions whose result does not reach the output, and renumbers the
@@ -218,17 +203,14 @@ func (gc *gateCompiler) register(v compilationVar) uint16 {
 // that operand is a value read last by this instruction, and the lowest free register otherwise.
 // The registers of the operands that this instruction reads last are freed afterwards.
 //
-// The register is not that of an operand that is also a later operand.
+// The register is not that of an operand that the instruction also reads at position 2 or later.
 func (gc *gateCompiler) assignRegisters() {
 	nbValues := gc.nbInputs + len(gc.instructions)
 
 	// lastUse[v] is the last instruction that reads the value v: an input, or the result of an
 	// instruction, in this order. The output is read after the last instruction. It is -1 for an
 	// input that the gate does not read.
-	lastUse := make([]int, nbValues)
-	for v := range lastUse {
-		lastUse[v] = -1
-	}
+	lastUse := slices.Repeat([]int{-1}, nbValues)
 	for i, inst := range gc.instructions {
 		for _, o := range inst.operands {
 			if v, ok := o.(compilationVar); ok {
@@ -268,7 +250,7 @@ func (gc *gateCompiler) assignRegisters() {
 			dst = slices.Index(free, true)
 			if dst == -1 {
 				dst = len(free)
-				free = append(free, true)
+				free = append(free, false)
 			}
 		}
 		inst.dst = uint16(dst)
@@ -291,18 +273,19 @@ func (gc *gateCompiler) toBytecode() gkr.GateBytecode {
 		NbIn:         gc.nbInputs,
 	}
 	for i, inst := range gc.instructions {
+		bytecode.Instructions[i].Op = inst.op
 		bytecode.Instructions[i].Dst = inst.dst
 	}
 	nbRegisters := bytecode.NbRegisters()
 
 	constantIndex := make(map[string]int) // from a constant's value to its index in the pool
 	for i, inst := range gc.instructions {
-		bytecode.Instructions[i].Op = inst.op
-		bytecode.Instructions[i].Inputs = make([]uint16, len(inst.operands))
+		out := &bytecode.Instructions[i]
+		out.Inputs = make([]uint16, len(inst.operands))
 		for j, o := range inst.operands {
 			switch o := o.(type) {
 			case compilationVar:
-				bytecode.Instructions[i].Inputs[j] = gc.register(o)
+				out.Inputs[j] = gc.register(o)
 			case *big.Int:
 				index, ok := constantIndex[o.String()]
 				if !ok {
@@ -310,7 +293,7 @@ func (gc *gateCompiler) toBytecode() gkr.GateBytecode {
 					constantIndex[o.String()] = index
 					bytecode.Constants = append(bytecode.Constants, o)
 				}
-				bytecode.Instructions[i].Inputs[j] = uint16(nbRegisters + index)
+				out.Inputs[j] = uint16(nbRegisters + index)
 			}
 		}
 	}
@@ -321,16 +304,13 @@ func (gc *gateCompiler) toBytecode() gkr.GateBytecode {
 // This consists of compiling into bytecode as well as computing gate metadata
 // such as degree and solvable var index for the given field.
 func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.SerializableGate, error) {
-	// Create compiling API
 	compiler := gateCompiler{nbInputs: nbInputs}
 
-	// Create input variables
 	inputs := make([]frontend.Variable, nbInputs)
 	for i := range uint16(nbInputs) {
 		inputs[i] = compilationVar{i}
 	}
 
-	// Execute the gate function to record operations
 	out := f(&compiler, inputs...)
 	outVar, ok := out.(compilationVar)
 	if !ok {
@@ -351,13 +331,10 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 		return gkr.SerializableGate{}, errors.New("only non-trivial or last-reflective gate functions supported")
 	}
 
-	// Only the instructions that the output depends on matter.
-	// Henceforth, we guarantee that the last instruction computes the gate output.
 	compiler.removeDeadCode(outVar)
 	compiler.assignRegisters()
 	bytecode := compiler.toBytecode()
 
-	// Compute degree and solvable variable
 	tester := gateTester{field: field}
 	tester.setGate(bytecode)
 
