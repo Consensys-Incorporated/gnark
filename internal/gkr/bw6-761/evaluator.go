@@ -175,3 +175,196 @@ func (gep *GateEvaluatorPool) DumpAll() {
 	}
 	gep.available = nil
 }
+
+// GateBlockEvaluator evaluates a compiled gate over blocks of instances: each instruction is a sequence of
+// vector method calls over a block. Its registers are slices of at most the block size. The first NbIn are the
+// slices that the caller passes to Evaluate, which the gate may overwrite; the evaluator owns the others.
+// The constants are scalars, never registers: a constant operand feeds the scalar form of its operation.
+type GateBlockEvaluator struct {
+	gate   gkr.GateBytecode
+	regs   []fr.Vector
+	tmp    fr.Vector // the scratch of SumExp17, if the gate has one
+	consts []fr.Element
+	pool   *polynomial.Pool // pool the owned registers were allocated from, if any
+}
+
+// NewGateBlockEvaluator creates a block evaluator for the given compiled gate, for blocks of up to blockSize
+// instances. It allocates the registers that it owns, from the element pool if it is given one. It
+// panics if the gate has no inputs, as a gate compiled before registers existed does, or if a constant
+// operand is not where the evaluators read it first.
+func NewGateBlockEvaluator(gate gkr.GateBytecode, blockSize int, elementPool ...*polynomial.Pool) GateBlockEvaluator {
+	if gate.NbIn == 0 {
+		panic("the gate has no inputs: it was compiled by an older gnark")
+	}
+	if err := gate.CheckEvaluatorAssumptions(); err != nil {
+		panic(err)
+	}
+	e := GateBlockEvaluator{
+		gate:   gate,
+		regs:   make([]fr.Vector, gate.NbRegisters()),
+		consts: make([]fr.Element, len(gate.Constants)),
+	}
+	if len(elementPool) > 0 {
+		e.pool = elementPool[0]
+	}
+	allocate := func() fr.Vector {
+		if e.pool != nil {
+			return e.pool.Make(blockSize)
+		}
+		return make(fr.Vector, blockSize)
+	}
+	for r := gate.NbIn; r < len(e.regs); r++ {
+		e.regs[r] = allocate()
+	}
+	for _, inst := range gate.Instructions {
+		if inst.Op == gkr.OpSumExp17 {
+			e.tmp = allocate()
+			break
+		}
+	}
+	for i, constVal := range gate.Constants {
+		e.consts[i].SetBigInt(constVal)
+	}
+	return e
+}
+
+// Dump returns the registers that the evaluator owns to the pool they were allocated from, if any,
+// and does nothing otherwise. The evaluator must not be used after this.
+func (e *GateBlockEvaluator) Dump() {
+	if e.pool == nil {
+		return
+	}
+	for _, r := range e.regs[e.gate.NbIn:] {
+		e.pool.Dump(r[:cap(r)])
+	}
+	if e.tmp != nil {
+		e.pool.Dump(e.tmp[:cap(e.tmp)])
+	}
+}
+
+// n is the number of instances that Evaluate runs on.
+func (e *GateBlockEvaluator) n() int {
+	return len(e.regs[0])
+}
+
+// Evaluate executes the gate on the inputs, one slice for each of the gate's inputs, all of the same
+// length, at most the block size, which must not overlap, and returns the result, which has that
+// length. The gate may overwrite the inputs.
+// NB! The result is short-lived. It is an input or a register of the evaluator, which the next call
+// may overwrite.
+func (e *GateBlockEvaluator) Evaluate(inputs []fr.Vector) fr.Vector {
+	if len(inputs) != e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got %d", e.gate.NbIn, len(inputs)))
+	}
+	copy(e.regs, inputs)
+	n := e.n()
+	for i, input := range inputs {
+		if len(input) != n {
+			panic(fmt.Sprintf("input %d has %d entries, input 0 has %d", i, len(input), n))
+		}
+	}
+	for r := e.gate.NbIn; r < len(e.regs); r++ {
+		e.regs[r] = e.regs[r][:n]
+	}
+	if e.tmp != nil {
+		e.tmp = e.tmp[:n]
+	}
+
+	for i := range e.gate.Instructions {
+		inst := &e.gate.Instructions[i]
+		dst := e.regs[inst.Dst]
+
+		switch inst.Op {
+		case gkr.OpAdd:
+			e.add2(dst, inst.Inputs[0], inst.Inputs[1])
+			for _, in := range inst.Inputs[2:] {
+				dst.Add(dst, e.operand(in))
+			}
+		case gkr.OpMul:
+			e.mul2(dst, inst.Inputs[0], inst.Inputs[1])
+			for _, in := range inst.Inputs[2:] {
+				dst.Mul(dst, e.operand(in))
+			}
+		case gkr.OpSub:
+			e.sub2(dst, inst.Inputs[0], inst.Inputs[1])
+			for _, in := range inst.Inputs[2:] {
+				dst.Sub(dst, e.operand(in))
+			}
+		case gkr.OpNeg:
+			dst.Neg(e.operand(inst.Inputs[0]))
+		case gkr.OpMulAcc:
+			// result = x[0] * x[1] + x[2]
+			e.mul2(dst, inst.Inputs[0], inst.Inputs[1])
+			e.addTo(dst, inst.Inputs[2])
+		case gkr.OpSumExp17:
+			// result = (x[0] + x[1] + x[2])^17
+			e.add2(dst, inst.Inputs[0], inst.Inputs[1])
+			e.addTo(dst, inst.Inputs[2])
+			e.tmp.Mul(dst, dst)     // x²
+			e.tmp.Mul(e.tmp, e.tmp) // x⁴
+			e.tmp.Mul(e.tmp, e.tmp) // x⁸
+			e.tmp.Mul(e.tmp, e.tmp) // x¹⁶
+			dst.Mul(e.tmp, dst)     // x¹⁷
+		default:
+			panic(fmt.Sprintf("unknown operation: %d", inst.Op))
+		}
+	}
+
+	res := e.regs[e.gate.ResultRegister()]
+	clear(e.regs[:e.gate.NbIn])
+	return res
+}
+
+// isConstant returns whether the operand index names a constant.
+func (e *GateBlockEvaluator) isConstant(index uint16) bool {
+	return int(index) >= len(e.regs)
+}
+
+// operand returns the register that the operand index names.
+func (e *GateBlockEvaluator) operand(index uint16) fr.Vector {
+	return e.regs[index]
+}
+
+// constant returns the constant that the operand index names.
+func (e *GateBlockEvaluator) constant(index uint16) *fr.Element {
+	return &e.consts[int(index)-len(e.regs)]
+}
+
+// addTo adds the operand in to dst.
+func (e *GateBlockEvaluator) addTo(dst fr.Vector, in uint16) {
+	if e.isConstant(in) {
+		dst.ScalarAdd(dst, e.constant(in))
+	} else {
+		dst.Add(dst, e.operand(in))
+	}
+}
+
+// add2 sets dst to the sum of the operands in0 and in1, of which in1 is a register.
+func (e *GateBlockEvaluator) add2(dst fr.Vector, in0, in1 uint16) {
+	if e.isConstant(in0) {
+		dst.ScalarAdd(e.operand(in1), e.constant(in0))
+	} else {
+		dst.Add(e.operand(in0), e.operand(in1))
+	}
+}
+
+// mul2 sets dst to the product of the operands in0 and in1, of which in1 is a register.
+func (e *GateBlockEvaluator) mul2(dst fr.Vector, in0, in1 uint16) {
+	if e.isConstant(in0) {
+		dst.ScalarMul(e.operand(in1), e.constant(in0))
+	} else {
+		dst.Mul(e.operand(in0), e.operand(in1))
+	}
+}
+
+// sub2 sets dst to the operand in0 minus the operand in1, of which at most one is a constant.
+func (e *GateBlockEvaluator) sub2(dst fr.Vector, in0, in1 uint16) {
+	switch {
+	case e.isConstant(in0):
+		dst.ScalarSubFrom(e.constant(in0), e.operand(in1))
+	case e.isConstant(in1):
+		dst.ScalarSub(e.operand(in0), e.constant(in1))
+	default:
+		dst.Sub(e.operand(in0), e.operand(in1))
+	}
+}

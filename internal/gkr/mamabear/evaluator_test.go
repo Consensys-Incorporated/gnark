@@ -6,13 +6,133 @@
 package gkrmamabear
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/field/mamabear"
 	"github.com/consensys/gnark-crypto/field/mamabear/extensions"
+	"github.com/consensys/gnark-crypto/field/mamabear/extensions/polynomial"
+	basePolynomial "github.com/consensys/gnark-crypto/field/mamabear/polynomial"
 	"github.com/consensys/gnark/gkr"
+	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
+	"github.com/stretchr/testify/require"
 )
+
+const (
+	testBlockSize = 64
+	// a block of one instance, and one that is not a multiple of 16
+	testSingle  = 1
+	testPartial = 37
+)
+
+// testGates returns the compiled gates of the MiMC, Poseidon2 and MiMC cipher circuits, and the gate
+// with a constant in every position the compiler allows one.
+func testGates(t *testing.T) []gkr.GateBytecode {
+	t.Helper()
+	// the field only matters for the degree and the solvable variable of the gates
+	cache := gkrtesting.NewCache(gkr.MamaBearE3())
+
+	circuits := []gkrcore.RawCircuit{
+		gkrtesting.MiMCCircuit(5),
+		gkrtesting.Poseidon2Circuit(4, 3),
+		gkrtesting.SingleMimcCipherGateCircuit(),
+		{{}, {}, {Gate: gkrtesting.ConstantPositionsGate, Inputs: []int{0, 1}}},
+	}
+
+	var gates []gkr.GateBytecode
+	for _, raw := range circuits {
+		_, circuit := cache.Compile(t, raw)
+		for _, wire := range circuit {
+			if !wire.IsInput() {
+				gates = append(gates, wire.Gate.Evaluate)
+			}
+		}
+	}
+	return gates
+}
+
+// TestGateBlockEvaluator checks that the block evaluator of a gate returns what the single-instance
+// evaluator does, for blocks of one instance, of a full block and of a block that is not a multiple of
+// 16.
+func TestGateBlockEvaluator(t *testing.T) {
+	gates := testGates(t)
+	pool := basePolynomial.NewPool(testBlockSize)
+
+	for _, n := range []int{testSingle, testBlockSize, testPartial} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			for gateI, gate := range gates {
+				inputs := make([]mamabear.Vector, gate.NbIn)
+				for i := range inputs {
+					inputs[i] = make(mamabear.Vector, n)
+					for j := range inputs[i] {
+						_, err := inputs[i][j].SetRandom()
+						require.NoError(t, err)
+					}
+				}
+
+				single := NewGateEvaluator(gate)
+				block := NewGateBlockEvaluator(gate, testBlockSize, &pool)
+				blockInputs := make([]mamabear.Vector, gate.NbIn)
+				for i := range blockInputs {
+					blockInputs[i] = append(mamabear.Vector(nil), inputs[i]...)
+				}
+				res := block.Evaluate(blockInputs)
+				require.Len(t, res, n)
+
+				in := make([]mamabear.Element, gate.NbIn)
+				for j := range n {
+					for i := range in {
+						in[i] = inputs[i][j]
+					}
+					want := single.Evaluate(in...)
+					require.True(t, want.Equal(&res[j]), "gate %d, instance %d", gateI, j)
+				}
+				block.Dump()
+			}
+		})
+	}
+}
+
+// TestGateBlockEvaluatorMixed is TestGateBlockEvaluator for the evaluators over the extension.
+func TestGateBlockEvaluatorMixed(t *testing.T) {
+	gates := testGates(t)
+	pool := polynomial.NewPoolE3(testBlockSize)
+
+	for _, n := range []int{testSingle, testBlockSize, testPartial} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			for gateI, gate := range gates {
+				inputs := make([]extensions.VectorE3, gate.NbIn)
+				for i := range inputs {
+					inputs[i] = make(extensions.VectorE3, n)
+					for j := range inputs[i] {
+						_, err := inputs[i][j].SetRandom()
+						require.NoError(t, err)
+					}
+				}
+
+				single := NewGateEvaluatorMixed(gate)
+				block := NewGateBlockEvaluatorMixed(gate, testBlockSize, &pool)
+				blockInputs := make([]extensions.VectorE3, gate.NbIn)
+				for i := range blockInputs {
+					blockInputs[i] = append(extensions.VectorE3(nil), inputs[i]...)
+				}
+				res := block.Evaluate(blockInputs)
+				require.Len(t, res, n)
+
+				in := make([]extensions.E3, gate.NbIn)
+				for j := range n {
+					for i := range in {
+						in[i] = inputs[i][j]
+					}
+					want := single.Evaluate(in...)
+					require.True(t, want.Equal(&res[j]), "gate %d, instance %d", gateI, j)
+				}
+				block.Dump()
+			}
+		})
+	}
+}
 
 func TestEvaluatorsMatchGateFunctions(t *testing.T) {
 	field := gkr.MamaBearE3()

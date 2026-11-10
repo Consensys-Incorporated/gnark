@@ -20,6 +20,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestVectorNegAndScalarOps(t *testing.T) {
+	const size = 17
+	a := make(Vector, size)
+	a.MustSetRandom()
+	var c Element
+	c.MustSetRandom()
+
+	neg, scalarAdd, scalarSub, subFrom := make(Vector, size), make(Vector, size), make(Vector, size), make(Vector, size)
+	neg.Neg(a)
+	scalarAdd.ScalarAdd(a, &c)
+	scalarSub.ScalarSub(a, &c)
+	subFrom.ScalarSubFrom(&c, a)
+
+	for i := range a {
+		var e Element
+		require.Equal(t, *e.Neg(&a[i]), neg[i])
+		require.Equal(t, *e.Add(&a[i], &c), scalarAdd[i])
+		require.Equal(t, *e.Sub(&a[i], &c), scalarSub[i])
+		require.Equal(t, *e.Sub(&c, &a[i]), subFrom[i])
+	}
+
+	// the destination may alias a
+	aliased := make(Vector, size)
+	copy(aliased, a)
+	aliased.Neg(aliased)
+	require.Equal(t, neg, aliased)
+}
+
 func TestVectorSort(t *testing.T) {
 	assert := require.New(t)
 

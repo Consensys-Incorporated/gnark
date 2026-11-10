@@ -348,6 +348,50 @@ func (vector Vector) Equal(other Vector) bool {
 	return slices.Equal(vector, other)
 }
 
+// Neg sets self to -a, element-wise. self may alias a.
+// It panics if the vectors don't have the same length.
+func (vector *Vector) Neg(a Vector) {
+	if len(a) != len(*vector) {
+		panic("vector.Neg: vectors don't have the same length")
+	}
+	for i := range a {
+		(*vector)[i].Neg(&a[i])
+	}
+}
+
+// ScalarAdd adds the scalar c to each element of a and stores the result in self.
+// self may alias a. It panics if the vectors don't have the same length.
+func (vector *Vector) ScalarAdd(a Vector, c *Element) {
+	if len(a) != len(*vector) {
+		panic("vector.ScalarAdd: vectors don't have the same length")
+	}
+	for i := range a {
+		(*vector)[i].Add(&a[i], c)
+	}
+}
+
+// ScalarSub subtracts the scalar c from each element of a and stores the result in self.
+// self may alias a. It panics if the vectors don't have the same length.
+func (vector *Vector) ScalarSub(a Vector, c *Element) {
+	if len(a) != len(*vector) {
+		panic("vector.ScalarSub: vectors don't have the same length")
+	}
+	for i := range a {
+		(*vector)[i].Sub(&a[i], c)
+	}
+}
+
+// ScalarSubFrom subtracts each element of a from the scalar c and stores the result in self.
+// self may alias a. It panics if the vectors don't have the same length.
+func (vector *Vector) ScalarSubFrom(c *Element, a Vector) {
+	if len(a) != len(*vector) {
+		panic("vector.ScalarSubFrom: vectors don't have the same length")
+	}
+	for i := range a {
+		(*vector)[i].Sub(c, &a[i])
+	}
+}
+
 func addVecGeneric(res, a, b Vector) {
 	if len(a) != len(b) || len(a) != len(res) {
 		panic("vector.Add: vectors don't have the same length")
