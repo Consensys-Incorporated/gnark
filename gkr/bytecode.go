@@ -35,7 +35,8 @@ type GateInstruction struct {
 
 // GateBytecode represents a gate executable compiled into a sequence of instructions.
 // The compiled form is independent of curve-specific types and can be serialized.
-// The operand space is the registers, then the constants.
+// The operand space is the registers, then the constants. Registers 0, …, NbIn-1 hold the inputs,
+// which no instruction writes.
 // The gate's result is the Dst of the last instruction, or the last input's register if there is no
 // instruction.
 type GateBytecode struct {
@@ -71,12 +72,16 @@ func (g *GateBytecode) EvaluatorSize() int {
 	return g.NbRegisters() + g.NbConstants()
 }
 
-// CheckConstantPositions returns an error naming the first instruction whose constant operands are
-// not where the evaluators read them first: an Add or Mul can only have them at index 0, a Sub can
-// only have them at index 0 or 1, and the operand at index 1 of a MulAcc is a register.
+// CheckConstantPositions returns an error naming the first instruction that writes the register of an
+// input, or whose constant operands are not where the evaluators read them first: an Add or Mul can
+// only have them at index 0, a Sub can only have them at index 0 or 1, and the operand at index 1 of a
+// MulAcc is a register.
 func (g *GateBytecode) CheckConstantPositions() error {
 	nbRegisters := g.NbRegisters()
 	for i, inst := range g.Instructions {
+		if int(inst.Dst) < g.NbIn {
+			return fmt.Errorf("instruction %d (%s): writes the register of input %d", i, inst.Op, inst.Dst)
+		}
 		var lastPosition int // the last position a constant may take
 		switch inst.Op {
 		case OpAdd, OpMul:

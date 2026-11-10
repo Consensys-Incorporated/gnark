@@ -217,9 +217,10 @@ func (gc *gateCompiler) register(v compilationVar) uint16 {
 }
 
 // assignRegisters sets the register of each instruction's result. The inputs start in registers
-// 0, …, nbInputs-1. An instruction's register is that of its first or else its second operand if
-// that operand is a value read last by this instruction, and the lowest free register otherwise.
-// The registers of the operands that this instruction reads last are freed afterwards.
+// 0, …, nbInputs-1, which no result takes. An instruction's register is that of its first or else its
+// second operand if that operand is the result of an instruction read last by this instruction, and
+// the lowest free register otherwise. The registers of the results that this instruction reads last
+// are freed afterwards.
 //
 // The register is not that of an operand that the instruction also reads at position 2 or later.
 func (gc *gateCompiler) assignRegisters() {
@@ -238,23 +239,20 @@ func (gc *gateCompiler) assignRegisters() {
 	}
 	lastUse[nbValues-1] = len(gc.instructions)
 
-	// free[r] says whether r holds no value that is read later.
+	// free[r] says whether r holds no value that is read later. The inputs' registers never are.
 	free := make([]bool, gc.nbInputs)
-	for v := range gc.nbInputs {
-		free[v] = lastUse[v] < 0
-	}
 
 	for i := range gc.instructions {
 		inst := &gc.instructions[i]
 
-		// tryInputAsDst returns the register of the operand j if it is a value that this instruction
-		// reads last, and is not also an operand at position 2 or later; otherwise -1.
+		// tryInputAsDst returns the register of the operand j if it is the result of an instruction that
+		// this instruction reads last, and is not also an operand at position 2 or later; otherwise -1.
 		tryInputAsDst := func(j int) int {
 			if j >= len(inst.operands) {
 				return -1
 			}
 			v, ok := inst.operands[j].(compilationVar)
-			if !ok || lastUse[v.id] != i || slices.Contains(inst.operands[min(2, len(inst.operands)):], inst.operands[j]) {
+			if !ok || int(v.id) < gc.nbInputs || lastUse[v.id] != i || slices.Contains(inst.operands[min(2, len(inst.operands)):], inst.operands[j]) {
 				return -1
 			}
 			return int(gc.register(v))
@@ -274,7 +272,7 @@ func (gc *gateCompiler) assignRegisters() {
 		inst.dst = uint16(dst)
 
 		for _, o := range inst.operands {
-			if v, ok := o.(compilationVar); ok && lastUse[v.id] == i {
+			if v, ok := o.(compilationVar); ok && int(v.id) >= gc.nbInputs && lastUse[v.id] == i {
 				free[gc.register(v)] = true
 			}
 		}

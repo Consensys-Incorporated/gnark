@@ -117,8 +117,8 @@ func TestBytecode(t *testing.T) {
 				return api.Add(in[0], api.Add(2, 3))
 			},
 			1, []int64{5},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
-			1,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 0}, Dst: 1}},
+			2,
 		},
 		{
 			"x+2+y+3: constants merge and come first",
@@ -126,8 +126,8 @@ func TestBytecode(t *testing.T) {
 				return api.Add(in[0], 2, in[1], 3)
 			},
 			2, []int64{5},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 0, 1}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{3, 0, 1}, Dst: 2}},
+			3,
 		},
 		{
 			"x*2*y*3: constants merge and come first",
@@ -135,8 +135,8 @@ func TestBytecode(t *testing.T) {
 				return api.Mul(in[0], 2, in[1], 3)
 			},
 			2, []int64{6},
-			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{2, 0, 1}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{3, 0, 1}, Dst: 2}},
+			3,
 		},
 		{
 			"x*7: constant comes first",
@@ -144,8 +144,8 @@ func TestBytecode(t *testing.T) {
 				return api.Mul(in[0], 7)
 			},
 			1, []int64{7},
-			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{1, 0}}},
-			1,
+			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{2, 0}, Dst: 1}},
+			2,
 		},
 		{
 			"x*((2*3)-1): folding nests",
@@ -153,8 +153,8 @@ func TestBytecode(t *testing.T) {
 				return api.Mul(in[0], api.Sub(api.Mul(2, 3), 1))
 			},
 			1, []int64{5},
-			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{1, 0}}},
-			1,
+			[]gkr.GateInstruction{{Op: gkr.OpMul, Inputs: []uint16{2, 0}, Dst: 1}},
+			2,
 		},
 		{
 			"x+(2-5): folding is exact over the integers",
@@ -162,8 +162,8 @@ func TestBytecode(t *testing.T) {
 				return api.Add(in[0], api.Sub(2, 5))
 			},
 			1, []int64{-3},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
-			1,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 0}, Dst: 1}},
+			2,
 		},
 		{
 			"10-x-3-y-2: a constant minuend absorbs the constant subtrahends",
@@ -171,8 +171,8 @@ func TestBytecode(t *testing.T) {
 				return api.Sub(10, in[0], 3, in[1], 2)
 			},
 			2, []int64{5},
-			[]gkr.GateInstruction{{Op: gkr.OpSub, Inputs: []uint16{2, 0, 1}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpSub, Inputs: []uint16{3, 0, 1}, Dst: 2}},
+			3,
 		},
 		{
 			"x-3-y-2: constant subtrahends merge into one, placed second",
@@ -180,8 +180,8 @@ func TestBytecode(t *testing.T) {
 				return api.Sub(in[0], 3, in[1], 2)
 			},
 			2, []int64{5},
-			[]gkr.GateInstruction{{Op: gkr.OpSub, Inputs: []uint16{0, 2, 1}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpSub, Inputs: []uint16{0, 3, 1}, Dst: 2}},
+			3,
 		},
 		{
 			"x-y-4: a single constant subtrahend moves second",
@@ -189,8 +189,8 @@ func TestBytecode(t *testing.T) {
 				return api.Sub(in[0], in[1], 4)
 			},
 			2, []int64{4},
-			[]gkr.GateInstruction{{Op: gkr.OpSub, Inputs: []uint16{0, 2, 1}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpSub, Inputs: []uint16{0, 3, 1}, Dst: 2}},
+			3,
 		},
 		{
 			"x+y*z: multiplicands first, addend last",
@@ -198,8 +198,8 @@ func TestBytecode(t *testing.T) {
 				return api.MulAcc(in[0], in[1], in[2])
 			},
 			3, nil,
-			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{1, 2, 0}, Dst: 1}},
-			3,
+			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{1, 2, 0}, Dst: 3}},
+			4,
 		},
 		{
 			"x+3*y: a constant multiplicand stays first",
@@ -207,8 +207,8 @@ func TestBytecode(t *testing.T) {
 				return api.MulAcc(in[0], 3, in[1])
 			},
 			2, []int64{3},
-			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{2, 1, 0}, Dst: 1}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{3, 1, 0}, Dst: 2}},
+			3,
 		},
 		{
 			"x+y*3: a constant multiplicand moves first",
@@ -216,8 +216,8 @@ func TestBytecode(t *testing.T) {
 				return api.MulAcc(in[0], in[1], 3)
 			},
 			2, []int64{3},
-			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{2, 1, 0}, Dst: 1}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{3, 1, 0}, Dst: 2}},
+			3,
 		},
 		{
 			"5+x*y: a constant addend stays last",
@@ -225,8 +225,8 @@ func TestBytecode(t *testing.T) {
 				return api.MulAcc(5, in[0], in[1])
 			},
 			2, []int64{5},
-			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{0, 1, 2}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpMulAcc, Inputs: []uint16{0, 1, 3}, Dst: 2}},
+			3,
 		},
 		{
 			"(x+y+z)^17: inputs keep their order",
@@ -234,8 +234,8 @@ func TestBytecode(t *testing.T) {
 				return api.SumExp17(in[0], in[1], in[2])
 			},
 			3, nil,
-			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{0, 1, 2}}},
-			3,
+			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{0, 1, 2}, Dst: 3}},
+			4,
 		},
 		{
 			"(x+3+y)^17: a constant moves first",
@@ -243,8 +243,8 @@ func TestBytecode(t *testing.T) {
 				return api.SumExp17(in[0], 3, in[1])
 			},
 			2, []int64{3},
-			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{2, 0, 1}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{3, 0, 1}, Dst: 2}},
+			3,
 		},
 		{
 			"(x+y+3)^17: a constant swaps with the first input",
@@ -252,8 +252,8 @@ func TestBytecode(t *testing.T) {
 				return api.SumExp17(in[0], in[1], 3)
 			},
 			2, []int64{3},
-			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{2, 1, 0}, Dst: 1}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{3, 1, 0}, Dst: 2}},
+			3,
 		},
 		{
 			"(x+4+3)^17: constants stay unmerged",
@@ -261,8 +261,8 @@ func TestBytecode(t *testing.T) {
 				return api.SumExp17(in[0], 4, 3)
 			},
 			1, []int64{4, 3},
-			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{1, 0, 2}}},
-			1,
+			[]gkr.GateInstruction{{Op: gkr.OpSumExp17, Inputs: []uint16{2, 0, 3}, Dst: 1}},
+			2,
 		},
 		{
 			"x+y with a constant used only after the output: the constant gets no index",
@@ -272,8 +272,8 @@ func TestBytecode(t *testing.T) {
 				return out
 			},
 			2, nil,
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1}, Dst: 2}},
+			3,
 		},
 		{
 			"((x+y)*z)+w: every operand is last read by its instruction, so one register is reused",
@@ -282,11 +282,11 @@ func TestBytecode(t *testing.T) {
 			},
 			4, nil,
 			[]gkr.GateInstruction{
-				{Op: gkr.OpAdd, Inputs: []uint16{0, 1}},
-				{Op: gkr.OpMul, Inputs: []uint16{0, 2}},
-				{Op: gkr.OpAdd, Inputs: []uint16{0, 3}},
+				{Op: gkr.OpAdd, Inputs: []uint16{0, 1}, Dst: 4},
+				{Op: gkr.OpMul, Inputs: []uint16{4, 2}, Dst: 4},
+				{Op: gkr.OpAdd, Inputs: []uint16{4, 3}, Dst: 4},
 			},
-			4,
+			5,
 		},
 		{
 			"(x*y)+(x+y): the first operand is read again, so the product takes a new register",
@@ -296,31 +296,31 @@ func TestBytecode(t *testing.T) {
 			2, nil,
 			[]gkr.GateInstruction{
 				{Op: gkr.OpMul, Inputs: []uint16{0, 1}, Dst: 2},
-				{Op: gkr.OpAdd, Inputs: []uint16{0, 1}},
-				{Op: gkr.OpAdd, Inputs: []uint16{2, 0}, Dst: 2},
+				{Op: gkr.OpAdd, Inputs: []uint16{0, 1}, Dst: 3},
+				{Op: gkr.OpAdd, Inputs: []uint16{2, 3}, Dst: 2},
 			},
-			3,
+			4,
 		},
 		{
-			"x+y+x: the first operand is also a later operand, so the result takes the second operand's register",
+			"x+y+x: the first operand is also a later operand, so the result takes a new register",
 			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
 				return api.Add(in[0], in[1], in[0])
 			},
 			2, nil,
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1, 0}, Dst: 1}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1, 0}, Dst: 2}},
+			3,
 		},
 		{
-			"x*(x+y): the first operand is read again, so the sum takes the second operand's register",
+			"x*(x+y): the product takes the register of the sum, an instruction result read last",
 			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
 				return api.Mul(in[0], api.Add(in[0], in[1]))
 			},
 			2, nil,
 			[]gkr.GateInstruction{
-				{Op: gkr.OpAdd, Inputs: []uint16{0, 1}, Dst: 1},
-				{Op: gkr.OpMul, Inputs: []uint16{0, 1}},
+				{Op: gkr.OpAdd, Inputs: []uint16{0, 1}, Dst: 2},
+				{Op: gkr.OpMul, Inputs: []uint16{0, 2}, Dst: 2},
 			},
-			2,
+			3,
 		},
 		{
 			"x*y is computed and discarded, x+y is returned: the product is removed",
@@ -329,8 +329,8 @@ func TestBytecode(t *testing.T) {
 				return api.Add(in[0], in[1])
 			},
 			2, nil,
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1}, Dst: 2}},
+			3,
 		},
 		{
 			"x+2·3: a multiply-accumulate of two constants records an addition, constant first",
@@ -338,8 +338,8 @@ func TestBytecode(t *testing.T) {
 				return api.MulAcc(in[0], 2, 3)
 			},
 			1, []int64{6},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
-			1,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 0}, Dst: 1}},
+			2,
 		},
 		{
 			"x+(-5): the negation of a constant is a constant",
@@ -347,8 +347,8 @@ func TestBytecode(t *testing.T) {
 				return api.Add(in[0], api.Neg(5))
 			},
 			1, []int64{-5},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
-			1,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 0}, Dst: 1}},
+			2,
 		},
 		{
 			"x+(1+2·3): a multiply-accumulate of constants is a constant",
@@ -356,8 +356,8 @@ func TestBytecode(t *testing.T) {
 				return api.Add(in[0], api.MulAcc(1, 2, 3))
 			},
 			1, []int64{7},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
-			1,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 0}, Dst: 1}},
+			2,
 		},
 		{
 			"x+(1+2+3)^17: a sum raised to the power 17 of constants is a constant",
@@ -365,28 +365,28 @@ func TestBytecode(t *testing.T) {
 				return api.Add(in[0], api.SumExp17(1, 2, 3))
 			},
 			1, []int64{16926659444736},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
-			1,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 0}, Dst: 1}},
+			2,
 		},
 		{
 			"hand-built: a constant in position 2 of an Add",
 			nil,
 			2, []int64{5},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1, 2}}},
-			2,
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1, 3}, Dst: 2}},
+			3,
 		},
 		{
-			"(y*z)+(y+z): the register of the input that is never read is free from the start",
+			"(y*z)+(y+z): the register of an input that is never read is not reused",
 			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
 				return api.Add(api.Mul(in[1], in[2]), api.Add(in[1], in[2]))
 			},
 			3, nil,
 			[]gkr.GateInstruction{
-				{Op: gkr.OpMul, Inputs: []uint16{1, 2}},
-				{Op: gkr.OpAdd, Inputs: []uint16{1, 2}, Dst: 1},
-				{Op: gkr.OpAdd, Inputs: []uint16{0, 1}},
+				{Op: gkr.OpMul, Inputs: []uint16{1, 2}, Dst: 3},
+				{Op: gkr.OpAdd, Inputs: []uint16{1, 2}, Dst: 4},
+				{Op: gkr.OpAdd, Inputs: []uint16{3, 4}, Dst: 3},
 			},
-			3,
+			5,
 		},
 	}
 
@@ -415,6 +415,19 @@ func TestBytecode(t *testing.T) {
 			assert.NoError(t, compiled.Evaluate.CheckConstantPositions())
 		})
 	}
+}
+
+// TestCheckConstantPositionsRejectsInputWrite checks that a hand-built bytecode with an instruction
+// that writes the register of an input is rejected, naming the instruction.
+func TestCheckConstantPositionsRejectsInputWrite(t *testing.T) {
+	bytecode := gkr.GateBytecode{
+		Instructions: []gkr.GateInstruction{
+			{Op: gkr.OpAdd, Inputs: []uint16{0, 1}, Dst: 2},
+			{Op: gkr.OpMul, Inputs: []uint16{2, 1}, Dst: 1},
+		},
+		NbIn: 2,
+	}
+	assert.EqualError(t, bytecode.CheckConstantPositions(), "instruction 1 (mul): writes the register of input 1")
 }
 
 func TestCompileGateFunction(t *testing.T) {

@@ -27,13 +27,9 @@ type GateEvaluator struct {
 }
 
 // NewGateEvaluator creates an evaluator for the given compiled gate.
-// The constants are preloaded and the evaluator is ready for evaluation. It panics if the gate has
-// no inputs, as a gate compiled before registers existed does, or if a constant operand is not
-// where the evaluator reads it first.
+// The constants are preloaded and the evaluator is ready for evaluation. It panics if the gate's
+// CheckConstantPositions returns an error.
 func NewGateEvaluator(gate gkr.GateBytecode, elementPool ...*polynomial.Pool) GateEvaluator {
-	if gate.NbIn == 0 {
-		panic("the gate has no inputs: it was compiled by an older gnark")
-	}
 	if err := gate.CheckConstantPositions(); err != nil {
 		panic(err)
 	}
