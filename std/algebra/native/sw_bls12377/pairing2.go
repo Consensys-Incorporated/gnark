@@ -485,6 +485,12 @@ func (pr *Pairing) MuxGt(sel frontend.Variable, inputs ...*GT) *GT {
 
 // AssertIsOnCurve asserts if p belongs to the curve. It doesn't modify p.
 func (pr *Pairing) AssertIsOnCurve(p *G1Affine) {
+	pr.assertIsOnCurve(p)
+}
+
+// assertIsOnCurve is AssertIsOnCurve, and returns 1 if p is the point at
+// infinity (0,0) and 0 otherwise.
+func (pr *Pairing) assertIsOnCurve(p *G1Affine) frontend.Variable {
 	// (X,Y) ∈ {Y² == X³ + 1} U (0,0)
 
 	// if p=(0,0) we assign b=0 and continue
@@ -495,16 +501,16 @@ func (pr *Pairing) AssertIsOnCurve(p *G1Affine) {
 	right := pr.api.Mul(p.X, pr.api.Mul(p.X, p.X))
 	right = pr.api.Add(right, b)
 	pr.api.AssertIsEqual(left, right)
+	return selector
 }
 
 func (pr *Pairing) AssertIsOnG1(P *G1Affine) {
 	// 1- Check P is on the curve
-	pr.AssertIsOnCurve(P)
+	isInfinity := pr.assertIsOnCurve(P)
 
 	// The point at infinity (0,0) is in G1, but the incomplete additions in
 	// scalarMulBySeed can't handle it. In this case we run the check on the
 	// generator instead.
-	isInfinity := pr.api.And(pr.api.IsZero(P.X), pr.api.IsZero(P.Y))
 	_, _, g1, _ := bls12377.Generators()
 	P = &G1Affine{
 		X: pr.api.Select(isInfinity, g1.X.BigInt(new(big.Int)), P.X),

@@ -179,5 +179,11 @@ func TestAssertIsOnG1Infinity(t *testing.T) {
 	assert.CheckCircuit(&assertIsOnG1InfinityCircuit{},
 		test.WithValidAssignment(&assertIsOnG1InfinityCircuit{P: NewG1Affine(inf)}),
 		test.WithValidAssignment(&assertIsOnG1InfinityCircuit{P: NewG1Affine(g1)}),
+		// (0,1) is on the curve but has order 3, so it is not in G1.
+		test.WithInvalidAssignment(&assertIsOnG1InfinityCircuit{P: G1Affine{X: 0, Y: 1}}),
+		// (1,0) is not on the curve.
+		test.WithInvalidAssignment(&assertIsOnG1InfinityCircuit{P: G1Affine{X: 1, Y: 0}}),
+		// only one coordinate is zero, so this is not the point at infinity.
+		test.WithInvalidAssignment(&assertIsOnG1InfinityCircuit{P: G1Affine{X: 0, Y: 2}}),
 		test.WithCurves(ecc.BW6_761), test.WithBackends(backend.GROTH16, backend.PLONK))
 }
