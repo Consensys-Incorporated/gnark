@@ -69,7 +69,7 @@ func NewG2(api frontend.API) (*G2, error) {
 	}
 	w := fp.NewElement("4002409555221667392624310435006688643935503118305586438271171395842971157480381377015405980053539358417135540939436")
 	w2 := fp.NewElement("793479390729215512621379701633421447060886740281060493010456487427281649075476305620758731620350")
-	eigenvalue := fr.NewElement("228988810152649578064853576960394133503")
+	eigenvalue := fr.NewElement(g2Eigenvalue)
 	u1 := fp.NewElement("4002409555221667392624310435006688643935503118305586438271171395842971157480381377015405980053539358417135540939437")
 	v := fields_bls12381.E2{
 		A0: *fp.NewElement("2973677408986561043442465346520108879172042883009249989176415018091420807192182638567116318576472649347015917690530"),
@@ -536,24 +536,29 @@ func (g2 G2) doubleAndAddSelect(b frontend.Variable, p, q *G2Affine) *G2Affine {
 	}
 }
 
-func (g2 *G2) computeTwistEquation(Q *G2Affine) (left, right *fields_bls12381.E2) {
-	// Twist: Y² == X³ + aX + b, where a=0 and b=4(1+u)
-	// (X,Y) ∈ {Y² == X³ + aX + b} U (0,0)
-	bTwist := fields_bls12381.E2{
-		A0: *g2.fp.NewElement("4"),
-		A1: *g2.fp.NewElement("4"),
-	}
-	// if Q=(0,0) we assign b=0 otherwise 4(1+u), and continue
-	selector := g2.api.And(g2.Ext2.IsZero(&Q.P.X), g2.Ext2.IsZero(&Q.P.Y))
-	b := g2.Ext2.Select(selector, g2.Ext2.Zero(), &bTwist)
+// twistB returns the constant b = 4(1+u) of the twist E': Y² = X³ + b.
+func (g2 *G2) twistB() *fields_bls12381.E2 {
+	return &fields_bls12381.E2{A0: *g2.fp.NewElement("4"), A1: *g2.fp.NewElement("4")}
+}
 
+// curveEquation returns (Y², X³ + b) for the point Q, with X³ + b expanded over
+// 𝔽ₚ² (u² = −1).
+func (g2 *G2) curveEquation(Q *G2Affine, b *fields_bls12381.E2) (left, right *fields_bls12381.E2) {
 	left = g2.Ext2.Square(&Q.P.Y)
 	right = &fields_bls12381.E2{
 		A0: *g2.fp.Eval([][]*baseEl{{&Q.P.X.A0, &Q.P.X.A0, &Q.P.X.A0}, {&Q.P.X.A0, &Q.P.X.A1, &Q.P.X.A1}, {&b.A0}}, []int{1, -3, 1}),
 		A1: *g2.fp.Eval([][]*baseEl{{&Q.P.X.A1, &Q.P.X.A0, &Q.P.X.A0}, {&Q.P.X.A1, &Q.P.X.A1, &Q.P.X.A1}, {&b.A1}}, []int{3, -1, 1}),
 	}
-
 	return left, right
+}
+
+func (g2 *G2) computeTwistEquation(Q *G2Affine) (left, right *fields_bls12381.E2) {
+	// Twist: Y² == X³ + aX + b, where a=0 and b=4(1+u)
+	// (X,Y) ∈ {Y² == X³ + aX + b} U (0,0)
+	// if Q=(0,0) we assign b=0 otherwise 4(1+u), and continue
+	selector := g2.api.And(g2.Ext2.IsZero(&Q.P.X), g2.Ext2.IsZero(&Q.P.Y))
+	b := g2.Ext2.Select(selector, g2.Ext2.Zero(), g2.twistB())
+	return g2.curveEquation(Q, b)
 }
 
 func (g2 *G2) AssertIsOnTwist(Q *G2Affine) {
@@ -586,16 +591,13 @@ func (g2 *G2) Select(b frontend.Variable, p, q *G2Affine) *G2Affine {
 	}
 }
 
-// AssertIsEqual asserts that p and q are the same point.
 // assertIsOnCurve asserts that P satisfies the BLS12-381 G2 (twist) curve
-// equation Y² = X³ + b over 𝔽ₚ². The constant b is recovered from the
-// (on-curve, in-subgroup) generator as b = Gy² − Gx³, avoiding a hardcoded literal.
+// equation Y² = X³ + 4(1+u) over 𝔽ₚ². Unlike [G2.AssertIsOnTwist], it rejects
+// the (0,0) encoding of the point at infinity, and since b is a constant it
+// needs no selector on P = (0,0).
 func (g2 *G2) assertIsOnCurve(P *G2Affine) {
-	x3 := g2.Ext2.Mul(&P.P.X, g2.Ext2.Square(&P.P.X))
-	lhs := g2.Ext2.Sub(g2.Ext2.Square(&P.P.Y), x3)
-	gx3 := g2.Ext2.Mul(&g2.g2Gen.X, g2.Ext2.Square(&g2.g2Gen.X))
-	rhs := g2.Ext2.Sub(g2.Ext2.Square(&g2.g2Gen.Y), gx3)
-	g2.Ext2.AssertIsEqual(lhs, rhs)
+	left, right := g2.curveEquation(P, g2.twistB())
+	g2.Ext2.AssertIsEqual(left, right)
 }
 
 // mulByConstant returns [k]P for a fixed k > 0, via a width-4 signed-window (NAF)
@@ -658,6 +660,7 @@ func naf4Digits(k *big.Int) []int8 {
 	return digits
 }
 
+// AssertIsEqual asserts that p and q are the same point.
 func (g2 *G2) AssertIsEqual(p, q *G2Affine) {
 	g2.Ext2.AssertIsEqual(&p.P.X, &q.P.X)
 	g2.Ext2.AssertIsEqual(&p.P.Y, &q.P.Y)
@@ -780,9 +783,13 @@ func (g2 *G2) ScalarMul(Q *G2Affine, s *Scalar, opts ...algopts.AlgebraOption) *
 // subgroup, ord(T) | c) has no on-curve preimage under [c], so it is rejected.
 //
 // Being point-based (independent of the scalar-mul inputs) it can be applied once
-// to an aggregate MSM output instead of once per summand: each summand's
-// accumulator forces its subgroup part exactly, so binding the sum forces the net
-// torsion to O. See [G2.MultiScalarMul].
+// to an aggregate MSM output instead of once per summand, provided every summand
+// is on the curve. See [G2.MultiScalarMul].
+//
+// Applied to the output R of [G2.scalarMulGLVAndFakeGLV] it also discharges that
+// gadget's on-curve obligation for R: R = [c]S with S on the curve forces R onto
+// the curve (or R = (0,0), the encoding of O). Applied to a sum of several
+// outputs it says nothing about the individual outputs.
 //
 // The R = O case (encoded (0,0)) has no affine preimage, so a dummy in-subgroup
 // point is substituted and the equality is made vacuous to preserve completeness.
@@ -823,6 +830,25 @@ func (g2 *G2) assertPointInSubgroup(R *G2Affine) {
 // not complete. Besides Q=(0,0) and s in {0, ±1}, there is a sparse
 // point-dependent exceptional set coming from incomplete precomputations and the
 // initial bias step. This mode is intended for random non-adversarial inputs.
+//
+// Assumptions and caller obligations:
+//
+//   - Q is in the prime-order G2 subgroup or is (0,0); neither is checked here.
+//   - The returned point R is NOT bound to the curve nor into the prime-order
+//     subgroup. The verified equation is a group-law relation only if R is on the
+//     curve, and then it pins R only modulo cofactor torsion: R = [s]Q + T. For
+//     an off-curve R it can be vacuous: in complete mode, R = (Q.x, y) with
+//     y ≠ ±Q.y turns every ±Q ± R precomputation entry into O, and when all four
+//     sub-scalars are odd the closing check passes for any y.
+//   - With [algopts.WithIncompleteArithmetic], "group-law relation" holds only
+//     away from the exceptional set above: an incomplete addition of two equal
+//     points leaves its slope λ unconstrained (0·λ = 0).
+//
+// Callers must therefore bind the output: either with [G2.assertPointInSubgroup]
+// on R itself (its on-curve preimage also implies R is on the curve, as in
+// [G2.ScalarMul]), or, when only an aggregate of several outputs is
+// subgroup-bound, by first checking every output on the curve (see
+// [G2.MultiScalarMul]).
 //
 // [EEMP25]: https://eprint.iacr.org/2025/933
 func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.AlgebraOption) *G2Affine {
@@ -915,13 +941,6 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 		_Q = g2.Select(isInputPointAtInfinity, dummyQ, Q)
 		R = g2.Select(isScalarOne, dummyR, R)
 	}
-
-	// NOTE: the returned point is NOT bound into the prime-order subgroup. On this
-	// cofactor curve the accumulator below only pins it modulo the v-torsion, so a
-	// torsion-shifted output satisfies the identity. Callers that expose the result
-	// must bind it with [G2.assertPointInSubgroup]; the public entry points
-	// ([G2.ScalarMul], [G2.MultiScalarMul]) do so — once per aggregate output, not
-	// per summand.
 
 	addFn := g2.add
 	if !cfg.IncompleteArithmetic {
@@ -1074,13 +1093,22 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 // scalars s. It returns an error if the length of the slices mismatch. If the
 // input slices are empty, then returns point at infinity.
 //
+// Every point is assumed to be in the prime-order G2 subgroup or to be (0,0);
+// this is not checked. Each variable (non-constant) summand [s_i]Q_i is checked
+// to be on the curve, and the sum of all summands is bound into the prime-order
+// subgroup once rather than per summand, see the comment in the function body.
+// Constant points are multiplied with the fixed-base comb and need neither
+// check. With [algopts.WithFoldingScalarMul] the scalars are consecutive powers
+// and the computation goes through [G2.ScalarMul] instead.
+//
 // By default, uses complete arithmetic which correctly handles zero scalars and
 // points at infinity.
 //
 // ⚠️  When [algopts.WithIncompleteArithmetic] is set, this method is faster but
 // not complete. It inherits the exceptional sets of the underlying scalar-mul
 // calls and additionally depends on internal accumulator collisions, so the
-// incomplete exceptional set is not fully characterized at the API level.
+// incomplete exceptional set is not fully characterized at the API level. Zero
+// and ±1 scalars and the point (0,0) are exceptional inputs in this mode.
 func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.AlgebraOption) (*G2Affine, error) {
 
 	if len(p) == 0 {
@@ -1106,12 +1134,21 @@ func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.Algebra
 			return nil, fmt.Errorf("mismatching points and scalars slice lengths")
 		}
 		n := len(p)
-		// Deferred subgroup binding: fold constant prime-order points through the
-		// comb (computed, already in-subgroup) and the variable points through the
-		// UNBOUND fake-GLV, then bind the aggregate ONCE (n subgroup checks → 1).
-		// Sound because each fake-GLV summand's accumulator forces its subgroup part
-		// exactly, so binding the sum forces the net torsion to O; the comb summands
-		// contribute no torsion.
+		// Deferred subgroup binding: constant prime-order points go through the
+		// comb (computed in-circuit, hence in the subgroup), variable points
+		// through the unbound fake-GLV with an on-curve check on each summand, and
+		// the aggregate is bound into the subgroup once (n subgroup checks → 1).
+		// Each on-curve summand satisfies R_i = [s_i]Q_i + T_i with T_i cofactor
+		// torsion, so binding the sum forces Σ T_i = O.
+		//
+		// The per-summand on-curve check is what the argument rests on: the
+		// fake-GLV accumulator is a group-law relation only for an on-curve R_i,
+		// and binding only the sum says nothing about an individual off-curve R_i
+		// (see [G2.scalarMulGLVAndFakeGLV] and
+		// TestMultiScalarMulG2OffCurveSummandRegression). The known forgery
+		// vector is specific to complete mode; the check also runs in incomplete
+		// mode so that the same precondition holds there, which remains subject
+		// to that mode's documented exceptional set.
 		var res *G2Affine
 		hasVar := false
 		for i := 0; i < n; i++ {
@@ -1120,6 +1157,14 @@ func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.Algebra
 				q = g2.scalarMulComb(d, s[i])
 			} else {
 				q = g2.scalarMulGLVAndFakeGLV(p[i], s[i], opts...)
+				if cfg.IncompleteArithmetic {
+					// s = 0 and Q = (0,0) are exceptional in this mode, so the
+					// (0,0) encoding of O is not a valid summand: check strictly.
+					g2.assertIsOnCurve(q)
+				} else {
+					// admits (0,0), returned for s = 0 or Q = (0,0).
+					g2.AssertIsOnTwist(q)
+				}
 				hasVar = true
 			}
 			if res == nil {

@@ -382,8 +382,10 @@ func (v *Verifier[FR, G1El, G2El, GTEl]) CheckOpeningProof(commitment Commitment
 	v.pairing.AssertIsOnG1(&proof.Quotient)
 
 	// [f(a)]G1 + [-a]([H(α)]G₁) = [f(a) - a*H(α)]G₁
+	// The quotient was subgroup-checked above and vk.G1 is a trusted SRS
+	// point, so the scalar multiplication does not check them again.
 	pointNeg := v.scalarApi.Neg(&point)
-	totalG1, err := v.curve.MultiScalarMul([]*G1El{&vk.G1, &proof.Quotient}, []*emulated.Element[FR]{&proof.ClaimedValue, pointNeg})
+	totalG1, err := v.curve.MultiScalarMul([]*G1El{&vk.G1, &proof.Quotient}, []*emulated.Element[FR]{&proof.ClaimedValue, pointNeg}, algopts.WithNoSubgroupMembershipCheck())
 	if err != nil {
 		return fmt.Errorf("check opening proof: %w", err)
 	}

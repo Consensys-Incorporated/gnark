@@ -144,20 +144,88 @@ func (g2 *G2) phi(q *G2Affine) *G2Affine {
 }
 
 // scalarMulBySeed computes the [x₀]q where x₀=9586122913090633729 is the seed of the curve.
+//
+// Every chord step is guarded (see [G2.addGuarded]), so for an adversarial q
+// the result is either exactly [x₀]q or the circuit is unsatisfiable.
 func (g2 *G2) scalarMulBySeed(q *G2Affine) *G2Affine {
 	z := g2.triple(q)
-	z = g2.doubleAndAdd(z, q)
+	z = g2.doubleAndAddGuarded(z, q)
 	t0 := g2.double(z)
 	t0 = g2.double(t0)
-	z = g2.add(z, t0)
+	z = g2.addGuarded(z, t0)
 	t1 := g2.triple(z)
-	t0 = g2.add(t0, t1)
+	t0 = g2.addGuarded(t0, t1)
 	t0 = g2.doubleN(t0, 9)
-	z = g2.doubleAndAdd(t0, z)
+	z = g2.doubleAndAddGuarded(t0, z)
 	z = g2.doubleN(z, 45)
-	z = g2.doubleAndAdd(z, q)
+	z = g2.doubleAndAddGuarded(z, q)
 
 	return z
+}
+
+// assertIsInSubgroup asserts that Q, known to be on the twist, lies in the
+// prime-order subgroup G2. The (0,0) infinity encoding is accepted.
+//
+// With w = (x₀-1)/3 and π = (k₁, k₂) = (w(2-x₀²)+1, w(x₀²+1)+1) we check
+// [k₁]Q + [k₂]ϕ(Q) = O, i.e. (using ϕ²+ϕ+1 = 0)
+//
+//	[w]([x₀²](ϕ(Q)-Q) + [2]Q + ϕ(Q)) == ϕ²(Qs).
+//
+// ϕ²+ϕ+1 = 0 makes (k₁+k₂ϕ)(k₁+k₂ϕ²) the multiplication by the norm
+// N = k₁²-k₁k₂+k₂², here N = r. So k₁+k₂ϕ is injective on the cofactor
+// torsion of E'(Fp) (gcd(h₂, r) = 1) and kills exactly G2: the check is
+// exact. (The previous relation (x₀+1, x₀³-x₀²+1) has norm 3r and also
+// vanishes on the rational 3-torsion (0, ±2).) Same relation as
+// gnark-crypto's G2Jac.IsInSubGroup.
+//
+// The arithmetic is incomplete but every chord step is guarded, and the
+// remaining degenerate slopes fail closed, so for an on-curve Q ≠ (0,0)
+// every intermediate is exact and the final equality is the exact group
+// relation. For Q in G2∖{O} the guards hold: each guarded pair is
+// [a]Q+[b]ϕ(Q) vs [c]Q+[d]ϕ(Q) with fixed small (a,b) ≠ (c,d) whose
+// difference is not in the GLV lattice, which does not depend on Q.
+func (g2 *G2) assertIsInSubgroup(Q *G2Affine) {
+	isInf := g2.api.And(g2.curveF.IsZero(&Q.P.X), g2.curveF.IsZero(&Q.P.Y))
+	Qs := g2.Select(isInf, &G2Affine{P: *g2.g2Gen}, Q) // in-subgroup dummy
+	phiQ := g2.phi(Qs)
+	t := g2.addGuarded(phiQ, g2.neg(Qs))          // ϕ(Q) - Q
+	t = g2.scalarMulBySeed(g2.scalarMulBySeed(t)) // [x₀²](ϕ(Q) - Q)
+	u := g2.doubleAndAddGuarded(Qs, phiQ)         // [2]Q + ϕ(Q)
+	t = g2.addGuarded(t, u)
+	left := g2.scalarMulByW(t)
+	right := g2.phi(phiQ)
+
+	g2.AssertIsEqual(left, right)
+}
+
+// scalarMulByW computes [w]q for w = (x₀-1)/3 = 3195374304363544576 =
+// 0xb161·2⁴⁶, with 0xb161 = ((3+8)·(1+2⁷))·2⁵ + 1 (same chain as gnark-crypto's
+// G2Jac.mulByW). Chord steps are guarded as in [G2.scalarMulBySeed].
+func (g2 *G2) scalarMulByW(q *G2Affine) *G2Affine {
+	// [11]q = 2·[4]q + [3]q
+	t0 := g2.doubleAndAddGuarded(g2.doubleN(q, 2), g2.triple(q))
+	// [11·129]q = 2·[2⁶·11]q + [11]q
+	t0 = g2.doubleAndAddGuarded(g2.doubleN(t0, 6), t0)
+	// [11·129·2⁵ + 1]q = 2·[11·129·2⁴]q + q
+	t0 = g2.doubleAndAddGuarded(g2.doubleN(t0, 4), q)
+	return g2.doubleN(t0, 46)
+}
+
+// addGuarded is [G2.add] with an assertion p.x ≠ q.x. The chord slope is
+// pinned by λ·(q.x−p.x) = q.y−p.y, which leaves λ free exactly when p = q; the
+// guard closes that case (and p = −q, whose sum is unrepresentable anyway).
+// It only rejects, so it is sound for adversarial inputs.
+func (g2 *G2) addGuarded(p, q *G2Affine) *G2Affine {
+	g2.curveF.AssertIsDifferent(&p.P.X, &q.P.X)
+	return g2.add(p, q)
+}
+
+// doubleAndAddGuarded is [G2.doubleAndAdd] with the chord guard p.x ≠ q.x.
+// The second slope 2p.y/(x(p+q)−p.x) has a nonzero numerator on E'(Fp), which
+// has odd order (no 2-torsion), so it fails closed without a guard.
+func (g2 *G2) doubleAndAddGuarded(p, q *G2Affine) *G2Affine {
+	g2.curveF.AssertIsDifferent(&p.P.X, &q.P.X)
+	return g2.doubleAndAdd(p, q)
 }
 
 // AddUnified adds p and q and returns it. It doesn't modify p nor q.
@@ -455,11 +523,12 @@ func naf4Digits(k *big.Int) []int8 {
 	return digits
 }
 
-// ScalarMul computes [s]Q using GLV+FakeGLV with proven r^(1/4) sub-scalar
-// bounds (LLL Hermite). Routes through scalarMulGLVAndFakeGLV.
+// ScalarMul computes [s]Q using classic GLV (see sw_emulated's scalarMulGLV).
 //
-// Q is assumed to be in the prime-order G2 subgroup; this method does not check
-// subgroup membership for arbitrary twist points.
+// Q must be on the twist (not checked here). Unless
+// [algopts.WithNoSubgroupMembershipCheck] is given, Q is asserted to lie in G2
+// (the check of [Pairing.AssertIsOnG2]); with that option the caller must
+// guarantee it. The result is then [s]Q ∈ G2.
 //
 // This method is complete by default.
 //
@@ -476,12 +545,21 @@ func naf4Digits(k *big.Int) []int8 {
 func (g2 *G2) ScalarMul(Q *G2Affine, s *Scalar, opts ...algopts.AlgebraOption) *G2Affine {
 	// BW6-761 G2 lives over Fp (a sextic twist), so its points are ordinary
 	// sw_emulated affine points. We route ScalarMul through classic GLV rather
-	// than GLV+fake-GLV: the classic-GLV output is *computed*, hence inherently in
-	// the prime-order subgroup, so it needs no cofactor-clearing binding. This
-	// closes the chosen-scalar cofactor hole (a rational φ-eigenvector reaches
-	// torsion up to ~r^{1/2}, so a minimal clearing constant would be unsound, and
-	// full-cofactor clearing is expensive) at lower cost — mirroring the
-	// PreferClassicGLV routing of BLS12-381 G1 and BW6-761 G1 in sw_emulated.
+	// than GLV+fake-GLV: its output is computed rather than hinted, so for Q in
+	// G2 it needs no cofactor-clearing binding (a rational φ-eigenvector reaches
+	// torsion up to ~r^{1/2}, so a minimal clearing constant would be unsound,
+	// and full-cofactor clearing is expensive) — mirroring the PreferClassicGLV
+	// routing of BLS12-381 G1 and BW6-761 G1 in sw_emulated.
+	cfg, err := algopts.NewConfig(opts...)
+	if err != nil {
+		panic(fmt.Sprintf("parse opts: %v", err))
+	}
+	if !cfg.NoGroupMembership {
+		// classic GLV is only correct (and sound) on G2; bw6761G2ClassicParams
+		// carry no membership test, so check here and tell sw_emulated not to.
+		g2.assertIsInSubgroup(Q)
+		opts = append(opts, algopts.WithNoSubgroupMembershipCheck())
+	}
 	cr, err := sw_emulated.New[BaseField, ScalarField](g2.api, bw6761G2ClassicParams)
 	if err != nil {
 		panic(err)
@@ -507,10 +585,15 @@ var bw6761G2ClassicParams = func() sw_emulated.CurveParams {
 		Eigenvalue:       lambda,
 		ThirdRootOne:     omega,
 		PreferClassicGLV: true,
+		// (0, 2) is a flex of y² = x³ + 4, hence a rational point of order 3,
+		// used as the classic-GLV torsion offset.
+		GLVTorsionOffset:      [2]*big.Int{big.NewInt(0), big.NewInt(2)},
+		GLVTorsionOffsetOrder: 3,
 		// G2 has a nontrivial cofactor, so PrimeOrder is deliberately left
-		// false and no CofactorClearing is set: classic GLV computes its output
-		// rather than hinting it, so no binding is needed here, and
-		// AssertIsInSubgroup fails loudly instead of silently passing.
+		// false and no CofactorClearing / EndoSubgroupTest is set, so
+		// AssertIsInSubgroup fails loudly. NB: the relation of gnark-crypto's
+		// G2Jac.IsInSubGroup, [x₀+1]P + [x₀³−x₀²+1]φ(P) = O, also holds on the
+		// rational 3-torsion (0, ±2) and cannot be used on its own.
 	}
 }()
 

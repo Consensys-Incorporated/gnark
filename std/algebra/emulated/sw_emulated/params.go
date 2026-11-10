@@ -55,13 +55,36 @@ type CurveParams struct {
 	// cofactor curve is rejected until its membership check is supplied.
 	PrimeOrder bool
 
+	// EndoSubgroupTest, when set to (k1, k2), is an endomorphism-based
+	// subgroup membership test: an on-curve point P is in the prime-order
+	// subgroup iff [k1]P + [k2]Φ(P) = O, with Φ(x, y) = (ThirdRootOne·x, y).
+	// It is used by [Curve.AssertIsInSubgroup] on cofactor curves that have
+	// no [CurveParams.CofactorClearing] constant. Compile-time validation
+	// requires k1 + k2·Eigenvalue ≡ 0 mod r (completeness on G1); soundness
+	// (that the relation excludes every off-subgroup point) is a property of
+	// the curve and must come from the literature.
+	EndoSubgroupTest [2]*big.Int
+
 	// PreferClassicGLV routes [Curve.ScalarMul] through classic GLV instead of
 	// GLV+fake-GLV. It is set for cofactor curves where the fake-GLV
 	// subgroup-clearing ([CofactorClearing]) costs more than the r^(1/4) loop
 	// saves — measured on BLS12-381 G1 (classic GLV ≈ 105k vs GLV+fake-GLV+clearing
-	// ≈ 116k R1CS). Classic GLV is also inherently sound (computed output, no
-	// hinted off-subgroup point), so no clearing is needed on this path.
+	// ≈ 116k R1CS).
+	//
+	// Classic GLV takes its sub-scalars from a hint and only constrains
+	// s1 + λ·s2 ≡ s mod r, which admits bounded dishonest decompositions that
+	// steer its incomplete main loop into exceptional additions. It therefore
+	// requires [CurveParams.GLVTorsionOffset] (see [Curve.scalarMulGLV]).
 	PreferClassicGLV bool
+
+	// GLVTorsionOffset is a rational point T0 = (x, y) of small odd prime order
+	// GLVTorsionOffsetOrder (hence outside the prime-order subgroup). Classic
+	// GLV adds T0 to its accumulator so that, for inputs in the prime-order
+	// subgroup, no step of the incomplete main loop can hit an exceptional
+	// case whatever decomposition the prover supplies. Required when
+	// [CurveParams.PreferClassicGLV] is set; validated at compile time.
+	GLVTorsionOffset      [2]*big.Int
+	GLVTorsionOffsetOrder uint64
 }
 
 // GetSecp256k1Params returns curve parameters for the curve secp256k1. When
@@ -146,6 +169,9 @@ func GetBLS12381Params() CurveParams {
 		// classic GLV is cheaper here than GLV+fake-GLV once the (expensive)
 		// cofactor clearing is included — see benchmarks.
 		PreferClassicGLV: true,
+		// (0, 2) is a flex of y² = x³ + 4, hence of order 3; 3 | h.
+		GLVTorsionOffset:      [2]*big.Int{big.NewInt(0), big.NewInt(2)},
+		GLVTorsionOffsetOrder: 3,
 	}
 }
 
@@ -200,24 +226,53 @@ func GetBW6761Params() CurveParams {
 		Gm:           computeBW6761Table(),
 		Eigenvalue:   lambda,
 		ThirdRootOne: omega,
-		// Routed through classic GLV (PreferClassicGLV below), whose output is
-		// computed rather than hinted and is therefore inherently in-subgroup, so
-		// no cofactor-clearing binding is used on this curve. This also avoids the
-		// pitfall that a *minimal* clearing constant is unsound here: a
-		// chosen-scalar forgery with a rational φ-eigenvector reaches torsion up
-		// to ~r^(1/2) (not ~r^(1/4)), so the reachable factors inside the ~330-bit
-		// cofactor remainder can't be cheaply isolated — only full-cofactor
-		// clearing (expensive) or classic GLV (chosen here) is sound.
+		// Routed through classic GLV (PreferClassicGLV below), so no
+		// cofactor-clearing binding of a hinted output is used on this curve.
+		// This also avoids the pitfall that a *minimal* clearing constant is
+		// unsound here: a chosen-scalar forgery with a rational φ-eigenvector
+		// reaches torsion up to ~r^(1/2) (not ~r^(1/4)), so the reachable
+		// factors inside the ~330-bit cofactor remainder can't be cheaply
+		// isolated — only full-cofactor clearing (expensive) or classic GLV
+		// (chosen here) is sound.
 		//
-		// G1 here has a nontrivial cofactor, so PrimeOrder stays false: this is
-		// the one supported curve with neither h = 1 nor a clearing constant,
-		// and [Curve.AssertIsInSubgroup] therefore panics on it rather than
-		// accepting the on-curve, off-subgroup points that exist (e.g. x = 2).
-		// Nothing in this package reaches that path internally — every
-		// assertPointInSubgroup call site is gated on !PreferClassicGLV.
+		// G1 here has a nontrivial cofactor, so PrimeOrder stays false, and
+		// subgroup membership is tested with the endomorphism relation below
+		// instead of a clearing constant.
 		CofactorClearing: nil,
+		// P ∈ G1 iff [x₀+1]P + [x₀³−x₀²+1]Φ(P) = O, x₀ the BW6-761 seed — the
+		// test of gnark-crypto's G1Jac.IsInSubGroup (El Housni, Guillevic,
+		// Piellard, eprint 2022/352).
+		EndoSubgroupTest: bw6761EndoSubgroupTest(),
 		PreferClassicGLV: true,
+		// h = #E(Fp)/r has 127 as its only odd prime factor below 2000 (and no
+		// factor 3, as p ≡ 3 mod 4 rules out the flexes (0, ±√−1)); T0 is a
+		// rational point of order 127.
+		GLVTorsionOffset: [2]*big.Int{
+			bigFromBase10("1434769365449908722802650638853586550298320408571751379216229371506488989810944560601789689087742361676675704914361237568882018836145558640600409088250822516223703875978215095442766754683162324833595711343045717730150466189723767"),
+			bigFromBase10("152702845304058593839850200988551178776963134603511191116689150194420556452493895139323098043772273107327467304551829563471423055519359472446073191082377464259113341265445112056659438161617692153632812933765649407989035862534041"),
+		},
+		GLVTorsionOffsetOrder: 127,
 	}
+}
+
+// bw6761EndoSubgroupTest returns (x₀+1, x₀³−x₀²+1) for the BW6-761 seed
+// x₀ = 9586122913090633729. The same relation holds on BW6-761 G2 with its own
+// Φ (gnark-crypto's G2Jac.IsInSubGroup).
+func bw6761EndoSubgroupTest() [2]*big.Int {
+	x0 := new(big.Int).SetUint64(9586122913090633729)
+	k1 := new(big.Int).Add(x0, big.NewInt(1))
+	x2 := new(big.Int).Mul(x0, x0)
+	k2 := new(big.Int).Mul(x2, x0)
+	k2.Sub(k2, x2).Add(k2, big.NewInt(1))
+	return [2]*big.Int{k1, k2}
+}
+
+func bigFromBase10(s string) *big.Int {
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		panic("invalid base-10 constant " + s)
+	}
+	return v
 }
 
 // GetStarkCurveParams returns the curve parameters for the STARK curve.

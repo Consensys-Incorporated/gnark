@@ -1,6 +1,8 @@
 package sw_bls12381
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"testing"
@@ -426,6 +428,7 @@ type MultiScalarMulTest struct {
 	Points  []G2Affine
 	Scalars []Scalar
 	Res     G2Affine
+	opts    []algopts.AlgebraOption
 }
 
 func (c *MultiScalarMulTest) Define(api frontend.API) error {
@@ -441,7 +444,7 @@ func (c *MultiScalarMulTest) Define(api frontend.API) error {
 	for i := range c.Scalars {
 		ss[i] = &c.Scalars[i]
 	}
-	res, err := g2.MultiScalarMul(ps, ss)
+	res, err := g2.MultiScalarMul(ps, ss, c.opts...)
 	if err != nil {
 		return err
 	}
@@ -604,5 +607,166 @@ func TestMultiScalarMulFoldedSinglePoint(t *testing.T) {
 		Points:  make([]G2Affine, 1),
 		Scalars: make([]Scalar, 1),
 	}, &assignment, ecc.BN254.ScalarField())
+	assert.NoError(err)
+}
+
+// forgedScalarMulG2Hint replaces scalarMulG2Hint: for an input point whose X.A0
+// is a key of forged it returns the associated (possibly off-curve) point.
+func forgedScalarMulG2Hint(forged map[string]bls12381.G2Affine) solver.Hint {
+	return func(field *big.Int, inputs []*big.Int, outputs []*big.Int) error {
+		return emulated.UnwrapHintContext(field, inputs, outputs, func(hc emulated.HintContext) error {
+			moduli := hc.EmulatedModuli()
+			baseInputs, baseOutputs := hc.InputsOutputs(moduli[0])
+			R, ok := forged[baseInputs[0].String()]
+			if !ok {
+				return fmt.Errorf("unexpected scalar-mul input")
+			}
+			R.X.A0.BigInt(baseOutputs[0])
+			R.X.A1.BigInt(baseOutputs[1])
+			R.Y.A0.BigInt(baseOutputs[2])
+			R.Y.A1.BigInt(baseOutputs[3])
+			return nil
+		})
+	}
+}
+
+// oddDecompositionScalar returns the first scalar s = sha256(seed‖i) mod r
+// (i = 0, 1, …) whose honest 4-D GLV decomposition, computed by the same
+// [decomposeScalarG2] and [g2Eigenvalue] as the [rationalReconstructExtG2] hint,
+// has all four sub-scalars odd, so that no bit-0 correction fires in
+// scalarMulGLVAndFakeGLV. About 1 in 16 scalars qualifies.
+func oddDecompositionScalar(seed byte) *big.Int {
+	r := fr_bls12381.Modulus()
+	for i := uint64(0); ; i++ {
+		var buf [9]byte
+		buf[0] = seed
+		binary.BigEndian.PutUint64(buf[1:], i)
+		h := sha256.Sum256(buf[:])
+		s := new(big.Int).SetBytes(h[:])
+		s.Mod(s, r)
+		res := decomposeScalarG2(s, g2Eigenvalue, r)
+		if res[0].Bit(0) == 1 && res[1].Bit(0) == 1 && res[2].Bit(0) == 1 && res[3].Bit(0) == 1 {
+			return s
+		}
+	}
+}
+
+// TestMultiScalarMulG2OffCurveSummandRegression is a regression for a soundness
+// issue in G2.MultiScalarMul: the per-summand fake-GLV outputs R_i were hinted
+// and never bound to the curve, only the aggregate Σ R_i was subgroup-checked.
+// With R_i = (Q_i.x, y_i) and y_i ≠ ±Q_i.y, every AddUnified(±Q_i, ±R_i) in the
+// fake-GLV precomputation sees equal X and different Y and returns O, so the
+// accumulator degenerates to the bias and — when all four sub-scalars are odd —
+// the closing identity holds for any y_i. Choosing y_1, y_2 so that the chord
+// R_1 + R_2 lands on an arbitrary subgroup point T forges the MSM output.
+//
+// The forgery applies to complete arithmetic only. In incomplete mode the chord
+// formula of g2.add has no solution for equal X and different Y, so the same
+// witness is rejected independently of the on-curve check; the incomplete case
+// is kept to check that the forged witness is rejected in both modes.
+func TestMultiScalarMulG2OffCurveSummandRegression(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, _, gen := bls12381.Generators()
+
+	s1 := oddDecompositionScalar(1)
+	s2 := oddDecompositionScalar(2)
+	var Q1, Q2 bls12381.G2Affine
+	Q1.ScalarMultiplication(&gen, big.NewInt(12345))
+	Q2.ScalarMultiplication(&gen, big.NewInt(67890))
+
+	var honest, tmp bls12381.G2Affine
+	honest.ScalarMultiplication(&Q1, s1)
+	tmp.ScalarMultiplication(&Q2, s2)
+	honest.Add(&honest, &tmp)
+
+	// Find a subgroup target T ≠ honest such that T.x + Q1.x + Q2.x is a square
+	// λ², then solve the chord R1 + R2 = T for y1, y2 with R1.x = Q1.x, R2.x = Q2.x.
+	var T, R1, R2 bls12381.G2Affine
+	for k := int64(2); ; k++ {
+		T.ScalarMultiplication(&gen, big.NewInt(k))
+		if T.Equal(&honest) {
+			continue
+		}
+		lam := T.X
+		lam.Add(&lam, &Q1.X).Add(&lam, &Q2.X)
+		if lam.Legendre() != 1 {
+			continue
+		}
+		lam.Sqrt(&lam)
+		R1.X, R2.X = Q1.X, Q2.X
+		// y1 = λ(x1 − T.x) − T.y ; y2 = y1 + λ(x2 − x1)
+		R1.Y.Sub(&Q1.X, &T.X).Mul(&R1.Y, &lam).Sub(&R1.Y, &T.Y)
+		R2.Y.Sub(&Q2.X, &Q1.X).Mul(&R2.Y, &lam).Add(&R2.Y, &R1.Y)
+		var nq1, nq2 bls12381.G2Affine
+		nq1.Neg(&Q1)
+		nq2.Neg(&Q2)
+		if R1.Y.Equal(&Q1.Y) || R1.Y.Equal(&nq1.Y) || R2.Y.Equal(&Q2.Y) || R2.Y.Equal(&nq2.Y) {
+			continue
+		}
+		break
+	}
+	assert.False(R1.IsOnCurve(), "forged summand must be off-curve")
+	assert.False(R2.IsOnCurve(), "forged summand must be off-curve")
+
+	newCircuit := func(opts ...algopts.AlgebraOption) *MultiScalarMulTest {
+		return &MultiScalarMulTest{Points: make([]G2Affine, 2), Scalars: make([]Scalar, 2), opts: opts}
+	}
+	newWitness := func(res bls12381.G2Affine) *MultiScalarMulTest {
+		return &MultiScalarMulTest{
+			Points:  []G2Affine{NewG2Affine(Q1), NewG2Affine(Q2)},
+			Scalars: []Scalar{emulated.ValueOf[ScalarField](s1), emulated.ValueOf[ScalarField](s2)},
+			Res:     NewG2Affine(res),
+		}
+	}
+	forged := forgedScalarMulG2Hint(map[string]bls12381.G2Affine{
+		Q1.X.A0.String(): R1,
+		Q2.X.A0.String(): R2,
+	})
+
+	for _, tc := range []struct {
+		name string
+		opts []algopts.AlgebraOption
+	}{
+		{"complete", nil},
+		{"incomplete", []algopts.AlgebraOption{algopts.WithIncompleteArithmetic()}},
+	} {
+		assert.Run(func(assert *test.Assert) {
+			// sanity: the honest witness solves
+			err := test.IsSolved(newCircuit(tc.opts...), newWitness(honest), ecc.BN254.ScalarField())
+			assert.NoError(err, "honest MSM must solve")
+			// the forged witness claims MSM = T with off-curve summands
+			err = test.IsSolved(newCircuit(tc.opts...), newWitness(T), ecc.BN254.ScalarField(),
+				test.WithReplacementHint(solver.GetHintID(scalarMulG2Hint), forged))
+			assert.Error(err, "off-curve MSM summands forged the output — soundness break")
+		}, tc.name)
+	}
+}
+
+// TestMultiScalarMulG2EdgeCases checks that the per-summand on-curve check keeps
+// the complete MSM complete: zero scalar, ±1 scalars and the (0,0) point.
+func TestMultiScalarMulG2EdgeCases(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, _, gen := bls12381.Generators()
+	r := fr_bls12381.Modulus()
+	var P1, P2, P3, inf bls12381.G2Affine
+	P1.ScalarMultiplication(&gen, big.NewInt(11))
+	P2.ScalarMultiplication(&gen, big.NewInt(22))
+	P3.ScalarMultiplication(&gen, big.NewInt(33))
+	points := []bls12381.G2Affine{P1, P2, P3, inf, P1}
+	scalars := []*big.Int{big.NewInt(0), big.NewInt(1), new(big.Int).Sub(r, big.NewInt(1)), big.NewInt(5), big.NewInt(7)}
+	var res bls12381.G2Affine
+	for i := range points {
+		var tmp bls12381.G2Affine
+		tmp.ScalarMultiplication(&points[i], scalars[i])
+		res.Add(&res, &tmp)
+	}
+	cP := make([]G2Affine, len(points))
+	cS := make([]Scalar, len(points))
+	for i := range points {
+		cP[i] = NewG2Affine(points[i])
+		cS[i] = emulated.ValueOf[ScalarField](scalars[i])
+	}
+	err := test.IsSolved(&MultiScalarMulTest{Points: make([]G2Affine, len(points)), Scalars: make([]Scalar, len(points))},
+		&MultiScalarMulTest{Points: cP, Scalars: cS, Res: NewG2Affine(res)}, ecc.BN254.ScalarField())
 	assert.NoError(err)
 }

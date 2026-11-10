@@ -396,23 +396,8 @@ func (pr *Pairing) AssertIsOnG2(Q *G2Affine) {
 	// 1- Check Q is on the curve
 	pr.AssertIsOnTwist(Q)
 
-	// Same as in AssertIsOnG1, (0,0) is replaced by the generator.
-	isInfinity := pr.api.And(pr.curveF.IsZero(&Q.P.X), pr.curveF.IsZero(&Q.P.Y))
-	Q = pr.g2.Select(isInfinity, &G2Affine{P: *pr.g2.g2Gen}, Q)
-
-	// 2- Check Q has the right subgroup order
-	// we check that [x₀+1]Q == [-x₀³+x₀²-1]ϕ(Q)
-	xQ := pr.g2.scalarMulBySeed(Q)
-	x2Q := pr.g2.scalarMulBySeed(xQ)
-	x3Q := pr.g2.scalarMulBySeed(x2Q)
-
-	left := pr.g2.add(xQ, Q)
-	right := pr.g2.sub(x2Q, x3Q)
-	right = pr.g2.sub(right, Q)
-	right = pr.g2.phi(right)
-
-	// [r]Q == 0 <==> [x₀+1]Q == [-x₀³+x₀²-1]ϕ(Q)
-	pr.g2.AssertIsEqual(left, right)
+	// 2- Check Q has the right subgroup order (see [G2.assertIsInSubgroup]).
+	pr.g2.assertIsInSubgroup(Q)
 }
 
 // seed x₀=9586122913090633729
