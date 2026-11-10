@@ -77,6 +77,8 @@ func (c *wideCommitment) extDegree() int {
 }
 
 func (c *wideCommitment) Define(api frontend.API) error {
+	// the test wide committer only passes X to a hint, so bind it here.
+	api.AssertIsDifferent(c.X, 0)
 	if c.withCommitment {
 		WithCommitment(api, func(api frontend.API, commitment frontend.Variable) error {
 			api.AssertIsDifferent(commitment, 0)
@@ -114,11 +116,9 @@ func TestWideCommitment(t *testing.T) {
 	assert.Error(err)
 
 	// should pass as we provide with builder with WideCommitment support
-	// the test wide committer only calls a hint and binds nothing, so X is
-	// left unconstrained in the compiled system.
-	_, err = frontend.CompileGeneric(f, widecommitter.From[constraint.U32](r1cs.NewBuilder), &wideCommitment{withCommitment: false}, frontend.IgnoreUnconstrainedInputs())
+	_, err = frontend.CompileGeneric(f, widecommitter.From[constraint.U32](r1cs.NewBuilder), &wideCommitment{withCommitment: false})
 	assert.NoError(err)
-	_, err = frontend.CompileGeneric(f, widecommitter.From[constraint.U32](scs.NewBuilder), &wideCommitment{withCommitment: false}, frontend.IgnoreUnconstrainedInputs())
+	_, err = frontend.CompileGeneric(f, widecommitter.From[constraint.U32](scs.NewBuilder), &wideCommitment{withCommitment: false})
 	assert.NoError(err)
 
 	// shouldn't pass if we have mixed WithCommitment and WithWideCommitment
@@ -153,9 +153,9 @@ func TestWideCommitmentMamabear(t *testing.T) {
 	assert.Error(err)
 
 	// should pass as we provide a builder with WideCommitment support
-	_, err = frontend.CompileGeneric(f, widecommitter.From[constraint.U64W1](r1cs.NewBuilder), &wideCommitment{withCommitment: false, degree: deg}, frontend.IgnoreUnconstrainedInputs())
+	_, err = frontend.CompileGeneric(f, widecommitter.From[constraint.U64W1](r1cs.NewBuilder), &wideCommitment{withCommitment: false, degree: deg})
 	assert.NoError(err)
-	_, err = frontend.CompileGeneric(f, widecommitter.From[constraint.U64W1](scs.NewBuilder), &wideCommitment{withCommitment: false, degree: deg}, frontend.IgnoreUnconstrainedInputs())
+	_, err = frontend.CompileGeneric(f, widecommitter.From[constraint.U64W1](scs.NewBuilder), &wideCommitment{withCommitment: false, degree: deg})
 	assert.NoError(err)
 
 	// shouldn't pass if we have mixed WithCommitment and WithWideCommitment

@@ -1651,6 +1651,11 @@ func (c *FastPathsCircuit[T]) Define(api frontend.API) error {
 	f.AssertIsEqual(res, &c.Zero)
 	f.AssertIsEqual(res, zero)
 
+	// the fast paths above never read Rand. Compare against the general path
+	// with the witness zero.
+	res = f.Add(&c.Rand, &c.Zero)
+	f.AssertIsEqual(res, &c.Rand)
+
 	return nil
 }
 
@@ -1667,9 +1672,7 @@ func testFastPaths[T FieldParams](t *testing.T) {
 	circuit := &FastPathsCircuit[T]{}
 	assignment := &FastPathsCircuit[T]{Rand: ValueOf[T](randVal), Zero: ValueOf[T](0)}
 
-	// every operation short-circuits on the constant zero, so Rand is never
-	// read by a constraint.
-	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(circuit, test.WithValidAssignment(assignment))
 }
 
 type TestAssertIsDifferentCircuit[T FieldParams] struct {

@@ -129,7 +129,9 @@ func (c *testFromBinaryCircuitConstantInput) Define(api frontend.API) error {
 	}
 	res := bits.FromBinary(api, inps)
 	api.AssertIsEqual(res, c.Expected)
-	api.AssertIsEqual(c.Expected, c.Expected) // dummy constraint to overcome prover bug with 1 constraint
+	// bind ThirdVariableBit also when all inputs are constant. This also keeps
+	// the circuit above one constraint.
+	api.AssertIsBoolean(c.ThirdVariableBit)
 	return nil
 }
 
@@ -146,7 +148,6 @@ func TestFromBinaryConstantInput(t *testing.T) {
 		}
 		assert.Run(func(assert *test.Assert) {
 			assert.Run(func(assert *test.Assert) {
-				// ThirdVariableBit is only wired in when allConstant is false.
 				assert.CheckCircuit(&testFromBinaryCircuitConstantInput{
 					Inputs:      bts,
 					allConstant: true,
@@ -154,7 +155,7 @@ func TestFromBinaryConstantInput(t *testing.T) {
 					test.WithValidAssignment(&testFromBinaryCircuitConstantInput{
 						ThirdVariableBit: 0,
 						Expected:         val,
-					}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+					}))
 			}, "allconstant=true")
 			if v > 2 {
 				assert.Run(func(assert *test.Assert) {
@@ -172,43 +173,41 @@ func TestFromBinaryConstantInput(t *testing.T) {
 	}
 }
 
-type testFromBinaryInvalidInput struct {
+type testFromBinaryInvalidConstantInput struct {
 	ConstantInputs []*big.Int
-	VariableInputs []frontend.Variable
-	Variable       frontend.Variable
 }
 
-func (c *testFromBinaryInvalidInput) Define(api frontend.API) error {
-	if len(c.ConstantInputs) != 0 {
-		inps := make([]frontend.Variable, len(c.ConstantInputs))
-		for i, inp := range c.ConstantInputs {
-			inps[i] = inp
-		}
-		// test when constant inputs are not binary
-		res := bits.FromBinary(api, inps)
-		api.AssertIsDifferent(res, 0)
-		// ensure we have at least two constraints to overcome PLONK prover bug with 1 constraint only
-		api.AssertIsEqual(c.Variable, c.Variable)
-		api.AssertIsEqual(c.Variable, c.Variable)
-	} else {
-		res := bits.FromBinary(api, c.VariableInputs)
-		api.AssertIsDifferent(res, 0)
+func (c *testFromBinaryInvalidConstantInput) Define(api frontend.API) error {
+	inps := make([]frontend.Variable, len(c.ConstantInputs))
+	for i, inp := range c.ConstantInputs {
+		inps[i] = inp
 	}
+	// test when constant inputs are not binary
+	res := bits.FromBinary(api, inps)
+	api.AssertIsDifferent(res, 0)
+	return nil
+}
+
+type testFromBinaryInvalidVariableInput struct {
+	VariableInputs []frontend.Variable
+}
+
+func (c *testFromBinaryInvalidVariableInput) Define(api frontend.API) error {
+	res := bits.FromBinary(api, c.VariableInputs)
+	api.AssertIsDifferent(res, 0)
 	return nil
 }
 
 func TestFromBinaryInvalidInput(t *testing.T) {
 	assert := test.NewAssert(t)
 
-	_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &testFromBinaryInvalidInput{
+	_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &testFromBinaryInvalidConstantInput{
 		ConstantInputs: []*big.Int{big.NewInt(2), big.NewInt(1)},
 	})
 	assert.Error(err)
-	// Variable is only used in the constant-input branch.
-	assert.CheckCircuit(&testFromBinaryInvalidInput{VariableInputs: make([]frontend.Variable, 2)}, test.WithInvalidAssignment(&testFromBinaryInvalidInput{
+	assert.CheckCircuit(&testFromBinaryInvalidVariableInput{VariableInputs: make([]frontend.Variable, 2)}, test.WithInvalidAssignment(&testFromBinaryInvalidVariableInput{
 		VariableInputs: []frontend.Variable{2, 1},
-		Variable:       big.NewInt(3),
-	}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	}))
 }
 
 type toBinaryUpperBoundCircuit struct {
