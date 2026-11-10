@@ -257,8 +257,8 @@ func TestConjugateFp12(t *testing.T) {
 }
 
 type fp12Frobenius struct {
-	A       E12
-	C, D, E E12 `gnark:",public"`
+	A    E12
+	C, D E12 `gnark:",public"`
 }
 
 func (circuit *fp12Frobenius) Define(api frontend.API) error {
@@ -279,7 +279,7 @@ func TestFrobeniusFp12(t *testing.T) {
 	var circuit, witness fp12Frobenius
 
 	// witness values
-	var a, c, d, e bls12377.E12
+	var a, c, d bls12377.E12
 	_, _ = a.SetRandom()
 	c.Frobenius(&a)
 	d.FrobeniusSquare(&a)
@@ -287,12 +287,10 @@ func TestFrobeniusFp12(t *testing.T) {
 	witness.A.Assign(&a)
 	witness.C.Assign(&c)
 	witness.D.Assign(&d)
-	witness.E.Assign(&e)
 
 	// cs values
 	assert := test.NewAssert(t)
-	// the circuit declares inputs it does not reference.
-	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&circuit, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
 }
 
 type fp12Inverse struct {

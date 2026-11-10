@@ -42,8 +42,9 @@ func TestLeftRotation(t *testing.T) {
 }
 
 type rshiftCircuit struct {
-	In, Expected U32
-	Shift        int
+	In       frontend.Variable
+	Expected U32
+	Shift    int
 }
 
 func (c *rshiftCircuit) Define(api frontend.API) error {
@@ -51,19 +52,19 @@ func (c *rshiftCircuit) Define(api frontend.API) error {
 	if err != nil {
 		return err
 	}
-	res := uapi.Rshift(c.In, c.Shift)
+	// decompose the input in-circuit: a shift of a full byte or more drops the
+	// low bytes without reading them, which would leave the bytes of a witness
+	// U32 unconstrained
+	res := uapi.Rshift(uapi.ValueOf(c.In), c.Shift)
 	uapi.AssertEq(res, c.Expected)
 	return nil
 }
 
 func TestRshift(t *testing.T) {
 	assert := test.NewAssert(t)
-	assert.CheckCircuit(&rshiftCircuit{Shift: 4}, test.WithValidAssignment(&rshiftCircuit{Shift: 4, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 4)}))
-	// a shift of a full byte or more drops In[0] without reading it.
-	assert.CheckCircuit(&rshiftCircuit{Shift: 12}, test.WithValidAssignment(&rshiftCircuit{Shift: 12, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 12)}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
-	assert.CheckCircuit(&rshiftCircuit{Shift: 3}, test.WithValidAssignment(&rshiftCircuit{Shift: 3, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 3)}))
-	// a shift of a full byte or more drops In[0] without reading it.
-	assert.CheckCircuit(&rshiftCircuit{Shift: 11}, test.WithValidAssignment(&rshiftCircuit{Shift: 11, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 11)}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	for _, shift := range []int{4, 12, 3, 11} {
+		assert.CheckCircuit(&rshiftCircuit{Shift: shift}, test.WithValidAssignment(&rshiftCircuit{Shift: shift, In: 0x12345678, Expected: NewU32(0x12345678 >> shift)}))
+	}
 }
 
 type valueOfCircuit[T Long] struct {
@@ -212,9 +213,8 @@ func TestConstrainedCircuit(t *testing.T) {
 }
 
 type ToValueCircuit struct {
-	In        U32
-	withCheck bool
-	Expected  frontend.Variable
+	In       U32
+	Expected frontend.Variable
 }
 
 func (c *ToValueCircuit) Define(api frontend.API) error {
@@ -223,17 +223,16 @@ func (c *ToValueCircuit) Define(api frontend.API) error {
 		return fmt.Errorf("New: %w", err)
 	}
 	res := uapi.ToValue(c.In)
-	if c.withCheck {
-		api.AssertIsEqual(res, c.Expected)
-	}
+	api.AssertIsEqual(res, c.Expected)
 	return nil
 }
 
 func TestToValue(t *testing.T) {
 	assert := test.NewAssert(t)
-	assert.CheckCircuit(&ToValueCircuit{withCheck: true}, test.WithValidAssignment(&ToValueCircuit{In: NewU32(0x12345678), Expected: 0x12345678}))
-	// without the check, Expected is never read.
-	assert.CheckCircuit(&ToValueCircuit{withCheck: false}, test.WithInvalidAssignment(&ToValueCircuit{In: [4]U8{{Val: 0x780}, {Val: 0x56}, {Val: 0x34}, {Val: 0x12}}, Expected: 0x12345678}), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
+	assert.CheckCircuit(&ToValueCircuit{}, test.WithValidAssignment(&ToValueCircuit{In: NewU32(0x12345678), Expected: 0x12345678}))
+	// the first byte is out of range. Expected is what the unchecked
+	// recomposition gives, so that only the range check can fail.
+	assert.CheckCircuit(&ToValueCircuit{}, test.WithInvalidAssignment(&ToValueCircuit{In: [4]U8{{Val: 0x780}, {Val: 0x56}, {Val: 0x34}, {Val: 0x12}}, Expected: 0x12345d80}))
 }
 
 type ValueWitnessCircuit struct {
