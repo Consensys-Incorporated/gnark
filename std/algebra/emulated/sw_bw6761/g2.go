@@ -641,7 +641,9 @@ func computeBW6761G2Table() [][2]*big.Int {
 // ⚠️  When [algopts.WithIncompleteArithmetic] is set, this method is faster but
 // not complete. Besides Q=(0,0) and s in {0, ±1}, there is a sparse
 // point-dependent exceptional set coming from incomplete precomputations and the
-// initial bias step. This mode is intended for random non-adversarial inputs.
+// initial bias step. Every incomplete chord is guarded by an x-coordinate
+// inequality, so an exceptional input makes the circuit unsatisfiable rather
+// than leaving a slope unconstrained.
 //
 // [EEMP25]: https://eprint.iacr.org/2025/933
 func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.AlgebraOption) *G2Affine {
@@ -770,7 +772,11 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 		}
 	}
 
-	addFn := g2.add
+	// In incomplete mode every chord is guarded (addGuarded and
+	// doubleAndAddGuarded): R is prover-chosen, and a chord on equal points
+	// would leave its slope unconstrained, so that the closing check below
+	// would no longer be the exact relation.
+	addFn := g2.addGuarded
 	if !cfg.IncompleteArithmetic {
 		addFn = g2.AddUnified
 	}
@@ -892,7 +898,7 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 			Acc = g2.doubleGeneric(Acc, true)
 			Acc = addFn(Acc, Bi)
 		} else {
-			Acc = g2.doubleAndAdd(Acc, Bi)
+			Acc = g2.doubleAndAddGuarded(Acc, Bi)
 		}
 	}
 

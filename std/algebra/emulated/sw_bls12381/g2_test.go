@@ -988,3 +988,83 @@ func TestMultiScalarMulG2IncompleteCollisionRegression(t *testing.T) {
 		assert.Error(err, "folded MSM forged with λ = √(3x) — soundness break")
 	}, "folded")
 }
+
+type chordGuardG2Circuit struct {
+	P, Q, Res G2Affine
+
+	dbl, guarded bool
+}
+
+func (c *chordGuardG2Circuit) Define(api frontend.API) error {
+	g2, err := NewG2(api)
+	if err != nil {
+		return fmt.Errorf("new G2 struct: %w", err)
+	}
+	var r *G2Affine
+	switch {
+	case c.dbl && c.guarded:
+		r = g2.doubleAndAddGuarded(&c.P, &c.Q)
+	case c.dbl:
+		r = g2.doubleAndAdd(&c.P, &c.Q)
+	case c.guarded:
+		r = g2.addGuarded(&c.P, &c.Q)
+	default:
+		r = g2.add(&c.P, &c.Q)
+	}
+	g2.AssertIsEqual(r, &c.Res)
+	return nil
+}
+
+// doubleAndAddWithSlope returns doubleAndAdd(P, Q) computed natively with the
+// formulas of g2.doubleAndAdd and the first slope λ1 forced to lam.
+func doubleAndAddWithSlope(P, Q bls12381.G2Affine, lam bls12381.E2) bls12381.G2Affine {
+	var x2, l2, t bls12381.E2
+	x2.Square(&lam).Sub(&x2, &P.X).Sub(&x2, &Q.X)
+	t.Sub(&x2, &P.X).Inverse(&t)
+	l2.Double(&P.Y).Mul(&l2, &t).Add(&l2, &lam)
+	var r bls12381.G2Affine
+	r.X.Square(&l2).Sub(&r.X, &P.X).Sub(&r.X, &x2)
+	r.Y.Sub(&r.X, &P.X).Mul(&r.Y, &l2).Sub(&r.Y, &P.Y)
+	return r
+}
+
+// TestChordGuardG2 checks that addGuarded and doubleAndAddGuarded, used for
+// every incomplete chord of G2.scalarMulGLVAndFakeGLV and the incomplete
+// G2.MultiScalarMul aggregation, reject equal inputs. On equal inputs the
+// unguarded chord slope is free (λ·0 = 0): with a replaced divE2Hint the plain
+// add and doubleAndAdd are satisfied by a prover-chosen slope.
+func TestChordGuardG2(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, _, gen := bls12381.Generators()
+	var P, P2 bls12381.G2Affine
+	P.ScalarMultiplication(&gen, big.NewInt(12345))
+	P2.ScalarMultiplication(&gen, big.NewInt(67890))
+	var lam bls12381.E2
+	lam.A0.SetUint64(42)
+	lam.A1.SetUint64(7)
+	id, h := divE2HintZeroOverZero(lam)
+	forgedAdd := chordOnEqualPoints(P, lam)
+	forgedDbl := doubleAndAddWithSlope(P, P, lam)
+	var honestAdd, honestDbl bls12381.G2Affine
+	honestAdd.Add(&P, &P2)
+	honestDbl.Double(&P).Add(&honestDbl, &P2)
+
+	for _, dbl := range []bool{false, true} {
+		forged, honest := forgedAdd, honestAdd
+		if dbl {
+			forged, honest = forgedDbl, honestDbl
+		}
+		w := func(q, res bls12381.G2Affine) *chordGuardG2Circuit {
+			return &chordGuardG2Circuit{P: NewG2Affine(P), Q: NewG2Affine(q), Res: NewG2Affine(res)}
+		}
+		// equal inputs: the unguarded chord accepts the prover-chosen slope
+		err := test.IsSolved(&chordGuardG2Circuit{dbl: dbl}, w(P, forged), ecc.BN254.ScalarField(), test.WithReplacementHint(id, h))
+		assert.NoError(err, "dbl=%v: unguarded chord must accept a free slope on equal inputs", dbl)
+		// the guarded chord rejects it
+		err = test.IsSolved(&chordGuardG2Circuit{dbl: dbl, guarded: true}, w(P, forged), ecc.BN254.ScalarField(), test.WithReplacementHint(id, h))
+		assert.Error(err, "dbl=%v: guarded chord must reject equal inputs", dbl)
+		// distinct inputs still solve
+		err = test.IsSolved(&chordGuardG2Circuit{dbl: dbl, guarded: true}, w(P2, honest), ecc.BN254.ScalarField())
+		assert.NoError(err, "dbl=%v: guarded chord must accept distinct inputs", dbl)
+	}
+}

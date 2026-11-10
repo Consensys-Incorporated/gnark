@@ -345,6 +345,15 @@ func (g2 *G2) addGuarded(p, q *G2Affine) *G2Affine {
 	return g2.add(p, q)
 }
 
+// doubleAndAddGuarded is [G2.doubleAndAdd] with the chord guard p.x ≠ q.x.
+// The second slope 2p.y/(x(p+q)−p.x) has a nonzero numerator for p on the
+// twist, as E'(Fp²) has odd order (no 2-torsion), so it fails closed without a
+// guard.
+func (g2 *G2) doubleAndAddGuarded(p, q *G2Affine) *G2Affine {
+	g2.api.AssertIsEqual(g2.Ext2.IsEqual(&p.P.X, &q.P.X), 0)
+	return g2.doubleAndAdd(p, q)
+}
+
 func (g2 G2) neg(p *G2Affine) *G2Affine {
 	xr := &p.P.X
 	yr := g2.Ext2.Neg(&p.P.Y)
@@ -764,8 +773,8 @@ func (g2 *G2) scalarMulGeneric(p *G2Affine, s *Scalar, opts ...algopts.AlgebraOp
 // ⚠️  When [algopts.WithIncompleteArithmetic] is set, this method is faster but
 // not complete. Besides Q=(0,0) and s in {0, ±1}, there is a sparse
 // point-dependent exceptional set coming from incomplete precomputations and the
-// initial bias step. This mode is intended for random non-adversarial inputs.
-// (0,0) is not on the curve but we conventionally take it as the
+// initial bias step. Every incomplete chord is guarded, so an exceptional input
+// makes the circuit unsatisfiable. (0,0) is not on the curve but we conventionally take it as the
 // neutral/infinity point as per the [EVM].
 //
 // [EVM]: https://ethereum.github.io/yellowpaper/paper.pdf
@@ -839,7 +848,9 @@ func (g2 *G2) assertPointInSubgroup(R *G2Affine) {
 // ⚠️  When [algopts.WithIncompleteArithmetic] is set, this method is faster but
 // not complete. Besides Q=(0,0) and s in {0, ±1}, there is a sparse
 // point-dependent exceptional set coming from incomplete precomputations and the
-// initial bias step. This mode is intended for random non-adversarial inputs.
+// initial bias step. Every incomplete chord is guarded by an x-coordinate
+// inequality, so an exceptional input makes the circuit unsatisfiable rather
+// than leaving a slope unconstrained.
 //
 // Assumptions and caller obligations:
 //
@@ -850,9 +861,9 @@ func (g2 *G2) assertPointInSubgroup(R *G2Affine) {
 //     an off-curve R it can be vacuous: in complete mode, R = (Q.x, y) with
 //     y ≠ ±Q.y turns every ±Q ± R precomputation entry into O, and when all four
 //     sub-scalars are odd the closing check passes for any y.
-//   - With [algopts.WithIncompleteArithmetic], "group-law relation" holds only
-//     away from the exceptional set above: an incomplete addition of two equal
-//     points leaves its slope λ unconstrained (0·λ = 0).
+//   - With [algopts.WithIncompleteArithmetic], the chords are guarded
+//     (p.x ≠ q.x), so for an on-curve R every step is the exact group operation
+//     or the circuit is unsatisfiable.
 //
 // Callers must therefore bind the output: either with [G2.assertPointInSubgroup]
 // on R itself (its on-curve preimage also implies R is on the curve, as in
@@ -952,7 +963,11 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 		R = g2.Select(isScalarOne, dummyR, R)
 	}
 
-	addFn := g2.add
+	// In incomplete mode every chord is guarded (addGuarded and
+	// doubleAndAddGuarded): R is prover-chosen, and a chord on equal points
+	// would leave its slope unconstrained, so that the closing check below
+	// would no longer be the exact relation.
+	addFn := g2.addGuarded
 	if !cfg.IncompleteArithmetic {
 		addFn = g2.AddUnified
 	}
@@ -1065,7 +1080,7 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 			Acc = g2.doubleGeneric(Acc, true)
 			Acc = addFn(Acc, Bi)
 		} else {
-			Acc = g2.doubleAndAdd(Acc, Bi)
+			Acc = g2.doubleAndAddGuarded(Acc, Bi)
 		}
 	}
 
