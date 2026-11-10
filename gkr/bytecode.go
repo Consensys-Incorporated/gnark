@@ -72,8 +72,8 @@ func (g *GateBytecode) EvaluatorSize() int {
 }
 
 // CheckConstantPositions returns an error naming the first instruction whose constant operands are
-// not where the evaluators read them first: an Add or Mul can only have them at index 0, and a Sub
-// can only have them at index 0 or 1.
+// not where the evaluators read them first: an Add or Mul can only have them at index 0, a Sub can
+// only have them at index 0 or 1, and the operand at index 1 of a MulAcc is a register.
 func (g *GateBytecode) CheckConstantPositions() error {
 	nbRegisters := g.NbRegisters()
 	for i, inst := range g.Instructions {
@@ -83,6 +83,11 @@ func (g *GateBytecode) CheckConstantPositions() error {
 			lastPosition = 0
 		case OpSub:
 			lastPosition = 1
+		case OpMulAcc:
+			if int(inst.Inputs[1]) >= nbRegisters {
+				return fmt.Errorf("instruction %d (%s): constant operand at position 1", i, inst.Op)
+			}
+			continue
 		default:
 			continue
 		}

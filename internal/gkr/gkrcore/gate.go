@@ -56,16 +56,26 @@ func (gc *gateCompiler) Add(i1, i2 frontend.Variable, in ...frontend.Variable) f
 }
 
 // MulAcc records a multiply-accumulate operation: a + (b * c). The instruction reads the
-// multiplicands first and the addend last, with a constant multiplicand before the other.
+// multiplicands first and the addend last, with a constant multiplicand before the other. With two
+// constant multiplicands, it records an addition of their product. With three constants, it is itself
+// a constant.
 func (gc *gateCompiler) MulAcc(a, b, c frontend.Variable) frontend.Variable {
-	if _, ok := constantValue(c); ok {
+	bValue, bIsConst := constantValue(b)
+	cValue, cIsConst := constantValue(c)
+	if bIsConst && cIsConst {
+		return gc.Add(bValue.Mul(bValue, cValue), a)
+	}
+	if cIsConst {
 		b, c = c, b
 	}
 	return gc.addInstruction(gkr.OpMulAcc, b, c, a)
 }
 
-// Neg records a negation operation
+// Neg records a negation operation. The negation of a constant is itself a constant.
 func (gc *gateCompiler) Neg(i1 frontend.Variable) frontend.Variable {
+	if c, ok := constantValue(i1); ok {
+		return c.Neg(c)
+	}
 	return gc.addInstruction(gkr.OpNeg, i1)
 }
 
@@ -133,8 +143,16 @@ func (gc *gateCompiler) recordCommutative(op gkr.GateOp, identity *big.Int, comb
 }
 
 // SumExp17 records (a + b + c)^17 as a single instruction. If any of a, b, c is a constant, the
-// first one found is read first. Constants are not merged.
+// first one found is read first. Constants are not merged. If all three are constants, it is itself a
+// constant.
 func (gc *gateCompiler) SumExp17(a, b, c frontend.Variable) frontend.Variable {
+	aValue, aIsConst := constantValue(a)
+	bValue, bIsConst := constantValue(b)
+	cValue, cIsConst := constantValue(c)
+	if aIsConst && bIsConst && cIsConst {
+		sum := aValue.Add(aValue, bValue)
+		return sum.Exp(sum.Add(sum, cValue), big.NewInt(17), nil)
+	}
 	operands := []frontend.Variable{a, b, c}
 	for i, v := range operands {
 		if _, ok := constantValue(v); ok {

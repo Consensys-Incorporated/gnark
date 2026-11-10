@@ -333,6 +333,42 @@ func TestBytecode(t *testing.T) {
 			2,
 		},
 		{
+			"x+2·3: a multiply-accumulate of two constants records an addition, constant first",
+			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
+				return api.MulAcc(in[0], 2, 3)
+			},
+			1, []int64{6},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
+			1,
+		},
+		{
+			"x+(-5): the negation of a constant is a constant",
+			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
+				return api.Add(in[0], api.Neg(5))
+			},
+			1, []int64{-5},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
+			1,
+		},
+		{
+			"x+(1+2·3): a multiply-accumulate of constants is a constant",
+			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
+				return api.Add(in[0], api.MulAcc(1, 2, 3))
+			},
+			1, []int64{7},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
+			1,
+		},
+		{
+			"x+(1+2+3)^17: a sum raised to the power 17 of constants is a constant",
+			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
+				return api.Add(in[0], api.SumExp17(1, 2, 3))
+			},
+			1, []int64{16926659444736},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{1, 0}}},
+			1,
+		},
+		{
 			"hand-built: a constant in position 2 of an Add",
 			nil,
 			2, []int64{5},
