@@ -1137,7 +1137,9 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 // an x-coordinate inequality: if a partial sum equals ± the next summand (e.g.
 // MSM([Q, Q], [s, s])), the circuit is unsatisfiable. Without the guard the
 // chord slope of a collision is unconstrained and a malicious prover could
-// choose the result.
+// choose the result. A zero scalar (mod r) also makes the circuit
+// unsatisfiable: it would give a (0,0) summand, which the incomplete addition
+// does not treat as O.
 func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.AlgebraOption) (*G2Affine, error) {
 
 	if len(p) == 0 {
@@ -1187,6 +1189,11 @@ func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.Algebra
 		for i := 0; i < n; i++ {
 			var q *G2Affine
 			if d, ok := g2.g2CombTryConst(p[i]); ok {
+				if cfg.IncompleteArithmetic {
+					// the comb returns (0,0) for s ≡ 0, which the incomplete
+					// aggregation would chord-add as an ordinary point.
+					g2.fr.AssertIsDifferent(s[i], g2.fr.Zero())
+				}
 				q = g2.scalarMulComb(d, s[i])
 			} else {
 				q = g2.scalarMulGLVAndFakeGLV(p[i], s[i], opts...)
@@ -1220,6 +1227,12 @@ func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.Algebra
 			return p[0], nil
 		}
 		gamma := s[0]
+		if cfg.IncompleteArithmetic {
+			// γ = 0 makes ScalarMul return (0,0) (always for a constant last
+			// point), which the incomplete aggregation would chord-add as an
+			// ordinary point.
+			g2.fr.AssertIsDifferent(gamma, g2.fr.Zero())
+		}
 		res := g2.ScalarMul(p[len(p)-1], gamma, opts...)
 		for i := len(p) - 2; i > 0; i-- {
 			res = addFn(p[i], res)
