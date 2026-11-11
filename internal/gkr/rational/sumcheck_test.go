@@ -27,7 +27,7 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() fiel
 	claim := singleMultilinClaim{g: poly.Clone()}
 	t := gkrcore.NewNativeTranscript(hashGenerator())
 
-	proof := sumcheckProve(&claim, t)
+	proof := sumcheckProve(&claim, poly.Sum(), t)
 
 	var sb strings.Builder
 	for _, p := range proof.partialSumPolys {

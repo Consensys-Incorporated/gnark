@@ -19,7 +19,7 @@ type sumcheckLazyClaims interface {
 
 // sumcheckProof of a multi-sumcheck statement.
 type sumcheckProof struct {
-	PartialSumPolys []polynomial.Polynomial
+	PartialSumPolys []polynomial.Polynomial // for each round j, the coefficients c₁, ..., c_d of gⱼ(X) = ∑ᵢ cᵢXⁱ; c₀ is derived by the verifier
 	FinalEvalProof  []frontend.Variable
 }
 
@@ -51,20 +51,19 @@ func (t *transcript) Squeeze(elements ...frontend.Variable) frontend.Variable {
 func verifySumcheck(api frontend.API, claims sumcheckLazyClaims, proof sumcheckProof, claimedSum frontend.Variable, degree int, t *transcript) error {
 	r := make([]frontend.Variable, claims.varsNum())
 
-	gJ := make(polynomial.Polynomial, degree+1)
 	gJR := claimedSum
 
+	// gⱼ(0) + gⱼ(1) = gⱼ₋₁(rⱼ₋₁) and gⱼ(1) = ∑ᵢ₌₀ cᵢ give c₀ = (gⱼ₋₁(rⱼ₋₁) - ∑ᵢ₌₁ cᵢ) / 2.
 	for j := range claims.varsNum() {
 		partialSumPoly := proof.PartialSumPolys[j]
 		if len(partialSumPoly) != degree {
 			return errors.New("malformed proof")
 		}
-		copy(gJ[1:], partialSumPoly)
-		gJ[0] = api.Sub(gJR, partialSumPoly[0]) // Requirement that gⱼ(0) + gⱼ(1) = gⱼ₋₁(r)
+		c0 := api.Div(api.Sub(gJR, partialSumPoly.Eval(api, 1)), 2)
 
 		r[j] = t.Squeeze(proof.PartialSumPolys[j]...)
 
-		gJR = polynomial.InterpolateLDE(api, r[j], gJ[:(degree+1)])
+		gJR = api.Add(api.Mul(partialSumPoly.Eval(api, r[j]), r[j]), c0)
 	}
 
 	return claims.verifyFinalEval(api, r, gJR, proof.FinalEvalProof)

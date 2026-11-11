@@ -37,9 +37,14 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 		return err
 	}
 
+	var claimedSum rational.Element
+	if _, err = claimedSum.SetInterface(testCaseInfo.ClaimedSum); err != nil {
+		return err
+	}
+
 	claim := singleMultilinClaim{poly}
 	t := gkrcore.NewNativeTranscript(hsh)
-	proof := sumcheckProve(&claim, t)
+	proof := sumcheckProve(&claim, claimedSum, t)
 	testCaseInfo.Proof = sumcheckToPrintableProof(proof)
 
 	// Verification
@@ -48,11 +53,6 @@ func runMultilin(testCaseInfo *sumcheckTestCaseInfo) error {
 	} else {
 		return _err
 	}
-	var claimedSum rational.Element
-	if _, err = claimedSum.SetInterface(testCaseInfo.ClaimedSum); err != nil {
-		return err
-	}
-
 	if hsh, err = hashFromDescription(testCaseInfo.Hash); err != nil {
 		return err
 	}
@@ -173,6 +173,12 @@ func sumForX1One(g polynomial.MultiLin) polynomial.Polynomial {
 
 func (c *singleMultilinClaim) roundPolynomial() polynomial.Polynomial {
 	return sumForX1One(c.g)
+}
+
+func (c *singleMultilinClaim) evaluationAtZero(_ int, claim, atOne rational.Element) rational.Element {
+	var res rational.Element
+	res.Sub(&claim, &atOne)
+	return res
 }
 
 func (c *singleMultilinClaim) roundFold(r rational.Element) {

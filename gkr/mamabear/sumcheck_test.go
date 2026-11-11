@@ -30,7 +30,7 @@ func testSumcheckSingleClaimMultilin(polyInt []uint64, hashGenerator func() fiel
 	claim := singleMultilinClaim{g: poly.Clone()}
 	t := gkrcore.NewExtensionTranscript[extensions.E3](hashGenerator())
 
-	proof := sumcheckProve(&claim, t)
+	proof := sumcheckProve(&claim, poly.Sum(), t)
 
 	var sb strings.Builder
 	for _, p := range proof.partialSumPolys {
@@ -111,6 +111,12 @@ func sumForX1One(g polynomial.MultiLinE3) polynomial.PolynomialE3 {
 
 func (c *singleMultilinClaim) roundPolynomial() polynomial.PolynomialE3 {
 	return sumForX1One(c.g)
+}
+
+func (c *singleMultilinClaim) evaluationAtZero(_ int, claim, atOne extensions.E3) extensions.E3 {
+	var res extensions.E3
+	res.Sub(&claim, &atOne)
+	return res
 }
 
 func (c *singleMultilinClaim) roundFold(r extensions.E3) {

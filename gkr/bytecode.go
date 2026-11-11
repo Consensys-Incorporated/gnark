@@ -11,7 +11,7 @@ const (
 	OpMul                    // result = src1 * src2 * ...
 	OpNeg                    // result = -src1
 	_                        // retired: the multiply-accumulate that read its addend first
-	OpSumExp17               // result = (src1 + src2 + src3)^17
+	OpSumExp17               // result = (src1 + src2 + src3)¹⁷
 	OpMulAcc                 // result = (src1 * src2) + src3
 )
 

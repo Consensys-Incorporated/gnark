@@ -163,7 +163,7 @@ func (e *{{ $ge }}) Evaluate(top ...{{ $elem }}) *{{ $elem }} {
 			{{- end }}
 			dst.Add(&prod, &e.vars[inst.Inputs[2]])
 		case gkr.OpSumExp17:
-			// result = (x[0] + x[1] + x[2])^17
+			// result = (x[0] + x[1] + x[2])¹⁷
 			var sum {{ $elem }}
 			{{- if .Mixed }}
 			if e.isInputConstant(inst, 0) {
