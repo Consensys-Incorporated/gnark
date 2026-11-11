@@ -309,6 +309,10 @@ func (g2 *G2) AddUnified(p, q *G2Affine) *G2Affine {
 	return result
 }
 
+// add is the incomplete chord addition p + q. The slope is pinned only by
+// λ·(q.x−p.x) = q.y−p.y, so it is unconstrained when p.x = q.x. It is NOT
+// guarded: never use it on inputs the prover can influence unless p.x ≠ q.x is
+// otherwise known or enforced, use [G2.addGuarded] instead.
 func (g2 G2) add(p, q *G2Affine) *G2Affine {
 
 	// compute λ = (q.y-p.y)/(q.x-p.x)
@@ -468,6 +472,9 @@ func (g2 G2) triple(p *G2Affine) *G2Affine {
 	}
 }
 
+// doubleAndAdd computes 2p + q with the incomplete chord formulas. As in
+// [G2.add] the first slope is unconstrained when p.x = q.x. It is NOT guarded:
+// use [G2.doubleAndAddGuarded] on inputs the prover can influence.
 func (g2 G2) doubleAndAdd(p, q *G2Affine) *G2Affine {
 
 	// compute λ1 = (q.y-p.y)/(q.x-p.x)
@@ -773,9 +780,10 @@ func (g2 *G2) scalarMulGeneric(p *G2Affine, s *Scalar, opts ...algopts.AlgebraOp
 // ⚠️  When [algopts.WithIncompleteArithmetic] is set, this method is faster but
 // not complete. Besides Q=(0,0) and s in {0, ±1}, there is a sparse
 // point-dependent exceptional set coming from incomplete precomputations and the
-// initial bias step. Every incomplete chord is guarded, so an exceptional input
-// makes the circuit unsatisfiable. (0,0) is not on the curve but we conventionally take it as the
-// neutral/infinity point as per the [EVM].
+// initial bias step. Every incomplete chord is guarded by an x-coordinate
+// inequality, so an exceptional input makes the circuit unsatisfiable rather
+// than leaving a slope unconstrained. (0,0) is not on the curve but we
+// conventionally take it as the neutral/infinity point as per the [EVM].
 //
 // [EVM]: https://ethereum.github.io/yellowpaper/paper.pdf
 //
@@ -1137,9 +1145,10 @@ func (g2 *G2) scalarMulGLVAndFakeGLV(Q *G2Affine, s *Scalar, opts ...algopts.Alg
 // an x-coordinate inequality: if a partial sum equals ± the next summand (e.g.
 // MSM([Q, Q], [s, s])), the circuit is unsatisfiable. Without the guard the
 // chord slope of a collision is unconstrained and a malicious prover could
-// choose the result. A zero scalar (mod r) also makes the circuit
-// unsatisfiable: it would give a (0,0) summand, which the incomplete addition
-// does not treat as O.
+// choose the result. With more than one summand, a zero scalar (mod r) also
+// makes the circuit unsatisfiable: it would give a (0,0) summand, which the
+// incomplete addition does not treat as O. A single summand is not aggregated,
+// so a constant point with a zero scalar still gives (0,0).
 func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.AlgebraOption) (*G2Affine, error) {
 
 	if len(p) == 0 {
@@ -1189,9 +1198,10 @@ func (g2 *G2) MultiScalarMul(p []*G2Affine, s []*Scalar, opts ...algopts.Algebra
 		for i := 0; i < n; i++ {
 			var q *G2Affine
 			if d, ok := g2.g2CombTryConst(p[i]); ok {
-				if cfg.IncompleteArithmetic {
+				if cfg.IncompleteArithmetic && n > 1 {
 					// the comb returns (0,0) for s ≡ 0, which the incomplete
-					// aggregation would chord-add as an ordinary point.
+					// aggregation would chord-add as an ordinary point. A single
+					// summand is not aggregated and (0,0) is then correct.
 					g2.fr.AssertIsDifferent(s[i], g2.fr.Zero())
 				}
 				q = g2.scalarMulComb(d, s[i])

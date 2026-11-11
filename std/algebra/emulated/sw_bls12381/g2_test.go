@@ -804,18 +804,6 @@ func divE2HintZeroOverZero(lam bls12381.E2) (solver.HintID, solver.Hint) {
 	}
 }
 
-// chordOnEqualPoints returns add(P, P) computed with the chord formula of
-// g2.add and the slope lam: (λ² − 2x, λ(x − x_r) − y).
-func chordOnEqualPoints(P bls12381.G2Affine, lam bls12381.E2) bls12381.G2Affine {
-	var r bls12381.G2Affine
-	var t bls12381.E2
-	r.X.Square(&lam)
-	t.Double(&P.X)
-	r.X.Sub(&r.X, &t)
-	r.Y.Sub(&P.X, &r.X).Mul(&r.Y, &lam).Sub(&r.Y, &P.Y)
-	return r
-}
-
 type multiScalarMulConstG2Test struct {
 	Scalars []Scalar
 	Res     G2Affine
@@ -899,21 +887,24 @@ func TestMultiScalarMulG2IncompleteCollisionRegression(t *testing.T) {
 	Q.ScalarMultiplication(&gen, big.NewInt(12345))
 	var s *big.Int
 	var sqrt3x bls12381.E2
-	for k := int64(1); ; k++ {
-		s = oddDecompositionScalar(byte(k))
-		sQ.ScalarMultiplication(&Q, s)
+	for k := 1; k < 256 && s == nil; k++ {
+		cand := oddDecompositionScalar(byte(k))
+		sQ.ScalarMultiplication(&Q, cand)
 		sqrt3x.Mul(&sQ.X, &three)
 		if sqrt3x.Legendre() == 1 {
 			sqrt3x.Sqrt(&sqrt3x)
-			break
+			s = cand
 		}
+	}
+	if s == nil {
+		t.Fatal("no scalar with 3·x([s]Q) a square among the 255 candidates")
 	}
 	var negSQ bls12381.G2Affine
 	negSQ.Neg(&sQ)
-	if forged := chordOnEqualPoints(sQ, sqrt3x); !forged.Equal(&negSQ) {
+	if forged := chordWithSlope(sQ, sQ, sqrt3x); !forged.Equal(&negSQ) {
 		t.Fatal("λ = √(3x) must give −P")
 	}
-	stockForged := chordOnEqualPoints(sQ, bls12381.E2{})
+	stockForged := chordWithSlope(sQ, sQ, bls12381.E2{})
 	scalarAssign := []Scalar{emulated.ValueOf[ScalarField](s), emulated.ValueOf[ScalarField](s)}
 
 	assert.Run(func(assert *test.Assert) {
@@ -1043,7 +1034,7 @@ func TestChordGuardG2(t *testing.T) {
 	lam.A0.SetUint64(42)
 	lam.A1.SetUint64(7)
 	id, h := divE2HintZeroOverZero(lam)
-	forgedAdd := chordOnEqualPoints(P, lam)
+	forgedAdd := chordWithSlope(P, P, lam)
 	forgedDbl := doubleAndAddWithSlope(P, P, lam)
 	var honestAdd, honestDbl bls12381.G2Affine
 	honestAdd.Add(&P, &P2)
@@ -1116,8 +1107,9 @@ func (c *multiScalarMulFoldedConstLastG2Test) Define(api frontend.API) error {
 // aggregation adds it with the chord formula, whose slope is then unique: the
 // result is a fixed wrong point, which a prover who chooses the scalars could
 // claim. The same happens in the folding path for γ = 0 and a constant last
-// point. Zero scalars are exceptional in incomplete mode and must make the
-// circuit unsatisfiable.
+// point. With more than one summand, zero scalars are exceptional in incomplete
+// mode and must make the circuit unsatisfiable; a single summand is not
+// aggregated, so its (0,0) is the correct result.
 func TestMultiScalarMulG2IncompleteZeroScalarRegression(t *testing.T) {
 	assert := test.NewAssert(t)
 	_, _, _, gen := bls12381.Generators()
@@ -1148,6 +1140,16 @@ func TestMultiScalarMulG2IncompleteZeroScalarRegression(t *testing.T) {
 		err = test.IsSolved(circuit, w(fr_bls12381.Modulus(), chordFromInfinity(s2P2)), ecc.BN254.ScalarField())
 		assert.Error(err, "constant MSM with a scalar r ≡ 0 forged — soundness break")
 	}, "constant")
+
+	assert.Run(func(assert *test.Assert) {
+		circuit := &multiScalarMulConstG2Test{Scalars: make([]Scalar, 1), points: []bls12381.G2Affine{P1}, opts: incomplete}
+		for _, s1 := range []*big.Int{big.NewInt(0), fr_bls12381.Modulus()} {
+			err := test.IsSolved(circuit,
+				&multiScalarMulConstG2Test{Scalars: []Scalar{emulated.ValueOf[ScalarField](s1)}, Res: NewG2Affine(bls12381.G2Affine{})},
+				ecc.BN254.ScalarField())
+			assert.NoError(err, "single constant summand with s1 = %s must give (0,0)", s1)
+		}
+	}, "single-constant")
 
 	assert.Run(func(assert *test.Assert) {
 		// MSM([P0, P1], γ) = P0 + [γ]P1 with P1 constant: γ = 0 gives P0 + (0,0).
