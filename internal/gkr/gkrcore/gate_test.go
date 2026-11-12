@@ -157,7 +157,7 @@ func TestBytecode(t *testing.T) {
 			2,
 		},
 		{
-			"x+(2-5): folding is exact over the integers",
+			"x+(2-5): folding is exact modulo the field",
 			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
 				return api.Add(in[0], api.Sub(2, 5))
 			},
@@ -369,6 +369,15 @@ func TestBytecode(t *testing.T) {
 			2,
 		},
 		{
+			"x+(p-1)¹⁷: folding is modulo the field",
+			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
+				return api.Add(in[0], api.SumExp17(new(big.Int).Sub(ecc.BN254.ScalarField(), big.NewInt(1)), 0, 0))
+			},
+			1, []int64{-1},
+			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{2, 0}, Dst: 1}},
+			2,
+		},
+		{
 			"hand-built: a constant in position 2 of an Add",
 			nil,
 			2, []int64{5},
@@ -405,11 +414,15 @@ func TestBytecode(t *testing.T) {
 			compiled, err := CompileGateFunction(tt.f, tt.nbIn, bn254())
 			require.NoError(t, err)
 
-			var constants []int64
-			for _, c := range compiled.Evaluate.Constants {
-				constants = append(constants, c.Int64())
+			// the constants are residues modulo the field's, p-3 for -3
+			var expected, constants []string
+			for _, c := range tt.constants {
+				expected = append(expected, new(big.Int).Mod(big.NewInt(c), ecc.BN254.ScalarField()).String())
 			}
-			assert.Equal(t, tt.constants, constants)
+			for _, c := range compiled.Evaluate.Constants {
+				constants = append(constants, c.String())
+			}
+			assert.Equal(t, expected, constants)
 			assert.Equal(t, tt.instructions, compiled.Evaluate.Instructions)
 			assert.Equal(t, tt.nbRegisters, compiled.Evaluate.NbRegisters())
 			assert.NoError(t, compiled.Evaluate.CheckConstantPositions())

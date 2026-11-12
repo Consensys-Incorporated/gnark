@@ -20,6 +20,7 @@ import (
 type gateCompiler struct {
 	instructions []recordedInstruction // each instruction defines exactly one output variable
 	nbInputs     int
+	modulus      *big.Int // the modulus of the field the gate is compiled for; constants are reduced by it
 }
 
 // recordedInstruction is an operation that a gateCompiler recorded.
@@ -37,7 +38,7 @@ type compilationVar struct {
 func (gc *gateCompiler) addInstruction(op gkr.GateOp, inputs ...frontend.Variable) compilationVar {
 	operands := make([]any, len(inputs))
 	for i, in := range inputs {
-		if c, ok := constantValue(in); ok {
+		if c, ok := gc.constantValue(in); ok {
 			operands[i] = c
 		} else {
 			operands[i] = in
@@ -60,10 +61,10 @@ func (gc *gateCompiler) Add(i1, i2 frontend.Variable, in ...frontend.Variable) f
 // constant multiplicands, it records an addition of their product. With three constants, it is itself
 // a constant.
 func (gc *gateCompiler) MulAcc(a, b, c frontend.Variable) frontend.Variable {
-	bValue, bIsConst := constantValue(b)
-	cValue, cIsConst := constantValue(c)
+	bValue, bIsConst := gc.constantValue(b)
+	cValue, cIsConst := gc.constantValue(c)
 	if bIsConst && cIsConst {
-		return gc.Add(bValue.Mul(bValue, cValue), a)
+		return gc.Add(bValue.Mul(bValue, cValue).Mod(bValue, gc.modulus), a)
 	}
 	if cIsConst {
 		b, c = c, b
@@ -73,8 +74,8 @@ func (gc *gateCompiler) MulAcc(a, b, c frontend.Variable) frontend.Variable {
 
 // Neg records a negation operation. The negation of a constant is itself a constant.
 func (gc *gateCompiler) Neg(i1 frontend.Variable) frontend.Variable {
-	if c, ok := constantValue(i1); ok {
-		return c.Neg(c)
+	if c, ok := gc.constantValue(i1); ok {
+		return c.Neg(c).Mod(c, gc.modulus)
 	}
 	return gc.addInstruction(gkr.OpNeg, i1)
 }
@@ -84,13 +85,13 @@ func (gc *gateCompiler) Neg(i1 frontend.Variable) frontend.Variable {
 // constant.
 func (gc *gateCompiler) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) frontend.Variable {
 	operands := append([]frontend.Variable{i1, i2}, in...)
-	minuend, minuendIsConst := constantValue(operands[0])
+	minuend, minuendIsConst := gc.constantValue(operands[0])
 
 	subtrahends := new(big.Int)
 	hasConst := false
 	nbKept := 1
 	for _, v := range operands[1:] {
-		if c, ok := constantValue(v); ok {
+		if c, ok := gc.constantValue(v); ok {
 			subtrahends.Add(subtrahends, c)
 			hasConst = true
 		} else {
@@ -99,9 +100,10 @@ func (gc *gateCompiler) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) f
 		}
 	}
 	operands = operands[:nbKept]
+	subtrahends.Mod(subtrahends, gc.modulus)
 
 	if minuendIsConst {
-		diff := minuend.Sub(minuend, subtrahends)
+		diff := minuend.Sub(minuend, subtrahends).Mod(minuend, gc.modulus)
 		if nbKept == 1 {
 			return diff
 		}
@@ -126,8 +128,9 @@ func (gc *gateCompiler) recordCommutative(op gkr.GateOp, identity *big.Int, comb
 	hasConst := false
 	var vars []frontend.Variable
 	for _, v := range append([]frontend.Variable{i1, i2}, in...) {
-		if c, ok := constantValue(v); ok {
+		if c, ok := gc.constantValue(v); ok {
 			folded = combine(new(big.Int), folded, c)
+			folded.Mod(folded, gc.modulus)
 			hasConst = true
 		} else {
 			vars = append(vars, v)
@@ -146,16 +149,16 @@ func (gc *gateCompiler) recordCommutative(op gkr.GateOp, identity *big.Int, comb
 // first one found is read first. Constants are not merged. If all three are constants, it is itself a
 // constant.
 func (gc *gateCompiler) SumExp17(a, b, c frontend.Variable) frontend.Variable {
-	aValue, aIsConst := constantValue(a)
-	bValue, bIsConst := constantValue(b)
-	cValue, cIsConst := constantValue(c)
+	aValue, aIsConst := gc.constantValue(a)
+	bValue, bIsConst := gc.constantValue(b)
+	cValue, cIsConst := gc.constantValue(c)
 	if aIsConst && bIsConst && cIsConst {
 		sum := aValue.Add(aValue, bValue)
-		return sum.Exp(sum.Add(sum, cValue), big.NewInt(17), nil)
+		return sum.Exp(sum.Add(sum, cValue), big.NewInt(17), gc.modulus)
 	}
 	operands := []frontend.Variable{a, b, c}
 	for i, v := range operands {
-		if _, ok := constantValue(v); ok {
+		if _, ok := gc.constantValue(v); ok {
 			operands[0], operands[i] = operands[i], operands[0]
 			break
 		}
@@ -163,13 +166,14 @@ func (gc *gateCompiler) SumExp17(a, b, c frontend.Variable) frontend.Variable {
 	return gc.addInstruction(gkr.OpSumExp17, operands...)
 }
 
-// constantValue returns v's value if v is a constant, that is, not a variable of the gate.
-func constantValue(v frontend.Variable) (*big.Int, bool) {
+// constantValue returns v's value, reduced modulo the field's, if v is a constant, that is, not a
+// variable of the gate.
+func (gc *gateCompiler) constantValue(v frontend.Variable) (*big.Int, bool) {
 	if _, ok := v.(compilationVar); ok {
 		return nil, false
 	}
 	val := utils.FromInterface(v)
-	return &val, true
+	return val.Mod(&val, gc.modulus), true
 }
 
 // removeDeadCode removes the instructions whose result does not reach the output, and renumbers the
@@ -320,7 +324,7 @@ func (gc *gateCompiler) toBytecode() gkr.GateBytecode {
 // This consists of compiling into bytecode as well as computing gate metadata
 // such as degree and solvable var index for the given field.
 func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.SerializableGate, error) {
-	compiler := gateCompiler{nbInputs: nbInputs}
+	compiler := gateCompiler{nbInputs: nbInputs, modulus: field.Modulus}
 
 	inputs := make([]frontend.Variable, nbInputs)
 	for i := range uint16(nbInputs) {
