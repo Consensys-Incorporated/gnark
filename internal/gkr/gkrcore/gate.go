@@ -358,10 +358,11 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 	tester := gateTester{field: field}
 	tester.setGate(bytecode)
 
-	degree := len(tester.fitPoly(bytecode.EstimateDegree())) - 1
-	if degree == -1 {
+	p := tester.fitPoly(bytecode.EstimateDegree())
+	if p == nil {
 		return gkr.SerializableGate{}, errors.New("cannot find degree for gate")
 	}
+	degree := max(len(p)-1, 1) // overestimating a constant gate's degree for the proof to work
 
 	solvableVar := -1
 	for j := range nbInputs {
