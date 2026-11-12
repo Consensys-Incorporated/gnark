@@ -367,9 +367,10 @@ func generateGkrBackend(cfg gkrConfig) error {
 	}
 
 	if !cfg.GenerateTestVectors {
-		entries = append(entries, bavard.Entry{
-			File: filepath.Join(proverDir, "gkr_test.go"), Templates: []string{"gkr.test.go.tmpl", "gkr.test.vectors.go.tmpl"},
-		})
+		entries = append(entries,
+			bavard.Entry{File: filepath.Join(proverDir, "gkr_test.go"), Templates: []string{"gkr.test.go.tmpl", "gkr.test.vectors.go.tmpl"}},
+			bavard.Entry{File: filepath.Join(internalDir, "evaluator_test.go"), Templates: []string{"evaluator.test.go.tmpl"}},
+		)
 	}
 
 	if cfg.GenerateTestVectors {

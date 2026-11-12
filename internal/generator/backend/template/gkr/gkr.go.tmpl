@@ -108,7 +108,7 @@ func (r *resources) evaluateBase(col {{ .BasePolynomial }}.MultiLin, point []{{ 
 // identityGate is the identity gate LevelCircuit and consolidationView use to build level 0's
 // view of the circuit.
 func identityGate() gkr.SerializableGate {
-	return gkr.SerializableGate{Evaluate: gkr.IdentityBytecode(), NbIn: 1, Degree: 1}
+	return gkr.SerializableGate{Evaluate: gkr.IdentityBytecode(), Degree: 1}
 }
 
 // newResources builds the resources shared by Prove and Verify. It takes no assignment and
@@ -166,7 +166,7 @@ func (r *resources) verifySkipLevel(levelI int) error {
 
 	for levelWireI, wI := range group.Wires {
 		wire := r.circuit[wI]
-		evaluator := {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}(wire.Gate.Evaluate, len(wire.Inputs))
+		evaluator := {{ .EvaluatorQualifier }}New{{ $gateEvaluator }}(wire.Gate.Evaluate)
 		for claimI, src := range group.ClaimSources {
 			for _, inI := range inputIndices[levelWireI] {
 				evaluator.PushInput(finalEval[level.FinalEvalProofIndex(inI, claimI)])
@@ -237,9 +237,9 @@ func Prove{{ $typeParams }}(c Circuit, schedule constraint.GkrProvingSchedule, a
 			assignment[wireI] = make([]{{ .BaseElementType }}, nbInstances)
 			r.workers.Submit(nbInstances, func(start, end int) {
 				{{- if .Mixed }}
-				gateEval := {{ .EvaluatorQualifier }}NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs))
+				gateEval := {{ .EvaluatorQualifier }}NewGateEvaluator(c[wireI].Gate.Evaluate)
 				{{- else }}
-				gateEval := {{ .EvaluatorQualifier }}NewGateEvaluator(c[wireI].Gate.Evaluate, len(c[wireI].Inputs), &r.memPool)
+				gateEval := {{ .EvaluatorQualifier }}NewGateEvaluator(c[wireI].Gate.Evaluate, &r.memPool)
 				{{- end }}
 				for instanceI := start; instanceI < end; instanceI++ {
 					for _, inputWireI := range c[wireI].Inputs {
@@ -397,7 +397,7 @@ func (a WireAssignment) Complete(circuit Circuit) WireAssignment {
 			a[i] = make([]{{ .BaseElementType }}, nbInstances)
 		}
 		if !circuit[i].IsInput() {
-			evaluators[i] = {{ .EvaluatorQualifier }}NewGateEvaluator(circuit[i].Gate.Evaluate, len(circuit[i].Inputs))
+			evaluators[i] = {{ .EvaluatorQualifier }}NewGateEvaluator(circuit[i].Gate.Evaluate)
 		}
 	}
 

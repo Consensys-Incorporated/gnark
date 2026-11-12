@@ -16,31 +16,35 @@ import (
 )
 
 // GateEvaluator provides a high-level API for evaluating compiled gates efficiently.
-// It manages the stack internally and handles input buffering, making it easy to
+// It manages the registers and constants internally and handles input buffering, making it easy to
 // evaluate the same gate multiple times with different inputs.
 type GateEvaluator struct {
-	gate gkr.GateBytecode
-	vars []rational.Element
-	nbIn int              // number of inputs expected
-	pool *polynomial.Pool // pool vars was allocated from, if any
+	gate        gkr.GateBytecode
+	vars        []rational.Element // the registers, then the constants
+	nbRegisters int                // number of registers, which the constants follow in vars
+	nbPushed    int                // number of inputs pushed since the last evaluation
+	pool        *polynomial.Pool   // pool vars was allocated from, if any
 }
 
 // NewGateEvaluator creates an evaluator for the given compiled gate.
-// The stack is preloaded with constants and ready for evaluation.
-func NewGateEvaluator(gate gkr.GateBytecode, nbIn int, elementPool ...*polynomial.Pool) GateEvaluator {
+// The constants are preloaded and the evaluator is ready for evaluation. It panics if the gate's
+// CheckEvaluatorAssumptions returns an error.
+func NewGateEvaluator(gate gkr.GateBytecode, elementPool ...*polynomial.Pool) GateEvaluator {
+	if err := gate.CheckEvaluatorAssumptions(); err != nil {
+		panic(err)
+	}
 	e := GateEvaluator{
-		gate: gate,
-		nbIn: nbIn,
+		gate:        gate,
+		nbRegisters: gate.NbRegisters(),
 	}
 	if len(elementPool) > 0 {
 		e.pool = elementPool[0]
-		e.vars = e.pool.Make(gate.EvaluatorSize(nbIn))
+		e.vars = e.pool.Make(gate.EvaluatorSize())
 	} else {
-		e.vars = make([]rational.Element, gate.EvaluatorSize(nbIn))
+		e.vars = make([]rational.Element, gate.EvaluatorSize())
 	}
-	e.vars = e.vars[:gate.NbConstants()]
 	for i, constVal := range gate.Constants {
-		e.vars[i].SetBigInt(constVal)
+		e.vars[e.nbRegisters+i].SetBigInt(constVal)
 	}
 	return e
 }
@@ -53,30 +57,31 @@ func (e *GateEvaluator) Dump() {
 	}
 }
 
-// PushInput adds an input to the evaluator's input buffer.
-// Inputs must be added in order, and the number of inputs must match the gate's NbInputs.
+// PushInput adds an input to the evaluator's input buffer, the first registers.
+// Inputs must be added in order, and the number of inputs must match the gate's NbIn.
 func (e *GateEvaluator) PushInput(input rational.Element) {
-	e.vars = append(e.vars, input)
+	if e.nbPushed == e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got more", e.gate.NbIn))
+	}
+	e.vars[e.nbPushed] = input
+	e.nbPushed++
 }
 
-// Evaluate adds top to the top of the stack, executes the gate on it and returns the result.
-// The stack is automatically reset after evaluation,
+// Evaluate adds top to the inputs in the first registers, executes the gate on them and returns the
+// result. The inputs are automatically cleared after evaluation,
 // making the evaluator ready for the next evaluation.
 // NB! The result is short-lived. It will be overwritten the next time Evaluate is called.
 func (e *GateEvaluator) Evaluate(top ...rational.Element) *rational.Element {
-	e.vars = append(e.vars, top...)
-
-	if len(e.vars) != e.nbIn+e.gate.NbConstants() {
-		panic(fmt.Sprintf("expected a stack size of %d representing %d constants and %d inputs, got %d", e.nbIn+e.gate.NbConstants(), e.gate.NbConstants(), e.nbIn, len(e.vars)))
+	if e.nbPushed+len(top) != e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got %d", e.gate.NbIn, e.nbPushed+len(top)))
 	}
+	copy(e.vars[e.nbPushed:], top)
 
-	// Execute instructions, appending results to stack
-	// The stack grows to: [constants | inputs | results]
+	// Execute instructions, each writing its result to its register
+	// The registers after the inputs are written before they are read
 	for i := range e.gate.Instructions {
 		inst := &e.gate.Instructions[i]
-		// Grow len by 1 within the pre-allocated capacity
-		e.vars = e.vars[:len(e.vars)+1]
-		dst := &e.vars[len(e.vars)-1]
+		dst := &e.vars[inst.Dst]
 
 		// Use switch instead of function pointer for better inlining
 		switch inst.Op {
@@ -116,10 +121,10 @@ func (e *GateEvaluator) Evaluate(top ...rational.Element) *rational.Element {
 		}
 	}
 
-	res := &e.vars[len(e.vars)-1]
+	res := &e.vars[e.gate.ResultRegister()]
 
 	// Reset for next evaluation
-	e.vars = e.vars[:e.gate.NbConstants()]
+	e.nbPushed = 0
 
 	return res
 }
@@ -128,16 +133,14 @@ func (e *GateEvaluator) Evaluate(top ...rational.Element) *rational.Element {
 // The evaluators allocate their element slices from the polynomial.Pool the pool was given, if any.
 type GateEvaluatorPool struct {
 	gate        gkr.GateBytecode
-	nbIn        int
 	lock        sync.Mutex
 	available   []*GateEvaluator
 	elementPool []*polynomial.Pool
 }
 
-func NewGateEvaluatorPool(gate gkr.GateBytecode, nbIn int, elementPool ...*polynomial.Pool) *GateEvaluatorPool {
+func NewGateEvaluatorPool(gate gkr.GateBytecode, elementPool ...*polynomial.Pool) *GateEvaluatorPool {
 	return &GateEvaluatorPool{
 		gate:        gate,
-		nbIn:        nbIn,
 		elementPool: elementPool,
 	}
 }
@@ -152,7 +155,7 @@ func (gep *GateEvaluatorPool) Get() *GateEvaluator {
 	}
 	gep.lock.Unlock()
 
-	e := NewGateEvaluator(gep.gate, gep.nbIn, gep.elementPool...)
+	e := NewGateEvaluator(gep.gate, gep.elementPool...)
 	return &e
 }
 

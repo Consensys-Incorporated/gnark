@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"math/big"
+	"slices"
 
 	"github.com/consensys/gnark/frontend"
 
@@ -13,20 +14,21 @@ import (
 
 // gateCompiler is an implementation of gkr.GateAPI that records operations
 // instead of executing them. This is used to compile gate functions into
-// instruction sequences. During compilation, temporary indices are used:
-//   - Constants: high indices (starting at 0x8000)
-//   - Inputs: 0..nbInputs-1
-//   - Results: nbInputs onwards
-//
-// After compilation, indices are remapped to: constants, inputs, results.
+// instruction sequences. The values of a gate are numbered: the inputs 0..nbInputs-1, then the
+// results of the instructions in order. Registers and constants are assigned once the instructions
+// are final.
 type gateCompiler struct {
-	instructions  []gkr.GateInstruction // each instruction defines exactly one output variable
-	constants     []*big.Int            // constant values pool
-	constantIndex map[string]uint16     // map from constant value to its temp index (0x8000+)
-	nbInputs      int
+	instructions []recordedInstruction // each instruction defines exactly one output variable
+	nbInputs     int
+	modulus      *big.Int // the modulus of the field the gate is compiled for; constants are reduced by it
 }
 
-const constMarker = 0x8000
+// recordedInstruction is an operation that a gateCompiler recorded.
+type recordedInstruction struct {
+	op       gkr.GateOp
+	operands []any
+	dst      uint16 // the register of the result, set by assignRegisters
+}
 
 // compilationVar represents a variable during gate compilation.
 type compilationVar struct {
@@ -34,27 +36,18 @@ type compilationVar struct {
 }
 
 func (gc *gateCompiler) addInstruction(op gkr.GateOp, inputs ...frontend.Variable) compilationVar {
-	ins := make([]uint16, len(inputs))
-	for i := range ins {
-		ins[i] = gc.getVarID(inputs[i])
+	operands := make([]any, len(inputs))
+	for i, in := range inputs {
+		if c, ok := gc.constantValue(in); ok {
+			operands[i] = c
+		} else {
+			operands[i] = in
+		}
 	}
 
-	result := compilationVar{id: uint16(len(gc.instructions) + gc.nbInputs)}
+	gc.instructions = append(gc.instructions, recordedInstruction{op: op, operands: operands})
 
-	gc.instructions = append(gc.instructions, gkr.GateInstruction{
-		Op:     op,
-		Inputs: ins,
-	})
-
-	return result
-}
-
-func (gc *gateCompiler) addInstruction2Plus(op gkr.GateOp, i1, i2 frontend.Variable, in ...frontend.Variable) compilationVar {
-	ins := make([]frontend.Variable, len(in)+2)
-	ins[0] = i1
-	ins[1] = i2
-	copy(ins[2:], in)
-	return gc.addInstruction(op, ins...)
+	return compilationVar{uint16(gc.nbInputs + len(gc.instructions) - 1)}
 }
 
 // Add records an addition operation. Its constant operands are summed into one, placed first. An
@@ -64,47 +57,59 @@ func (gc *gateCompiler) Add(i1, i2 frontend.Variable, in ...frontend.Variable) f
 }
 
 // MulAcc records a multiply-accumulate operation: a + (b * c). The instruction reads the
-// multiplicands first and the addend last, with a constant multiplicand before the other.
+// multiplicands first and the addend last, with a constant multiplicand before the other. With two
+// constant multiplicands, it records an addition of their product. With three constants, it is itself
+// a constant.
 func (gc *gateCompiler) MulAcc(a, b, c frontend.Variable) frontend.Variable {
-	if _, ok := constantValue(c); ok {
+	bValue, bIsConst := gc.constantValue(b)
+	cValue, cIsConst := gc.constantValue(c)
+	if bIsConst && cIsConst {
+		return gc.Add(bValue.Mul(bValue, cValue).Mod(bValue, gc.modulus), a)
+	}
+	if cIsConst {
 		b, c = c, b
 	}
 	return gc.addInstruction(gkr.OpMulAcc, b, c, a)
 }
 
-// Neg records a negation operation
+// Neg records a negation operation. The negation of a constant is itself a constant.
 func (gc *gateCompiler) Neg(i1 frontend.Variable) frontend.Variable {
+	if c, ok := gc.constantValue(i1); ok {
+		return c.Neg(c).Mod(c, gc.modulus)
+	}
 	return gc.addInstruction(gkr.OpNeg, i1)
 }
 
 // Sub records a subtraction operation. A constant minuend absorbs the constant subtrahends;
-// otherwise they are summed into one, placed last. A subtraction of constants alone is itself a
+// otherwise they are summed into one, placed second. A subtraction of constants alone is itself a
 // constant.
 func (gc *gateCompiler) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) frontend.Variable {
 	operands := append([]frontend.Variable{i1, i2}, in...)
-	minuend, minuendIsConst := constantValue(operands[0])
+	minuend, minuendIsConst := gc.constantValue(operands[0])
 
 	subtrahends := new(big.Int)
+	hasConst := false
 	nbKept := 1
 	for _, v := range operands[1:] {
-		if c, ok := constantValue(v); ok {
+		if c, ok := gc.constantValue(v); ok {
 			subtrahends.Add(subtrahends, c)
+			hasConst = true
 		} else {
 			operands[nbKept] = v
 			nbKept++
 		}
 	}
-	hasConst := nbKept < len(operands)
 	operands = operands[:nbKept]
+	subtrahends.Mod(subtrahends, gc.modulus)
 
 	if minuendIsConst {
-		diff := minuend.Sub(minuend, subtrahends)
+		diff := minuend.Sub(minuend, subtrahends).Mod(minuend, gc.modulus)
 		if nbKept == 1 {
 			return diff
 		}
 		operands[0] = diff
 	} else if hasConst {
-		operands = append(operands, subtrahends)
+		operands = slices.Insert(operands, 1, frontend.Variable(subtrahends))
 	}
 	return gc.addInstruction(gkr.OpSub, operands...)
 }
@@ -123,8 +128,9 @@ func (gc *gateCompiler) recordCommutative(op gkr.GateOp, identity *big.Int, comb
 	hasConst := false
 	var vars []frontend.Variable
 	for _, v := range append([]frontend.Variable{i1, i2}, in...) {
-		if c, ok := constantValue(v); ok {
+		if c, ok := gc.constantValue(v); ok {
 			folded = combine(new(big.Int), folded, c)
+			folded.Mod(folded, gc.modulus)
 			hasConst = true
 		} else {
 			vars = append(vars, v)
@@ -134,18 +140,25 @@ func (gc *gateCompiler) recordCommutative(op gkr.GateOp, identity *big.Int, comb
 		return folded
 	}
 	if hasConst {
-		vars = append(vars, vars[0])
-		vars[0] = folded
+		vars = slices.Insert(vars, 0, frontend.Variable(folded))
 	}
 	return gc.addInstruction(op, vars...)
 }
 
 // SumExp17 records (a + b + c)¹⁷ as a single instruction. If any of a, b, c is a constant, the
-// first one found is read first. Constants are not merged.
+// first one found is read first. Constants are not merged. If all three are constants, it is itself a
+// constant.
 func (gc *gateCompiler) SumExp17(a, b, c frontend.Variable) frontend.Variable {
+	aValue, aIsConst := gc.constantValue(a)
+	bValue, bIsConst := gc.constantValue(b)
+	cValue, cIsConst := gc.constantValue(c)
+	if aIsConst && bIsConst && cIsConst {
+		sum := aValue.Add(aValue, bValue)
+		return sum.Exp(sum.Add(sum, cValue), big.NewInt(17), gc.modulus)
+	}
 	operands := []frontend.Variable{a, b, c}
 	for i, v := range operands {
-		if _, ok := constantValue(v); ok {
+		if _, ok := gc.constantValue(v); ok {
 			operands[0], operands[i] = operands[i], operands[0]
 			break
 		}
@@ -153,98 +166,184 @@ func (gc *gateCompiler) SumExp17(a, b, c frontend.Variable) frontend.Variable {
 	return gc.addInstruction(gkr.OpSumExp17, operands...)
 }
 
-// constantValue returns v's value if v is a constant, that is, not a variable of the gate.
-func constantValue(v frontend.Variable) (*big.Int, bool) {
+// constantValue returns v's value, reduced modulo the field's, if v is a constant, that is, not a
+// variable of the gate.
+func (gc *gateCompiler) constantValue(v frontend.Variable) (*big.Int, bool) {
 	if _, ok := v.(compilationVar); ok {
 		return nil, false
 	}
 	val := utils.FromInterface(v)
-	return &val, true
+	return val.Mod(&val, gc.modulus), true
 }
 
-// getVarID extracts or creates a temporary index from a value.
-// Returns a temporary index: inputs at 0..nbInputs-1, constants at 0x8000+, results at nbInputs+.
-func (gc *gateCompiler) getVarID(v frontend.Variable) uint16 {
-	if rv, ok := v.(compilationVar); ok {
-		return rv.id
-	}
-
-	// Otherwise, it must be a constant value
-	// Convert to big.Int for curve-agnostic storage
-	val := utils.FromInterface(v)
-
-	// Check if we've seen this constant before
-	key := val.String()
-	if idx, exists := gc.constantIndex[key]; exists {
-		return idx
-	}
-
-	// Add new constant to the pool with temp index 0x8000+
-	tempIdx := uint16(len(gc.constants)) | constMarker
-	gc.constants = append(gc.constants, new(big.Int).Set(&val))
-	gc.constantIndex[key] = tempIdx
-	return tempIdx
-}
-
-// GetInstructions returns the recorded instructions
-func (gc *gateCompiler) GetInstructions() []gkr.GateInstruction {
-	return gc.instructions
-}
-
-// GetNbInputs returns the number of inputs
-func (gc *gateCompiler) GetNbInputs() int {
-	return gc.nbInputs
-}
-
-// remapIndices transforms temporary indices to final layout: constants, inputs, results.
-func (gc *gateCompiler) remapIndices() {
-	nbConsts := uint16(len(gc.constants))
-
-	// Remap all instruction inputs
-	for i := range gc.instructions {
-		for j := range gc.instructions[i].Inputs {
-			if gc.instructions[i].Inputs[j]&constMarker != 0 {
-				// constant
-				gc.instructions[i].Inputs[j] &= ^uint16(constMarker)
-			} else {
-				// variable
-				gc.instructions[i].Inputs[j] += nbConsts
+// removeDeadCode removes the instructions whose result does not reach the output, and renumbers the
+// remaining result operands. The output is the last instruction's result afterwards.
+func (gc *gateCompiler) removeDeadCode(output compilationVar) {
+	live := make([]bool, len(gc.instructions))
+	live[int(output.id)-gc.nbInputs] = true
+	for i := len(live) - 1; i >= 0; i-- {
+		if !live[i] {
+			continue
+		}
+		for _, o := range gc.instructions[i].operands {
+			if v, ok := o.(compilationVar); ok && int(v.id) >= gc.nbInputs {
+				live[int(v.id)-gc.nbInputs] = true
 			}
 		}
 	}
+
+	var (
+		instructions []recordedInstruction
+		resultID     = make([]uint16, len(gc.instructions)) // the new id of the result of a live instruction
+	)
+	for i, inst := range gc.instructions {
+		if !live[i] {
+			continue
+		}
+		for j, o := range inst.operands {
+			if v, ok := o.(compilationVar); ok && int(v.id) >= gc.nbInputs {
+				inst.operands[j] = compilationVar{resultID[int(v.id)-gc.nbInputs]}
+			}
+		}
+		resultID[i] = uint16(gc.nbInputs + len(instructions))
+		instructions = append(instructions, inst)
+	}
+	gc.instructions = instructions
+}
+
+// register returns the register that holds the value v: v itself for an input, otherwise the
+// register of the instruction that defines it.
+func (gc *gateCompiler) register(v compilationVar) uint16 {
+	if int(v.id) < gc.nbInputs {
+		return v.id
+	}
+	return gc.instructions[int(v.id)-gc.nbInputs].dst
+}
+
+// assignRegisters sets the register of each instruction's result. The inputs start in registers
+// 0, …, nbInputs-1, which no result takes. An instruction's register is that of its first or else its
+// second operand if that operand is the result of an instruction read last by this instruction, and
+// the lowest free register otherwise. The registers of the results that this instruction reads last
+// are freed afterwards.
+//
+// The register is not that of an operand that the instruction also reads at position 2 or later.
+func (gc *gateCompiler) assignRegisters() {
+	nbValues := gc.nbInputs + len(gc.instructions)
+
+	// lastUse[v] is the last instruction that reads the value v: an input, or the result of an
+	// instruction, in this order. The output is read after the last instruction. It is -1 for an
+	// input that the gate does not read.
+	lastUse := slices.Repeat([]int{-1}, nbValues)
+	for i, inst := range gc.instructions {
+		for _, o := range inst.operands {
+			if v, ok := o.(compilationVar); ok {
+				lastUse[v.id] = i
+			}
+		}
+	}
+	lastUse[nbValues-1] = len(gc.instructions)
+
+	// free[r] says whether r holds no value that is read later. The inputs' registers never are.
+	free := make([]bool, gc.nbInputs)
+
+	for i := range gc.instructions {
+		inst := &gc.instructions[i]
+
+		// tryInputAsDst returns the register of the operand j if it is the result of an instruction that
+		// this instruction reads last, and is not also an operand at position 2 or later; otherwise -1.
+		tryInputAsDst := func(j int) int {
+			if j >= len(inst.operands) {
+				return -1
+			}
+			v, ok := inst.operands[j].(compilationVar)
+			if !ok || int(v.id) < gc.nbInputs || lastUse[v.id] != i || slices.Contains(inst.operands[min(2, len(inst.operands)):], inst.operands[j]) {
+				return -1
+			}
+			return int(gc.register(v))
+		}
+
+		dst := tryInputAsDst(0)
+		if dst == -1 {
+			dst = tryInputAsDst(1)
+		}
+		if dst == -1 {
+			dst = slices.Index(free, true)
+			if dst == -1 {
+				dst = len(free)
+				free = append(free, false)
+			}
+		}
+		inst.dst = uint16(dst)
+
+		for _, o := range inst.operands {
+			if v, ok := o.(compilationVar); ok && int(v.id) >= gc.nbInputs && lastUse[v.id] == i {
+				free[gc.register(v)] = true
+			}
+		}
+		free[inst.dst] = false
+	}
+}
+
+// toBytecode returns the bytecode of the recorded instructions, once their registers are assigned.
+// The constants are pooled in the order of their first use, without duplicates, and follow the
+// registers in the operand space.
+func (gc *gateCompiler) toBytecode() gkr.GateBytecode {
+	bytecode := gkr.GateBytecode{
+		Instructions: make([]gkr.GateInstruction, len(gc.instructions)),
+		NbIn:         gc.nbInputs,
+	}
+	for i, inst := range gc.instructions {
+		bytecode.Instructions[i].Op = inst.op
+		bytecode.Instructions[i].Dst = inst.dst
+	}
+	nbRegisters := bytecode.NbRegisters()
+
+	constantIndex := make(map[string]int) // from a constant's value to its index in the pool
+	for i, inst := range gc.instructions {
+		out := &bytecode.Instructions[i]
+		out.Inputs = make([]uint16, len(inst.operands))
+		for j, o := range inst.operands {
+			switch o := o.(type) {
+			case compilationVar:
+				out.Inputs[j] = gc.register(o)
+			case *big.Int:
+				index, ok := constantIndex[o.String()]
+				if !ok {
+					index = len(bytecode.Constants)
+					constantIndex[o.String()] = index
+					bytecode.Constants = append(bytecode.Constants, o)
+				}
+				out.Inputs[j] = uint16(nbRegisters + index)
+			}
+		}
+	}
+	return bytecode
 }
 
 // CompileGateFunction converts a gate function into a gkr.SerializableGate.
 // This consists of compiling into bytecode as well as computing gate metadata
 // such as degree and solvable var index for the given field.
 func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.SerializableGate, error) {
-	// Create compiling API
-	compiler := gateCompiler{
-		constantIndex: make(map[string]uint16),
-		nbInputs:      nbInputs,
-	}
+	compiler := gateCompiler{nbInputs: nbInputs, modulus: field.Modulus}
 
-	// Create input variables
 	inputs := make([]frontend.Variable, nbInputs)
 	for i := range uint16(nbInputs) {
 		inputs[i] = compilationVar{i}
 	}
 
-	// Execute the gate function to record operations
 	out := f(&compiler, inputs...)
 	outVar, ok := out.(compilationVar)
 	if !ok {
 		return gkr.SerializableGate{}, errors.New("gate function must return a variable; constant values must be hard-coded into the gates that use them")
 	}
-	if len(compiler.instructions) == 0 {
-		// No operations recorded, but not all is lost yet.
-		// If the output simply mirrors the last input, we can still represent
-		// it in bytecode, as the evaluator returns the last stack frame element.
-		if int(outVar.id) == len(compiler.constants)+nbInputs-1 {
+	if int(outVar.id) < nbInputs {
+		// The output is an input. If it is the last input, we can still represent the gate in
+		// bytecode, as the evaluator returns the last input's register.
+		if int(outVar.id) == nbInputs-1 {
 			// Identity-like gate: returns last input unchanged
 			// Degree is 1, and the returned variable is solvable
 			return gkr.SerializableGate{
-				NbIn:        nbInputs,
+				Evaluate:    gkr.GateBytecode{NbIn: nbInputs},
 				Degree:      1,
 				SolvableVar: nbInputs - 1,
 			}, nil
@@ -252,38 +351,17 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 		return gkr.SerializableGate{}, errors.New("only non-trivial or last-reflective gate functions supported")
 	}
 
-	// All instructions after the output are no-ops. Prune them and the corresponding variables.
-	// Henceforth, we guarantee that the variable with the highest index is the gate output.
-	lastEffectiveInstructionIndex := int(outVar.id) - compiler.nbInputs
-	compiler.instructions = compiler.instructions[:lastEffectiveInstructionIndex+1]
+	compiler.removeDeadCode(outVar)
+	compiler.assignRegisters()
+	bytecode := compiler.toBytecode()
 
-	// Drop the constants used only by pruned instructions.
-	nbUsedConstants := 0
-	for _, inst := range compiler.instructions {
-		for _, in := range inst.Inputs {
-			if in&constMarker != 0 {
-				nbUsedConstants = max(nbUsedConstants, int(in&^constMarker)+1)
-			}
-		}
-	}
-	compiler.constants = compiler.constants[:nbUsedConstants]
+	tester := gateTester{FieldAPI: FieldAPI{Field: field}, f: f, nbIn: nbInputs}
 
-	// Remap indices from temporary layout to final layout
-	compiler.remapIndices()
-
-	bytecode := gkr.GateBytecode{
-		Instructions: compiler.GetInstructions(),
-		Constants:    compiler.constants,
-	}
-
-	// Compute degree and solvable variable
-	tester := gateTester{field: field}
-	tester.setGate(bytecode, nbInputs)
-
-	degree := len(tester.fitPoly(bytecode.EstimateDegree(nbInputs))) - 1
-	if degree == -1 {
+	p := tester.fitPoly(bytecode.EstimateDegree())
+	if p == nil {
 		return gkr.SerializableGate{}, errors.New("cannot find degree for gate")
 	}
+	degree := max(len(p)-1, 1) // overestimating a constant gate's degree for the proof to work
 
 	solvableVar := -1
 	for j := range nbInputs {
@@ -295,7 +373,6 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 
 	return gkr.SerializableGate{
 		Evaluate:    bytecode,
-		NbIn:        nbInputs,
 		Degree:      degree,
 		SolvableVar: solvableVar,
 	}, nil
@@ -304,49 +381,87 @@ func CompileGateFunction(f gkr.GateFunction, nbInputs int, field Field) (gkr.Ser
 // Field describes Fₚ[X]/(f); see gkr.Field.
 type Field = gkr.Field
 
-// gateTester evaluates gate bytecode over a field Fₚ[X]/(f), to discover a gate's degree and
-// solvable variable. An element is a []*big.Int of length field.Degree(), coefficient i the
-// coefficient of Xⁱ, each reduced mod p. For gkr.PrimeField, Degree() is 1, and every operation below
+// FieldAPI is a gkr.GateAPI over a field Fₚ[X]/(f). Its variables are field elements: []*big.Int of
+// length Field.Degree(), coefficient i the coefficient of Xⁱ, each reduced mod p. Any other literal
+// is a constant, which is embedded. For gkr.PrimeField, Degree() is 1, and every operation below
 // reduces to arithmetic mod p.
-type gateTester struct {
-	field Field
-	gate  gkr.GateBytecode
-	vars  [][]*big.Int
-	nbIn  int
+type FieldAPI struct {
+	Field Field
 
 	invExponent *big.Int // pⁿ - 2, the exponent inverse raises to; computed once, on first use
 }
 
-func (t *gateTester) setGate(g gkr.GateBytecode, nbIn int) {
-	t.gate = g
-	t.nbIn = nbIn
-	t.vars = make([][]*big.Int, g.NbConstants()+nbIn+len(g.Instructions))
-	for i, c := range g.Constants {
-		t.vars[i] = t.embed(c)
+// element returns v if it is a field element, and the constant v embedded otherwise.
+func (api *FieldAPI) element(v frontend.Variable) []*big.Int {
+	if e, ok := v.([]*big.Int); ok {
+		return e
 	}
+	c := utils.FromInterface(v)
+	return api.embed(&c)
+}
+
+// fold applies op from left to right: op(op(i1, i2), in[0]), and so on.
+func (api *FieldAPI) fold(op func(a, b []*big.Int) []*big.Int, i1, i2 frontend.Variable, in []frontend.Variable) frontend.Variable {
+	res := op(api.element(i1), api.element(i2))
+	for _, v := range in {
+		res = op(res, api.element(v))
+	}
+	return res
+}
+
+func (api *FieldAPI) Add(i1, i2 frontend.Variable, in ...frontend.Variable) frontend.Variable {
+	return api.fold(api.add, i1, i2, in)
+}
+
+func (api *FieldAPI) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) frontend.Variable {
+	return api.fold(api.sub, i1, i2, in)
+}
+
+func (api *FieldAPI) Mul(i1, i2 frontend.Variable, in ...frontend.Variable) frontend.Variable {
+	return api.fold(api.mul, i1, i2, in)
+}
+
+func (api *FieldAPI) Neg(i frontend.Variable) frontend.Variable {
+	return api.neg(api.element(i))
+}
+
+func (api *FieldAPI) MulAcc(a, b, c frontend.Variable) frontend.Variable {
+	return api.add(api.mul(api.element(b), api.element(c)), api.element(a))
+}
+
+func (api *FieldAPI) SumExp17(a, b, c frontend.Variable) frontend.Variable {
+	return api.pow(api.add(api.add(api.element(a), api.element(b)), api.element(c)), big.NewInt(17))
+}
+
+// gateTester evaluates a gate function over a field Fₚ[X]/(f), to discover the gate's degree and
+// solvable variable.
+type gateTester struct {
+	FieldAPI
+	f    gkr.GateFunction
+	nbIn int
 }
 
 // embed returns c as the field element [c, 0, …, 0].
-func (t *gateTester) embed(c *big.Int) []*big.Int {
-	res := make([]*big.Int, t.field.Degree())
-	res[0] = new(big.Int).Mod(c, t.field.Modulus)
+func (api *FieldAPI) embed(c *big.Int) []*big.Int {
+	res := make([]*big.Int, api.Field.Degree())
+	res[0] = new(big.Int).Mod(c, api.Field.Modulus)
 	for i := 1; i < len(res); i++ {
 		res[i] = new(big.Int)
 	}
 	return res
 }
 
-func (t *gateTester) zero() []*big.Int {
-	return t.embed(new(big.Int))
+func (api *FieldAPI) zero() []*big.Int {
+	return api.embed(new(big.Int))
 }
 
-func (t *gateTester) one() []*big.Int {
-	return t.embed(big.NewInt(1))
+func (api *FieldAPI) one() []*big.Int {
+	return api.embed(big.NewInt(1))
 }
 
-func (t *gateTester) isZero(a []*big.Int) bool {
+func (api *FieldAPI) isZero(a []*big.Int) bool {
 	for _, ai := range a {
-		v := new(big.Int).Mod(ai, t.field.Modulus)
+		v := new(big.Int).Mod(ai, api.Field.Modulus)
 		if v.BitLen() != 0 {
 			return false
 		}
@@ -354,7 +469,7 @@ func (t *gateTester) isZero(a []*big.Int) bool {
 	return true
 }
 
-func (t *gateTester) equal(a, b []*big.Int) bool {
+func (api *FieldAPI) equal(a, b []*big.Int) bool {
 	for i := range a {
 		if a[i].Cmp(b[i]) != 0 {
 			return false
@@ -363,36 +478,36 @@ func (t *gateTester) equal(a, b []*big.Int) bool {
 	return true
 }
 
-func (t *gateTester) add(a, b []*big.Int) []*big.Int {
+func (api *FieldAPI) add(a, b []*big.Int) []*big.Int {
 	res := make([]*big.Int, len(a))
 	for i := range res {
 		res[i] = new(big.Int).Add(a[i], b[i])
-		res[i].Mod(res[i], t.field.Modulus)
+		res[i].Mod(res[i], api.Field.Modulus)
 	}
 	return res
 }
 
-func (t *gateTester) sub(a, b []*big.Int) []*big.Int {
+func (api *FieldAPI) sub(a, b []*big.Int) []*big.Int {
 	res := make([]*big.Int, len(a))
 	for i := range res {
 		res[i] = new(big.Int).Sub(a[i], b[i])
-		res[i].Mod(res[i], t.field.Modulus)
+		res[i].Mod(res[i], api.Field.Modulus)
 	}
 	return res
 }
 
-func (t *gateTester) neg(a []*big.Int) []*big.Int {
+func (api *FieldAPI) neg(a []*big.Int) []*big.Int {
 	res := make([]*big.Int, len(a))
 	for i := range res {
 		res[i] = new(big.Int).Neg(a[i])
-		res[i].Mod(res[i], t.field.Modulus)
+		res[i].Mod(res[i], api.Field.Modulus)
 	}
 	return res
 }
 
 // mul multiplies a and b as polynomials, then reduces the product mod f, then mod p.
-func (t *gateTester) mul(a, b []*big.Int) []*big.Int {
-	n := t.field.Degree()
+func (api *FieldAPI) mul(a, b []*big.Int) []*big.Int {
+	n := api.Field.Degree()
 	prod := make([]*big.Int, 2*n-1)
 	for i := range prod {
 		prod[i] = new(big.Int)
@@ -411,48 +526,48 @@ func (t *gateTester) mul(a, b []*big.Int) []*big.Int {
 	for k := len(prod) - 1; k >= n; k-- {
 		coeff := prod[k]
 		for i := range n {
-			term.Mul(coeff, t.field.MinPoly[i])
+			term.Mul(coeff, api.Field.MinPoly[i])
 			prod[k-n+i].Sub(prod[k-n+i], &term)
 		}
 	}
 
 	res := prod[:n]
 	for i := range res {
-		res[i].Mod(res[i], t.field.Modulus)
+		res[i].Mod(res[i], api.Field.Modulus)
 	}
 	return res
 }
 
 // pow raises a to the eᵗʰ power by square-and-multiply, e ≥ 0.
-func (t *gateTester) pow(a []*big.Int, e *big.Int) []*big.Int {
-	res := t.one()
+func (api *FieldAPI) pow(a []*big.Int, e *big.Int) []*big.Int {
+	res := api.one()
 	for i := e.BitLen() - 1; i >= 0; i-- {
-		res = t.mul(res, res)
+		res = api.mul(res, res)
 		if e.Bit(i) == 1 {
-			res = t.mul(res, a)
+			res = api.mul(res, a)
 		}
 	}
 	return res
 }
 
 // inverse returns a⁻¹ = a^(pⁿ⁻²), which requires f irreducible.
-func (t *gateTester) inverse(a []*big.Int) []*big.Int {
-	if t.invExponent == nil {
-		n := big.NewInt(int64(t.field.Degree()))
-		t.invExponent = new(big.Int).Exp(t.field.Modulus, n, nil)
-		t.invExponent.Sub(t.invExponent, big.NewInt(2))
+func (api *FieldAPI) inverse(a []*big.Int) []*big.Int {
+	if api.invExponent == nil {
+		n := big.NewInt(int64(api.Field.Degree()))
+		api.invExponent = new(big.Int).Exp(api.Field.Modulus, n, nil)
+		api.invExponent.Sub(api.invExponent, big.NewInt(2))
 	}
-	return t.pow(a, t.invExponent)
+	return api.pow(a, api.invExponent)
 }
 
-func (t *gateTester) div(a, b []*big.Int) []*big.Int {
-	return t.mul(a, t.inverse(b))
+func (api *FieldAPI) div(a, b []*big.Int) []*big.Int {
+	return api.mul(a, api.inverse(b))
 }
 
 func (t *gateTester) randomElement() []*big.Int {
-	res := make([]*big.Int, t.field.Degree())
+	res := make([]*big.Int, t.Field.Degree())
 	for i := range res {
-		v, err := rand.Int(rand.Reader, t.field.Modulus)
+		v, err := rand.Int(rand.Reader, t.Field.Modulus)
 		if err != nil {
 			panic(err)
 		}
@@ -478,51 +593,13 @@ func (t *gateTester) evalPoly(p [][]*big.Int, x []*big.Int) []*big.Int {
 	return res
 }
 
-// evaluate executes the gate bytecode with the given inputs.
+// evaluate returns the gate function's value on the given inputs.
 func (t *gateTester) evaluate(inputs ...[]*big.Int) []*big.Int {
-	frameSize := t.gate.NbConstants()
-
-	// Copy inputs into frame
-	copy(t.vars[t.gate.NbConstants():], inputs)
-
-	frameSize += len(inputs)
-
-	// Execute instructions
-	for _, inst := range t.gate.Instructions {
-		var dst []*big.Int
-		switch inst.Op {
-		case gkr.OpAdd:
-			dst = t.vars[inst.Inputs[0]]
-			for _, idx := range inst.Inputs[1:] {
-				dst = t.add(dst, t.vars[idx])
-			}
-		case gkr.OpSub:
-			dst = t.vars[inst.Inputs[0]]
-			for _, idx := range inst.Inputs[1:] {
-				dst = t.sub(dst, t.vars[idx])
-			}
-		case gkr.OpMul:
-			dst = t.vars[inst.Inputs[0]]
-			for _, idx := range inst.Inputs[1:] {
-				dst = t.mul(dst, t.vars[idx])
-			}
-		case gkr.OpNeg:
-			dst = t.neg(t.vars[inst.Inputs[0]])
-		case gkr.OpMulAcc: // a*b + c
-			dst = t.mul(t.vars[inst.Inputs[0]], t.vars[inst.Inputs[1]])
-			dst = t.add(dst, t.vars[inst.Inputs[2]])
-		case gkr.OpSumExp17: // (a + b + c)¹⁷
-			dst = t.add(t.vars[inst.Inputs[0]], t.vars[inst.Inputs[1]])
-			dst = t.add(dst, t.vars[inst.Inputs[2]])
-			dst = t.pow(dst, big.NewInt(17))
-		default:
-			panic("unknown operation")
-		}
-		t.vars[frameSize] = dst
-		frameSize++
+	vars := make([]frontend.Variable, len(inputs))
+	for i, in := range inputs {
+		vars[i] = in
 	}
-
-	return t.vars[frameSize-1]
+	return t.element(t.f(&t.FieldAPI, vars...))
 }
 
 // isAdditive returns whether xᵢ occurs only in a monomial of total degree 1
