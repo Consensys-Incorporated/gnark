@@ -77,6 +77,8 @@ func (c *wideCommitment) extDegree() int {
 }
 
 func (c *wideCommitment) Define(api frontend.API) error {
+	// the test wide committer only passes X to a hint, so bind it here.
+	api.AssertIsDifferent(c.X, 0)
 	if c.withCommitment {
 		WithCommitment(api, func(api frontend.API, commitment frontend.Variable) error {
 			api.AssertIsDifferent(commitment, 0)

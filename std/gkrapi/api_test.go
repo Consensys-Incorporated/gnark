@@ -706,6 +706,7 @@ type testNoInstanceCircuit struct {
 }
 
 func (c *testNoInstanceCircuit) Define(api frontend.API) error {
+	api.AssertIsEqual(c.Dummy, 0)
 	gkrApi, err := New(api)
 	if err != nil {
 		return err

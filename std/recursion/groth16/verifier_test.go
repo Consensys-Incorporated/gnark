@@ -161,7 +161,14 @@ type WitnessCircut struct {
 	A emulated.Element[emparams.Secp256k1Fr] `gnark:",public"`
 }
 
-func (c *WitnessCircut) Define(frontend.API) error { return nil }
+func (c *WitnessCircut) Define(api frontend.API) error {
+	f, err := emulated.NewField[emparams.Secp256k1Fr](api)
+	if err != nil {
+		return err
+	}
+	f.AssertIsInRange(&c.A)
+	return nil
+}
 
 func TestValueOfWitness(t *testing.T) {
 	assignment := WitnessCircut{

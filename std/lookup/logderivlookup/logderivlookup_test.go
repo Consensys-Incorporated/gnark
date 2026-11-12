@@ -110,6 +110,8 @@ func (c *tableWithoutQueries) Define(api frontend.API) error {
 	api.AssertIsEqual(c.X, 1)
 	// the table adds no constraints and PLONK setup needs at least two
 	api.AssertIsEqual(api.Mul(c.X, c.X), 1)
+	// without queries nothing reads the entries; bind them outside the table
+	api.AssertIsEqual(api.Add(c.Entries[0], c.Entries[1], c.Entries[2], c.Entries[3]), 10)
 	return nil
 }
 
