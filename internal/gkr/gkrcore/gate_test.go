@@ -100,8 +100,7 @@ func TestConstants(t *testing.T) {
 
 // TestBytecode checks the bytecode of compiled gates: the constants, and the instructions with their
 // registers. In the expected instructions, the registers take the indices [0, NbRegisters), then the
-// constants follow. A row without a gate function is a hand-built bytecode, which
-// CheckConstantPositions must reject.
+// constants follow.
 func TestBytecode(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -302,13 +301,17 @@ func TestBytecode(t *testing.T) {
 			4,
 		},
 		{
-			"x+y+x: the first operand is also a later operand, so the result takes a new register",
+			"x·y + x + x·y: the sum does not take the register of the product, read again at position 2",
 			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
-				return api.Add(in[0], in[1], in[0])
+				p := api.Mul(in[0], in[1])
+				return api.Add(p, in[0], p)
 			},
 			2, nil,
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1, 0}, Dst: 2}},
-			3,
+			[]gkr.GateInstruction{
+				{Op: gkr.OpMul, Inputs: []uint16{0, 1}, Dst: 2},
+				{Op: gkr.OpAdd, Inputs: []uint16{2, 0, 2}, Dst: 3},
+			},
+			4,
 		},
 		{
 			"x*(x+y): the product takes the register of the sum, an instruction result read last",
@@ -378,13 +381,6 @@ func TestBytecode(t *testing.T) {
 			2,
 		},
 		{
-			"hand-built: a constant in position 2 of an Add",
-			nil,
-			2, []int64{5},
-			[]gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1, 3}, Dst: 2}},
-			3,
-		},
-		{
 			"(y*z)+(y+z): the register of an input that is never read is not reused",
 			func(api gkr.GateAPI, in ...frontend.Variable) frontend.Variable {
 				return api.Add(api.Mul(in[1], in[2]), api.Add(in[1], in[2]))
@@ -401,16 +397,6 @@ func TestBytecode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.f == nil {
-				bytecode := gkr.GateBytecode{Instructions: tt.instructions, NbIn: tt.nbIn}
-				for _, c := range tt.constants {
-					bytecode.Constants = append(bytecode.Constants, big.NewInt(c))
-				}
-				assert.Equal(t, tt.nbRegisters, bytecode.NbRegisters())
-				assert.EqualError(t, bytecode.CheckConstantPositions(), "instruction 0 (add): constant operand at position 2")
-				return
-			}
-
 			compiled, err := CompileGateFunction(tt.f, tt.nbIn, bn254())
 			require.NoError(t, err)
 
@@ -441,6 +427,17 @@ func TestCheckConstantPositionsRejectsInputWrite(t *testing.T) {
 		NbIn: 2,
 	}
 	assert.EqualError(t, bytecode.CheckConstantPositions(), "instruction 1 (mul): writes the register of input 1")
+}
+
+// TestCheckConstantPositionsRejectsConstantAfterSecond checks that a hand-built bytecode with a
+// constant in position 2 of an Add is rejected, naming the instruction.
+func TestCheckConstantPositionsRejectsConstantAfterSecond(t *testing.T) {
+	bytecode := gkr.GateBytecode{
+		Instructions: []gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1, 3}, Dst: 2}},
+		Constants:    []*big.Int{big.NewInt(5)},
+		NbIn:         2,
+	}
+	assert.EqualError(t, bytecode.CheckConstantPositions(), "instruction 0 (add): constant operand at position 2")
 }
 
 func TestCompileGateFunction(t *testing.T) {
@@ -476,11 +473,8 @@ func TestCompileGateFunction(t *testing.T) {
 
 func testFitPoly(t *testing.T, name string, f gkr.GateFunction, nbIn, degree, maxDegree int) {
 	t.Run(name, func(t *testing.T) {
-		g, err := CompileGateFunction(f, nbIn, bn254())
-		require.NoError(t, err)
 		for _, fd := range testFields() {
-			tester := gateTester{field: fd}
-			tester.setGate(g.Evaluate)
+			tester := gateTester{FieldAPI: FieldAPI{Field: fd}, f: f, nbIn: nbIn}
 			require.Equal(t, degree, len(tester.fitPoly(maxDegree))-1)
 		}
 	})
@@ -498,11 +492,8 @@ func TestFitPoly(t *testing.T) {
 
 func testIsAdditive(t *testing.T, name string, f gkr.GateFunction, isAdditive ...bool) {
 	t.Run(name, func(t *testing.T) {
-		g, err := CompileGateFunction(f, len(isAdditive), bn254())
-		require.NoError(t, err)
 		for _, fd := range testFields() {
-			tester := gateTester{field: fd}
-			tester.setGate(g.Evaluate)
+			tester := gateTester{FieldAPI: FieldAPI{Field: fd}, f: f, nbIn: len(isAdditive)}
 			for i := range isAdditive {
 				assert.Equal(t, isAdditive[i], tester.isAdditive(i))
 			}
@@ -532,7 +523,7 @@ func TestExtensionDefiningRelation(t *testing.T) {
 		{"MamaBear E3", gkr.MamaBearE3(), []int64{1, 1, 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tester := gateTester{field: tc.field}
+			tester := FieldAPI{Field: tc.field}
 			n := tc.field.Degree()
 
 			x := make([]*big.Int, n)

@@ -1,0 +1,27 @@
+import (
+	"testing"
+
+	{{- if not .Mixed }}
+	"github.com/consensys/gnark-crypto/ecc"
+	{{- else }}
+	"{{ .FieldPackagePath }}"
+	{{- end }}
+	"{{ .BaseFieldPackagePath }}"
+	"github.com/consensys/gnark/gkr"
+	"github.com/consensys/gnark/internal/gkr/gkrtesting"
+)
+
+func TestEvaluatorsMatchGateFunctions(t *testing.T) {
+	field := {{ .FieldDescription }}
+	{{ template "check" dict "Elem" .BaseElementType "Evaluator" "GateEvaluator" }}
+	{{- if .Mixed }}
+	{{ template "check" dict "Elem" .ElementType "Evaluator" "GateEvaluatorMixed" }}
+	{{- end }}
+}
+
+{{ define "check" }}
+gkrtesting.CheckEvaluators(t, field, func(g gkr.GateBytecode) func(...{{ .Elem }}) *{{ .Elem }} {
+		e := New{{ .Evaluator }}(g)
+		return e.Evaluate
+	})
+{{- end }}
