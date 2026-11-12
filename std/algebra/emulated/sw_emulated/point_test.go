@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"math/big"
-	"strings"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/algebra/lattice"
@@ -2977,41 +2976,43 @@ func (c *AssertIsInSubgroupTest[T, S]) Define(api frontend.API) error {
 	return nil
 }
 
-// TestAssertIsInSubgroupBW6761FailsExplicitly is a regression test for the exported
-// [Curve.AssertIsInSubgroup] silently accepting off-subgroup points on a curve
-// that has a cofactor but no clearing constant.
-//
-// BW6-761 G1 has a nontrivial cofactor and GetBW6761Params leaves
-// CofactorClearing nil, because every internal caller routes around the binding
-// via PreferClassicGLV. Exporting the method made that nil reachable from
-// outside, where "no constant" would have meant "assert nothing": a circuit
-// doing AssertIsOnCurve + AssertIsInSubgroup on the point below used to solve.
-// It must now fail loudly instead.
-func TestAssertIsInSubgroupBW6761FailsExplicitly(t *testing.T) {
+// TestAssertIsInSubgroupBW6761 checks the endomorphism-based membership test
+// on BW6-761 G1 (CurveParams.EndoSubgroupTest): it accepts G1 points and
+// rejects on-curve points outside G1 — a generic one, the order-127 classic-GLV
+// torsion offset, and a G1 point shifted by it.
+func TestAssertIsInSubgroupBW6761(t *testing.T) {
 	assert := test.NewAssert(t)
+	circuit := AssertIsInSubgroupTest[emulated.BW6761Fp, emulated.BW6761Fr]{}
+	mk := func(P bw6761.G1Affine) *AssertIsInSubgroupTest[emulated.BW6761Fp, emulated.BW6761Fr] {
+		assert.True(P.IsOnCurve(), "witness point must be on the curve")
+		return &AssertIsInSubgroupTest[emulated.BW6761Fp, emulated.BW6761Fr]{
+			P: AffinePoint[emulated.BW6761Fp]{
+				X: emulated.ValueOf[emulated.BW6761Fp](P.X),
+				Y: emulated.ValueOf[emulated.BW6761Fp](P.Y),
+			},
+		}
+	}
+
+	_, _, g, _ := bw6761.Generators()
+	var g5 bw6761.G1Affine
+	g5.ScalarMultiplication(&g, big.NewInt(5))
+	assert.NoError(solveCatchingPanic(&circuit, mk(g)), "generator must be accepted")
+	assert.NoError(solveCatchingPanic(&circuit, mk(g5)), "in-subgroup point must be accepted")
 
 	// (2, y) is on y² = x³ - 1 over Fp but outside the prime-order subgroup.
 	P := bw6761OffSubgroupPoint(t)
-	assert.True(P.IsOnCurve(), "witness point must be on the curve")
 	assert.False(P.IsInSubGroup(), "witness point must be outside G1")
+	assert.Error(solveCatchingPanic(&circuit, mk(P)), "off-subgroup point must be rejected")
 
-	circuit := AssertIsInSubgroupTest[emulated.BW6761Fp, emulated.BW6761Fr]{}
-	witness := AssertIsInSubgroupTest[emulated.BW6761Fp, emulated.BW6761Fr]{
-		P: AffinePoint[emulated.BW6761Fp]{
-			X: emulated.ValueOf[emulated.BW6761Fp](P.X),
-			Y: emulated.ValueOf[emulated.BW6761Fp](P.Y),
-		},
-	}
-
-	err := solveCatchingPanic(&circuit, &witness)
-	if err == nil {
-		t.Fatal("AssertIsInSubgroup accepted an on-curve, off-subgroup BW6-761 point")
-	}
-	// and it must fail for the stated reason, not as an incidental unsatisfied
-	// constraint that a future refactor could make satisfiable again.
-	if !strings.Contains(err.Error(), "no subgroup membership check") {
-		t.Fatalf("expected an explicit unsupported-curve failure, got: %v", err)
-	}
+	params := GetBW6761Params()
+	var t0 bw6761.G1Affine
+	t0.X.SetBigInt(params.GLVTorsionOffset[0])
+	t0.Y.SetBigInt(params.GLVTorsionOffset[1])
+	assert.False(t0.IsInSubGroup())
+	assert.Error(solveCatchingPanic(&circuit, mk(t0)), "torsion offset must be rejected")
+	var shifted bw6761.G1Affine
+	shifted.Add(&g5, &t0)
+	assert.Error(solveCatchingPanic(&circuit, mk(shifted)), "torsion-shifted point must be rejected")
 }
 
 // TestAssertIsInSubgroupPrimeOrder checks the other side of the guard: on a
@@ -3086,11 +3087,12 @@ func TestCofactorCurvesDeclareAMembershipCheck(t *testing.T) {
 		}
 	}
 
-	// BW6-761 is the one curve that is neither prime-order nor equipped with a
-	// clearing constant; if that ever changes, the panic above should go away.
+	// BW6-761 is neither prime-order nor equipped with a clearing constant; it
+	// uses the endomorphism-based membership test instead.
 	bw6 := GetBW6761Params()
 	assert.False(bw6.PrimeOrder, "BW6-761 G1 has a nontrivial cofactor")
 	assert.Nil(bw6.CofactorClearing)
+	assert.NotNil(bw6.EndoSubgroupTest[0])
 }
 
 // solveCatchingPanic runs test.IsSolved and reports a panic raised during

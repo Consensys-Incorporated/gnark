@@ -2,20 +2,20 @@ package gkr
 
 import "math/big"
 
-// Field describes F_p[X]/(f), with f = Xⁿ + MinPoly[n-1]·Xⁿ⁻¹ + … + MinPoly[0] monic and
-// irreducible over F_p, n = len(MinPoly). Coefficients are in increasing degree: X is [0],
+// Field describes Fₚ[X]/(f), with f = Xⁿ + MinPoly[n-1]·Xⁿ⁻¹ + … + MinPoly[0] monic and
+// irreducible over Fₚ, n = len(MinPoly). Coefficients are in increasing degree: X is [0],
 // X² + 1 is [1, 0].
 type Field struct {
 	Modulus *big.Int
 	MinPoly []*big.Int
 }
 
-// PrimeField describes F_p itself, as F_p[X]/(X).
+// PrimeField describes Fₚ itself, as Fₚ[X]/(X).
 func PrimeField(p *big.Int) Field {
 	return Field{Modulus: p, MinPoly: []*big.Int{big.NewInt(0)}}
 }
 
-// Degree returns n, the extension degree of the field over F_p.
+// Degree returns n, the extension degree of the field over Fₚ.
 func (f Field) Degree() int {
 	return len(f.MinPoly)
 }

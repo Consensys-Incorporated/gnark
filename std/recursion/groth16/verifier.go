@@ -20,6 +20,7 @@ import (
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra"
+	"github.com/consensys/gnark/std/algebra/algopts"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bls12381"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bn254"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bw6761"
@@ -536,6 +537,10 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) AssertProof(vk VerifyingKey[G1El, G2El,
 }
 
 // IsValidProof returns a variable that is 1 if the proof is valid and 0 otherwise.
+//
+// The verifying key is trusted: its points are not checked to be in the
+// prime-order subgroups. A key given as a witness must be bound by the caller,
+// for example to a public hash.
 func (v *Verifier[FR, G1El, G2El, GtEl]) IsValidProof(vk VerifyingKey[G1El, G2El, GtEl], proof Proof[G1El, G2El], witness Witness[FR], opts ...VerifierOption) (frontend.Variable, error) {
 	if len(vk.CommitmentKeys) != len(proof.Commitments) {
 		return 0, fmt.Errorf("invalid number of commitments, got %d, expected %d", len(proof.Commitments), len(vk.CommitmentKeys))
@@ -600,7 +605,10 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) IsValidProof(vk VerifyingKey[G1El, G2El
 		return 0, fmt.Errorf("multiple commitments are not supported")
 	}
 
-	kSum, err := v.curve.MultiScalarMul(inP, inS, opt.algopt...)
+	// The VK points are trusted (see above), so the scalar multiplication does
+	// not check their subgroup membership. Otherwise every public input would
+	// pay one check on curves that need it.
+	kSum, err := v.curve.MultiScalarMul(inP, inS, append(opt.algopt, algopts.WithNoSubgroupMembershipCheck())...)
 	if err != nil {
 		return 0, fmt.Errorf("multi scalar mul: %w", err)
 	}

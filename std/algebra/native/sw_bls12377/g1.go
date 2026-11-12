@@ -28,10 +28,14 @@ func (p *G1Affine) Neg(api frontend.API, p1 G1Affine) *G1Affine {
 }
 
 // AddAssign adds p1 to p using the affine formulas with division, and return p
+//
+// ⚠️  p and p1 must have distinct x-coordinates (p ≠ ±p1, both finite):
+// otherwise the circuit is unsatisfiable. The chord slope is computed with a
+// checked division, so equal inputs cannot leave it unconstrained.
 func (p *G1Affine) AddAssign(api frontend.API, p1 G1Affine) *G1Affine {
 
 	// compute lambda = (p1.y-p.y)/(p1.x-p.x)
-	lambda := api.DivUnchecked(api.Sub(p1.Y, p.Y), api.Sub(p1.X, p.X))
+	lambda := api.Div(api.Sub(p1.Y, p.Y), api.Sub(p1.X, p.X))
 
 	// xr = lambda**2-p.x-p1.x
 	xr := api.Sub(api.Mul(lambda, lambda), api.Add(p.X, p1.X))
@@ -139,6 +143,10 @@ func (p *G1Affine) Lookup2(api frontend.API, b1, b2 frontend.Variable, p1, p2, p
 }
 
 // Double double a point in affine coords
+//
+// ⚠️  p1 must have y ≠ 0 (in particular p1 ≠ (0,0), the infinity encoding):
+// otherwise the circuit is unsatisfiable. The tangent slope is computed with a
+// checked division, so (0,0) cannot leave it unconstrained.
 func (p *G1Affine) Double(api frontend.API, p1 G1Affine) *G1Affine {
 
 	var three, two big.Int
@@ -146,7 +154,7 @@ func (p *G1Affine) Double(api frontend.API, p1 G1Affine) *G1Affine {
 	two.SetInt64(2)
 
 	// compute lambda = (3*p1.x**2+a)/2*p1.y, here we assume a=0 (j invariant 0 curve)
-	lambda := api.DivUnchecked(api.Mul(p1.X, p1.X, three), api.Mul(p1.Y, two))
+	lambda := api.Div(api.Mul(p1.X, p1.X, three), api.Mul(p1.Y, two))
 
 	// xr = lambda**2-2*p1.x
 	xr := api.Sub(api.Mul(lambda, lambda), api.Mul(p1.X, two))
@@ -188,6 +196,10 @@ func (p *G1Affine) scalarMulBySeed(api frontend.API, Q *G1Affine) *G1Affine {
 }
 
 // ScalarMul sets P = [s] Q and returns P.
+//
+// Q must be in the prime-order subgroup G1 (or (0,0)); this method does not
+// check it (see [Pairing.AssertIsOnG1]). For other points the result is not
+// [s]Q.
 //
 // By default, uses complete arithmetic.
 //
@@ -298,14 +310,13 @@ func (p *G1Affine) scalarMulGLV(api frontend.API, Q G1Affine, s frontend.Variabl
 	// hence have the same X coordinates.
 
 	// However when doing doubleAndAdd(Acc, B) as (Acc+B)+Acc it might happen
-	// that Acc==B or -B. So we add the point H=(0,1) on BLS12-377 of order 2
-	// to it to avoid incomplete additions in the loop by forcing Acc to be
-	// different than the stored B.  Normally, the point H should be "killed
-	// out" by the first doubling in the loop and the result will remain
-	// unchanged. However, we are using affine coordinates that do not encode
-	// the infinity point. Given the affine formulae, doubling (0,1) results in
-	// (0,-1). Since the loop size N=nbits-1 is even we need to subtract
-	// [2^N]H = (0,1) from the result at the end.
+	// that Acc==B or -B. So we add the point H=(0,1) on BLS12-377, a flex of
+	// y² = x³ + 1 and hence of order 3 (doubling gives (0,-1) = -H), to avoid
+	// incomplete additions in the loop by forcing Acc to be different than the
+	// stored B. For Q in G1 every accumulator is G + [c]H with c ≢ 0 mod 3
+	// while every B is in G1, so no loop step is exceptional whatever
+	// decomposition the prover supplies. Since the loop size N=nbits-1 is even,
+	// [2^N]H = H and we subtract it from the result at the end.
 	//
 	// Acc = Q + Φ(Q) + H
 	Acc.AddAssign(api, G1Affine{X: 0, Y: 1})
@@ -350,10 +361,14 @@ func (p *G1Affine) AssertIsEqual(api frontend.API, other G1Affine) {
 }
 
 // DoubleAndAdd computes 2*p1+p in affine coords
+//
+// ⚠️  p1 and p2 must have distinct x-coordinates (p1 ≠ ±p2, both finite):
+// otherwise the circuit is unsatisfiable. The first chord slope is computed
+// with a checked division, so equal inputs cannot leave it unconstrained.
 func (p *G1Affine) DoubleAndAdd(api frontend.API, p1, p2 *G1Affine) *G1Affine {
 
 	// compute lambda1 = (y2-y1)/(x2-x1)
-	l1 := api.DivUnchecked(api.Sub(p1.Y, p2.Y), api.Sub(p1.X, p2.X))
+	l1 := api.Div(api.Sub(p1.Y, p2.Y), api.Sub(p1.X, p2.X))
 
 	// compute x3 = lambda1**2-x1-x2
 	x3 := api.Mul(l1, l1)
@@ -566,14 +581,13 @@ func (p *G1Affine) scalarBitsMul(api frontend.API, Q G1Affine, s1bits, s2bits []
 	// hence have the same X coordinates.
 
 	// However when doing doubleAndAdd(Acc, B) as (Acc+B)+Acc it might happen
-	// that Acc==B or -B. So we add the point H=(0,1) on BLS12-377 of order 2
-	// to it to avoid incomplete additions in the loop by forcing Acc to be
-	// different than the stored B.  Normally, the point H should be "killed
-	// out" by the first doubling in the loop and the result will remain
-	// unchanged. However, we are using affine coordinates that do not encode
-	// the infinity point. Given the affine formulae, doubling (0,1) results in
-	// (0,-1). Since the loop size N=nbits-1 is even we need to subtract
-	// [2^N]H = (0,1) from the result at the end.
+	// that Acc==B or -B. So we add the point H=(0,1) on BLS12-377, a flex of
+	// y² = x³ + 1 and hence of order 3 (doubling gives (0,-1) = -H), to avoid
+	// incomplete additions in the loop by forcing Acc to be different than the
+	// stored B. For Q in G1 every accumulator is G + [c]H with c ≢ 0 mod 3
+	// while every B is in G1, so no loop step is exceptional whatever
+	// decomposition the prover supplies. Since the loop size N=nbits-1 is even,
+	// [2^N]H = H and we subtract it from the result at the end.
 	//
 	// Acc = Q + Φ(Q) + H
 	Acc.AddAssign(api, G1Affine{X: 0, Y: 1})

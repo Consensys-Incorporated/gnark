@@ -24,10 +24,11 @@ type transcript = gkrcore.Transcript[fr.Element]
 // sumcheckClaims to a multi-sumcheck statement. i.e. one of the form ∑_{0≤i<2ⁿ} fⱼ(i) = cⱼ for 1 ≤ j ≤ m.
 // Later evolving into a claim of the form gⱼ = ∑_{0≤i<2ⁿ⁻ʲ} g(r₁, r₂, ..., rⱼ₋₁, Xⱼ, i...)
 type sumcheckClaims interface {
-	roundPolynomial() polynomial.Polynomial     // compute gⱼ polynomial for current round
-	roundFold(r fr.Element)                     // fold inputs and eq at challenge r
-	varsNum() int                               // number of variables
-	proveFinalEval(r []fr.Element) []fr.Element // in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
+	roundPolynomial() polynomial.Polynomial                         // compute the evaluations gⱼ(1), ..., gⱼ(d) of the polynomial of the current round
+	evaluationAtZero(round int, claim, atOne fr.Element) fr.Element // recover gⱼ(0) from the current claim and gⱼ(1)
+	roundFold(r fr.Element)                                         // fold inputs and eq at challenge r
+	varsNum() int                                                   // number of variables
+	proveFinalEval(r []fr.Element) []fr.Element                     // in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
 }
 
 // sumcheckLazyClaims is the sumcheckClaims data structure on the verifier side. It is "lazy" in that it has to compute fewer things.
@@ -39,49 +40,58 @@ type sumcheckLazyClaims interface {
 
 // sumcheckProof of a multi-statement.
 type sumcheckProof struct {
-	partialSumPolys []polynomial.Polynomial
-	finalEvalProof  []fr.Element //in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
+	partialSumPolys []polynomial.Polynomial // for each round j, the coefficients c₁, ..., c_d of gⱼ(X) = ∑ᵢ cᵢXⁱ; c₀ is derived by the verifier
+	finalEvalProof  []fr.Element            //in case it is difficult for the verifier to compute g(r₁, ..., rₙ) on its own, the prover can provide the value and a proof
 }
 
-// sumcheckProve creates a non-interactive sumcheck proof.
-// The fold challenge is derived by the caller (proveLevel).
-// Pattern: roundPolynomial, [roundFold, roundPolynomial]*, proveFinalEval.
-func sumcheckProve(claims sumcheckClaims, t transcript) sumcheckProof {
+// sumcheckProve creates a non-interactive sumcheck proof. claimedSum is the sum being proved.
+// The fold challenge is derived by the caller (foldClaims).
+// Pattern: [roundPolynomial, evaluationAtZero, roundFold]*, proveFinalEval.
+func sumcheckProve(claims sumcheckClaims, claimedSum fr.Element, t transcript) sumcheckProof {
 	varsNum := claims.varsNum()
 	proof := sumcheckProof{partialSumPolys: make([]polynomial.Polynomial, varsNum)}
-	proof.partialSumPolys[0] = claims.roundPolynomial()
 	challenges := make([]fr.Element, varsNum)
 
-	for j := range varsNum - 1 {
+	for j := range varsNum {
+		evals := claims.roundPolynomial()
+		gJ := make(polynomial.Polynomial, len(evals)+1)
+		copy(gJ[1:], evals)
+		gJ[0] = claims.evaluationAtZero(j, claimedSum, evals[0])
+
+		gJCoeffs := polynomial.InterpolateOnRange(gJ)
+		proof.partialSumPolys[j] = gJCoeffs[1:]
 		challenges[j] = t.Squeeze(proof.partialSumPolys[j]...)
-		claims.roundFold(challenges[j])
-		proof.partialSumPolys[j+1] = claims.roundPolynomial()
+		claimedSum = gJCoeffs.Eval(&challenges[j])
+		if j+1 < varsNum {
+			claims.roundFold(challenges[j])
+		}
 	}
-	challenges[varsNum-1] = t.Squeeze(proof.partialSumPolys[varsNum-1]...)
 
 	proof.finalEvalProof = claims.proveFinalEval(challenges)
 	return proof
 }
 
 // sumcheckVerify verifies a non-interactive sumcheck proof.
-// The fold challenge is derived by the caller (verifyLevel).
+// The fold challenge is derived by the caller (foldClaims).
 // claimedSum is the expected sum; degree is the polynomial's degree in each variable.
 func sumcheckVerify(claims sumcheckLazyClaims, proof sumcheckProof, claimedSum fr.Element, degree int, t transcript) error {
 	r := make([]fr.Element, claims.varsNum())
 
-	gJ := make(polynomial.Polynomial, degree+1)
 	gJR := claimedSum
-
+	// gⱼ(0) + gⱼ(1) = gⱼ₋₁(rⱼ₋₁) and gⱼ(1) = ∑ᵢ₌₀ cᵢ give c₀ = (gⱼ₋₁(rⱼ₋₁) - ∑ᵢ₌₁ cᵢ) / 2.
 	for j := range claims.varsNum() {
 		if len(proof.partialSumPolys[j]) != degree {
 			return errors.New("malformed proof")
 		}
-		copy(gJ[1:], proof.partialSumPolys[j])
-		gJ[0].Sub(&gJR, &proof.partialSumPolys[j][0])
+
+		c0 := (*fr.Vector)(&proof.partialSumPolys[j]).Sum()
+		c0.Sub(&gJR, &c0)
+		c0.Halve()
 
 		r[j] = t.Squeeze(proof.partialSumPolys[j]...)
-		gJCoeffs := polynomial.InterpolateOnRange(gJ[:(degree + 1)])
-		gJR = gJCoeffs.Eval(&r[j])
+		gJR = proof.partialSumPolys[j].Eval(&r[j])
+		gJR.Mul(&gJR, &r[j])
+		gJR.Add(&gJR, &c0)
 	}
 
 	return claims.verifyFinalEval(r, gJR, proof.finalEvalProof)
@@ -248,6 +258,13 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 	return p
 }
 
+// evaluationAtZero returns gⱼ(0) = claim - gⱼ(1), as gⱼ(0) + gⱼ(1) = claim.
+func (c *zeroCheckClaims) evaluationAtZero(_ int, claim, atOne fr.Element) fr.Element {
+	var res fr.Element
+	res.Sub(&claim, &atOne)
+	return res
+}
+
 // roundFold folds all input and eq polynomials at the verifier challenge r.
 // After this call, j ← j+1 and rⱼ = r.
 func (c *zeroCheckClaims) roundFold(r fr.Element) {
@@ -354,15 +371,13 @@ func (c *zeroCheckBase) proveFinalEval(r []fr.Element, extraPolys []polynomial.M
 	return evaluations
 }
 
-// init derives the folding coefficient, sets up the input multilinears,
+// init sets the folding coefficient, sets up the input multilinears,
 // and builds gate evaluator pools — the steps common to all sumcheck-family provers.
-func (c *zeroCheckBase) init(r *resources, levelI int) {
+func (c *zeroCheckBase) init(r *resources, levelI int, foldingCoeff fr.Element) {
 	c.levelI = levelI
 	c.resources = r
+	c.foldingCoeff = foldingCoeff
 	level := r.schedule[levelI]
-	if level.NbClaims() >= 2 {
-		c.foldingCoeff = r.transcript.Squeeze()
-	}
 
 	uniqueInputs, inputIndices := r.circuit.InputMapping(level)
 	c.input = make([]polynomial.MultiLin, len(uniqueInputs))
@@ -387,8 +402,10 @@ func (c *zeroCheckBase) init(r *resources, levelI int) {
 }
 
 func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
+	foldingCoeff, claimedSum := r.foldClaims(levelI)
+
 	var claims zeroCheckClaims
-	claims.init(r, levelI)
+	claims.init(r, levelI, foldingCoeff)
 
 	level := r.schedule[levelI]
 	eqLength := 1 << r.nbVars
@@ -436,15 +453,15 @@ func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
 		}
 	}
 
-	return sumcheckProve(&claims, r.transcript)
+	return sumcheckProve(&claims, claimedSum, r.transcript)
 }
 
-// verifyLevelSetup derives the folding coefficient, collects all claimed wire
-// evaluations from the proof or the initial assignment, computes the batched
-// claimed sum, and builds the lazy-claims object shared by both verifiers.
-func (r *resources) verifyLevelSetup(levelI int, proof Proof) (fr.Element, *zeroCheckLazyClaims) {
+// foldClaims squeezes the folding coefficient of level levelI if it has at least two claims, and
+// returns it with the sum the level's sumcheck proves: the claimed values of the level's wires,
+// folded by the coefficient. The values are read from r.proof, which must hold the entries of the
+// levels the claims come from.
+func (r *resources) foldClaims(levelI int) (foldingCoeff, claimedSum fr.Element) {
 	level := r.schedule[levelI]
-	var foldingCoeff fr.Element
 	if level.NbClaims() >= 2 {
 		foldingCoeff = r.transcript.Squeeze()
 	}
@@ -453,43 +470,54 @@ func (r *resources) verifyLevelSetup(levelI int, proof Proof) (fr.Element, *zero
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			for claimI, src := range group.ClaimSources {
-				claimedEvals = append(claimedEvals, proof[src.Level].finalEvalProof[r.claimValueIndices[wI][claimI]])
+				claimedEvals = append(claimedEvals, r.proof[src.Level].finalEvalProof[r.claimValueIndices[wI][claimI]])
 			}
 		}
 	}
+	return foldingCoeff, claimedEvals.Eval(&foldingCoeff)
+}
 
-	return claimedEvals.Eval(&foldingCoeff), &zeroCheckLazyClaims{
+func (r *resources) verifySumcheckLevel(levelI int) error {
+	foldingCoeff, claimedSum := r.foldClaims(levelI)
+	lazyClaims := &zeroCheckLazyClaims{
 		foldingCoeff: foldingCoeff,
 		resources:    r,
 		levelI:       levelI,
 	}
-}
-
-func (r *resources) verifySumcheckLevel(levelI int, proof Proof) error {
-	claimedSum, lazyClaims := r.verifyLevelSetup(levelI, proof)
 	level := r.schedule[levelI].(*constraint.GkrSumcheckLevel)
-	return sumcheckVerify(lazyClaims, proof[levelI], claimedSum, r.circuit.ZeroCheckDegree(level), r.transcript)
+	return sumcheckVerify(lazyClaims, r.proof[levelI], claimedSum, r.circuit.ZeroCheckDegree(level), r.transcript)
 }
 
 // singleSourceZeroCheckClaims is the prover-side claim for a single-source
 // zerocheck with the eq polynomial factored out (Section 3.2 of ePrint 2024/108).
 //
 // When a level has exactly one claim source with evaluation point q, the standard
-// round polynomial g_j(X) = Σ_h eq(q, (r₀…r_{j-1}, X, h)) · G(r₀…r_{j-1}, X, h)
+// round polynomial gⱼ(X) = Σₕ eq(q, (r₀…rⱼ₋₁, X, h)) · G(r₀…rⱼ₋₁, X, h)
 // has degree d+1 (one from eq, d from the gate). Factoring out the per-variable eq
-// gives g_j(X) = eq(q_j, X) · g'_j(X) where g'_j has degree d. The prover sends
+// gives gⱼ(X) = eq(qⱼ, X) · g'ⱼ(X) where g'ⱼ has degree d. The prover sends
 // d evaluations per round instead of d+1, saving one field element per variable and
 // reducing the number of gate evaluations per hypercube point from d+1 to d.
 //
-// The suffix eq tables eq(q_{j+1}…q_{N-1}; ·) are precomputed bottom-up and used
+// The suffix eq tables eq(qⱼ₊₁…q_{N-1}; ·) are precomputed bottom-up and used
 // read-only as weights in each round; only the input multilinears are folded.
 type singleSourceZeroCheckClaims struct {
 	zeroCheckBase
 	suffixEq polynomial.MultiLin // contiguous buffer; second half is the current round's eq segment
+	q        []fr.Element        // the evaluation point of the claim source
 }
 
-// roundPolynomial computes g'_j(1), ..., g'_j(d) where d is the gate degree.
-// g'_j(m) = ∑_h suffixEq[j+1][h] · ∑_w α^w · gate_w(inputs at (m, h))
+// evaluationAtZero returns g'ⱼ(0) = (claim - qⱼ·g'ⱼ(1)) / (1 - qⱼ), from (1 - qⱼ)·g'ⱼ(0) + qⱼ·g'ⱼ(1) = claim.
+func (c *singleSourceZeroCheckClaims) evaluationAtZero(round int, claim, atOne fr.Element) fr.Element {
+	var res, oneMinusQj fr.Element
+	res.Mul(&c.q[round], &atOne)
+	res.Sub(&claim, &res)
+	oneMinusQj.SetOne()
+	oneMinusQj.Sub(&oneMinusQj, &c.q[round])
+	return *res.Div(&res, &oneMinusQj)
+}
+
+// roundPolynomial computes g'ⱼ(1), ..., g'ⱼ(d) where d is the gate degree.
+// g'ⱼ(m) = ∑ₕ suffixEq[j+1][h] · ∑_w αʷ · gate_w(inputs at (m, h))
 // The wire contributions are accumulated via Horner's method in α (= foldingCoeff),
 // eliminating precomputed batchCoeffs and the multiply-by-one for wire 0.
 func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial {
@@ -535,7 +563,7 @@ func (c *singleSourceZeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 			iIndex := 0
 			nextIIndex := nbUniqueInputs
 			for d := range degree {
-				// Horner accumulation: gate_0 + α·(gate_1 + α·(... + α·gate_{W-1}))
+				// Horner accumulation: gate₀ + α·(gate₁ + α·(... + α·gate_{W-1}))
 				for _, inputI := range c.inputIndices[nbWires-1] {
 					evaluators[nbWires-1].PushInput(inputEvals[iIndex+inputI])
 				}
@@ -605,7 +633,7 @@ func (c *singleSourceZeroCheckClaims) proveFinalEval(r []fr.Element) []fr.Elemen
 //	buf[2:4]             = suffixEq[N-1] = eq(q_{N-1}; ·)            (length 2)
 //	buf[4:8]             = suffixEq[N-2] = eq(q_{N-2}, q_{N-1}; ·)   (length 4)
 //	...
-//	buf[2^(N-1):2^N]     = suffixEq[1]   = eq(q_1, ..., q_{N-1}; ·)  (length 2^(N-1))
+//	buf[2^(N-1):2^N]     = suffixEq[1]   = eq(q₁, ..., q_{N-1}; ·)  (length 2^(N-1))
 //
 // The first two positions are unused padding so that the buffer halves cleanly:
 // in round j the eq segment is buf[len(buf)/2:] and buf is trimmed to buf[:len(buf)/2].
@@ -628,7 +656,7 @@ func (r *resources) buildSuffixEq(q []fr.Element) polynomial.MultiLin {
 	buf[2].Sub(&buf[2], &q[n-1])
 	buf[3].Set(&q[n-1])
 
-	// Each suffixEq[j] is built by tensoring [1-q_j, q_j] with suffixEq[j+1].
+	// Each suffixEq[j] is built by tensoring [1-qⱼ, qⱼ] with suffixEq[j+1].
 	// suffixEq[j+1] sits at buf[srcStart : srcStart+prevLen],
 	// suffixEq[j]   goes to buf[dstStart : dstStart+2*prevLen].
 	for j := n - 2; j >= 1; j-- {
@@ -652,20 +680,27 @@ func (r *resources) buildSuffixEq(q []fr.Element) polynomial.MultiLin {
 
 func (r *resources) proveSingleSourceZeroCheckLevel(levelI int) sumcheckProof {
 	level := r.schedule[levelI].(*constraint.GkrSingleSourceZeroCheckLevel)
+	foldingCoeff, claimedSum := r.foldClaims(levelI)
 
 	var claims singleSourceZeroCheckClaims
-	claims.init(r, levelI)
+	claims.init(r, levelI, foldingCoeff)
 
 	// Build suffix eq table from the single claim source's eval point
 	src := level.ClaimSources[0]
 	q := r.outgoingEvalPoints[src.Level][src.OutgoingClaimIndex]
 	claims.suffixEq = r.buildSuffixEq(q)
+	claims.q = q
 
-	return sumcheckProve(&claims, r.transcript)
+	return sumcheckProve(&claims, claimedSum, r.transcript)
 }
 
-func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) error {
-	claimedSum, lazyClaims := r.verifyLevelSetup(levelI, proof)
+func (r *resources) verifySingleSourceZeroCheckLevel(levelI int) error {
+	foldingCoeff, claimedSum := r.foldClaims(levelI)
+	lazyClaims := &zeroCheckLazyClaims{
+		foldingCoeff: foldingCoeff,
+		resources:    r,
+		levelI:       levelI,
+	}
 
 	level := r.schedule[levelI].(*constraint.GkrSingleSourceZeroCheckLevel)
 	src := level.ClaimSources[0]
@@ -673,44 +708,39 @@ func (r *resources) verifySingleSourceZeroCheckLevel(levelI int, proof Proof) er
 	degree := r.circuit.ZeroCheckDegree(level)
 
 	challenges := make([]fr.Element, r.nbVars)
-	gPrime := make(polynomial.Polynomial, degree+1)
 
-	// The verifier tracks claimedSum = g'_{j-1}(r_{j-1}), the "primed" value with
+	// The verifier tracks claimedSum = g'ⱼ₋₁(rⱼ₋₁), the "primed" value with
 	// the per-variable eq factors already absent. This is correct because the
-	// full round polynomial is g_j(X) = eq(q_j, X) · g'_j(X), where
-	// g'_j(X) = Σ_h suffixEq[j+1](h) · G(r₀…r_{j-1}, X, h), and
+	// full round polynomial is gⱼ(X) = eq(qⱼ, X) · g'ⱼ(X), where
+	// g'ⱼ(X) = Σₕ suffixEq[j+1](h) · G(r₀…rⱼ₋₁, X, h), and
 	//
-	//   g'_{j-1}(r_{j-1}) = Σ_{h_j ∈ {0,1}} eq(q_j, h_j) · g'_j(h_j)
-	//                      = (1-q_j)·g'_j(0) + q_j·g'_j(1)
+	//   g'ⱼ₋₁(rⱼ₋₁) = Σ_{hⱼ ∈ {0,1}} eq(qⱼ, hⱼ) · g'ⱼ(hⱼ)
+	//                      = (1-qⱼ)·g'ⱼ(0) + qⱼ·g'ⱼ(1)
 	//
-	// so the recovery formula g'_j(0) = (claimedSum - q_j·g'_j(1)) / (1-q_j)
-	// applies directly without dividing out accumulated prefix eq factors.
-	// After interpolating and evaluating g'_j(r_j), the update is simply
-	// claimedSum ← g'_j(r_j), carrying no eq baggage into the next round.
+	// With the coefficients cᵢ of g'ⱼ, g'ⱼ(0) = c₀ and g'ⱼ(1) = ∑ᵢ₌₀ cᵢ, so
+	// c₀ = claimedSum - qⱼ · ∑ᵢ₌₁ cᵢ, and g'ⱼ(rⱼ) = c₀ + rⱼ · ∑ᵢ₌₁ cᵢ · rⱼⁱ⁻¹.
+	// After evaluating g'ⱼ(rⱼ), the update is simply claimedSum ← g'ⱼ(rⱼ),
+	// carrying no eq baggage into the next round.
 	for j := range r.nbVars {
-		partialPoly := proof[levelI].partialSumPolys[j]
+		partialPoly := r.proof[levelI].partialSumPolys[j]
 		if len(partialPoly) != degree {
 			return errors.New("malformed proof")
 		}
 
-		var oneMinusQj, qjTimesGPrime1 fr.Element
-		oneMinusQj.SetOne()
-		oneMinusQj.Sub(&oneMinusQj, &q[j])
-		qjTimesGPrime1.Mul(&q[j], &partialPoly[0]) // partialPoly[0] = g'(1)
-		gPrime[0].Sub(&claimedSum, &qjTimesGPrime1)
-		gPrime[0].Div(&gPrime[0], &oneMinusQj)
-
-		copy(gPrime[1:], partialPoly)
+		c0 := (*fr.Vector)(&partialPoly).Sum()
+		c0.Mul(&c0, &q[j])
+		c0.Sub(&claimedSum, &c0)
 
 		challenges[j] = r.transcript.Squeeze(partialPoly...)
-		gPrimeCoeffs := polynomial.InterpolateOnRange(gPrime[:(degree + 1)])
-		claimedSum = gPrimeCoeffs.Eval(&challenges[j])
+		claimedSum = partialPoly.Eval(&challenges[j])
+		claimedSum.Mul(&claimedSum, &challenges[j])
+		claimedSum.Add(&claimedSum, &c0)
 	}
 
-	// claimedSum is now Σ_w c^w · gate_w(inputs(r)), without the eq factor.
-	// verifyFinalEval expects Σ_w c^w · eq(q, r) · gate_w(inputs(r)), so multiply.
+	// claimedSum is now Σ_w cʷ · gate_w(inputs(r)), without the eq factor.
+	// verifyFinalEval expects Σ_w cʷ · eq(q, r) · gate_w(inputs(r)), so multiply.
 	eqAtQR := polynomial.EvalEq(q, challenges)
 	claimedSum.Mul(&claimedSum, &eqAtQR)
 
-	return lazyClaims.verifyFinalEval(challenges, claimedSum, proof[levelI].finalEvalProof)
+	return lazyClaims.verifyFinalEval(challenges, claimedSum, r.proof[levelI].finalEvalProof)
 }

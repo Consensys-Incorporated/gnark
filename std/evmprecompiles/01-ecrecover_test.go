@@ -3,7 +3,6 @@ package evmprecompiles
 import (
 	"crypto/rand"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"math/big"
 	"testing"
@@ -310,25 +309,23 @@ func TestInvalidFailureTag(t *testing.T) {
 	assert.Error(err)
 }
 
+// TestLargeV checks that the circuit rejects recovery ids v ∈ {2,3}. These
+// encode R.x = r+n, which the circuit does not support, and a native key for
+// them exists only if r+n < p, which for random r essentially never holds
+// (gnark-crypto's RecoverFrom returns an error in that case). The expected key
+// is therefore an arbitrary fixed point; the witness must be rejected
+// regardless.
 func TestLargeV(t *testing.T) {
 	assert := test.NewAssert(t)
-	var pk ecdsa.PublicKey
 	msg := []byte("test")
+	_, generator := secp256k1.Generators()
 	var rE, sE fr.Element
 	r, s := new(big.Int), new(big.Int)
 	for _, v := range []uint{2, 3} {
-		for {
-			rE.SetRandom()
-			sE.SetRandom()
-			rE.BigInt(r)
-			sE.BigInt(s)
-			if err := pk.RecoverFrom(msg, v, r, s); errors.Is(err, ecdsa.ErrNoSqrtR) {
-				continue
-			} else {
-				assert.NoError(err)
-				break
-			}
-		}
+		rE.SetRandom()
+		sE.SetRandom()
+		rE.BigInt(r)
+		sE.BigInt(s)
 		circuit := ecrecoverCircuit{}
 		witness := ecrecoverCircuit{
 			Message:   emulated.ValueOf[emulated.Secp256k1Fr](ecdsa.HashToInt(msg)),
@@ -338,8 +335,8 @@ func TestLargeV(t *testing.T) {
 			Strict:    0,
 			IsFailure: 0,
 			Expected: sw_emulated.AffinePoint[emulated.Secp256k1Fp]{
-				X: emulated.ValueOf[emulated.Secp256k1Fp](pk.A.X),
-				Y: emulated.ValueOf[emulated.Secp256k1Fp](pk.A.Y),
+				X: emulated.ValueOf[emulated.Secp256k1Fp](generator.X),
+				Y: emulated.ValueOf[emulated.Secp256k1Fp](generator.Y),
 			},
 		}
 		err := test.IsSolved(&circuit, &witness, ecc.BLS12_377.ScalarField())

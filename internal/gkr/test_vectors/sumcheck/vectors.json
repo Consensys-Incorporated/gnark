@@ -13,7 +13,7 @@
 		"proof": {
 			"partialSumPolys": [
 				[
-					3
+					2
 				]
 			],
 			"finalEvalProof": {}
@@ -40,13 +40,13 @@
 		"proof": {
 			"partialSumPolys": [
 				[
-					26
+					16
 				],
 				[
-					-1
+					4
 				],
 				[
-					-4
+					1
 				]
 			],
 			"finalEvalProof": {}

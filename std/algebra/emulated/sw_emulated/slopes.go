@@ -231,6 +231,21 @@ func (c *Curve[B, S]) implicitToAffine(acc *implicitAcc[B]) *AffinePoint[B] {
 // it replaces in the incomplete scalar-multiplication loops, where the
 // accumulator anchoring excludes these cases for honest witnesses.
 func (c *Curve[B, S]) implicitDoubleAndAdd(acc *implicitAcc[B], q *AffinePoint[B]) {
+	c.implicitDoubleAndAddGeneric(acc, q, false)
+}
+
+// implicitDoubleAndAddGuarded is [Curve.implicitDoubleAndAdd] with the chord
+// guard x(q) ≠ x([2]acc). The chord assertion leaves λa free exactly when
+// q = [2]acc (both sides vanish); the guard closes that case and q = −[2]acc
+// (which fails anyway). The tangent needs no guard: on a = 0 curves y ≡ 0 forces
+// x³ = −b ≠ 0, so 3x² ≢ 0 and the tangent assertion is unsatisfiable. With the
+// guard, every step is either the exact group operation or unsatisfiable, for
+// any (adversarial) acc and q.
+func (c *Curve[B, S]) implicitDoubleAndAddGuarded(acc *implicitAcc[B], q *AffinePoint[B]) {
+	c.implicitDoubleAndAddGeneric(acc, q, true)
+}
+
+func (c *Curve[B, S]) implicitDoubleAndAddGeneric(acc *implicitAcc[B], q *AffinePoint[B], guard bool) {
 	// tangent: λd·2y = 3x² with y = lam·(xT − x) − yT:
 	//   2·λd·lam·(xT − x) − 2·λd·yT − 3·x² ≡ 0
 	lamDs, err := c.baseApi.NewHint(implicitTangentHint, 1, acc.lam, acc.x, acc.xT, acc.yT)
@@ -245,6 +260,9 @@ func (c *Curve[B, S]) implicitDoubleAndAdd(acc *implicitAcc[B], q *AffinePoint[B
 	)
 	// xd = λd² − 2x
 	xd := c.baseApi.Eval([][]*emulated.Element[B]{{lamD, lamD}, {acc.x}}, []int{1, -2})
+	if guard {
+		c.baseApi.AssertIsDifferent(&q.X, xd)
+	}
 
 	// chord through q: λa·(xq − xd) = yq − yd with
 	// yd = λd·(x − xd) − y = λd·(x − xd) − lam·(xT − x) + yT:

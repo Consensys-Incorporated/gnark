@@ -723,9 +723,13 @@ func kzgPointEvaluationFailure(
 	// - we perform the KZG verification. It is unrolled version of
 	// [kzg.Verifier.CheckOpeningProof]
 	evPointNeg := fr.Neg(evaluationPoint)
+	// proofUncompressed is in G1: it passed IsOnG1 above or was replaced by
+	// the (0,0) dummy. fixedKzgSrsVk.G1 is the constant SRS generator. So the
+	// scalar multiplication does not check them again.
 	totalG1, err := curve.MultiScalarMul(
 		[]*sw_bls12381.G1Affine{&fixedKzgSrsVk.G1, proofUncompressed},
 		[]*sw_bls12381.Scalar{claimedValue, evPointNeg},
+		algopts.WithNoSubgroupMembershipCheck(),
 	)
 	if err != nil {
 		return fmt.Errorf("multi scalar mul: %w", err)

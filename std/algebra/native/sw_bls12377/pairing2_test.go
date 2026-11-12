@@ -9,6 +9,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377"
 	fr_bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
+	"github.com/consensys/gnark/backend"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/test"
 )
@@ -159,4 +160,30 @@ func TestPairingMuxes(t *testing.T) {
 			assert.NoError(err)
 		}, fmt.Sprintf("nbPairs=%d", nbPairs))
 	}
+}
+
+type assertIsOnG1InfinityCircuit struct {
+	P G1Affine
+}
+
+func (c *assertIsOnG1InfinityCircuit) Define(api frontend.API) error {
+	pr := NewPairing(api)
+	pr.AssertIsOnG1(&c.P)
+	return nil
+}
+
+func TestAssertIsOnG1Infinity(t *testing.T) {
+	assert := test.NewAssert(t)
+	var inf bls12377.G1Affine
+	_, _, g1, _ := bls12377.Generators()
+	assert.CheckCircuit(&assertIsOnG1InfinityCircuit{},
+		test.WithValidAssignment(&assertIsOnG1InfinityCircuit{P: NewG1Affine(inf)}),
+		test.WithValidAssignment(&assertIsOnG1InfinityCircuit{P: NewG1Affine(g1)}),
+		// (0,1) is on the curve but has order 3, so it is not in G1.
+		test.WithInvalidAssignment(&assertIsOnG1InfinityCircuit{P: G1Affine{X: 0, Y: 1}}),
+		// (1,0) is not on the curve.
+		test.WithInvalidAssignment(&assertIsOnG1InfinityCircuit{P: G1Affine{X: 1, Y: 0}}),
+		// only one coordinate is zero, so this is not the point at infinity.
+		test.WithInvalidAssignment(&assertIsOnG1InfinityCircuit{P: G1Affine{X: 0, Y: 2}}),
+		test.WithCurves(ecc.BW6_761), test.WithBackends(backend.GROTH16, backend.PLONK))
 }

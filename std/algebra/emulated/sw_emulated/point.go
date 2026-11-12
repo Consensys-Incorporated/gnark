@@ -413,6 +413,16 @@ func (c *Curve[B, S]) Add(p, q *AffinePoint[B]) *AffinePoint[B] {
 	return c.add(p, q)
 }
 
+// addGuarded is the incomplete [Curve.add] with an assertion p.x ≠ q.x. The
+// chord slope is pinned by λ·(q.x−p.x) = q.y−p.y, which leaves λ free exactly
+// when p = q; the guard closes that case (and p = −q, whose sum is not
+// representable). It only rejects, so the result is the exact sum for any
+// adversarial inputs, or the circuit is unsatisfiable.
+func (c *Curve[B, S]) addGuarded(p, q *AffinePoint[B]) *AffinePoint[B] {
+	c.baseApi.AssertIsDifferent(&p.X, &q.X)
+	return c.add(p, q)
+}
+
 // mulByConstant returns [k]p for a fixed k > 0, via a width-4 signed-window (NAF)
 // double-and-add on the *incomplete* group law, with a guard on every step. Used
 // to clear the cofactor torsion in the fake-GLV subgroup binding. k is a
@@ -540,22 +550,45 @@ func naf4Digits(k *big.Int) []int8 {
 // R must already be known to be on the curve; this method does not check that.
 // The (0,0) infinity encoding is accepted.
 //
-// It is the point-based binding described on [Curve.assertPointInSubgroup]: a
-// preimage S is hinted and [c]S == R asserted, which is cheaper than a
-// [r]-order check and, on BLS12-381 G1, cheaper than the endomorphism test
-// phi(P) = [-x^2]P.
+// With a [CurveParams.CofactorClearing] constant c (BLS12-381 G1) it is a
+// point-based binding: a preimage S is hinted and [c]S == R asserted, which is
+// cheaper than a [r]-order check and, on BLS12-381 G1, cheaper than the
+// endomorphism test phi(P) = [-x^2]P. Otherwise, with a
+// [CurveParams.EndoSubgroupTest] (BW6-761 G1), it asserts the endomorphism
+// relation [k1]R + [k2]Φ(R) = O.
 //
 // On a prime-order curve ([CurveParams.PrimeOrder]) every on-curve point is
 // already in the subgroup and this is a no-op. On a curve that has a nontrivial
-// cofactor but no [CurveParams.CofactorClearing] constant — BW6-761 G1 — there
-// is no supported membership check, and this panics at circuit-definition time
-// rather than silently accepting off-subgroup points.
+// cofactor but neither constant there is no supported membership check, and
+// this panics at circuit-definition time rather than silently accepting
+// off-subgroup points.
 func (c *Curve[B, S]) AssertIsInSubgroup(R *AffinePoint[B]) {
+	c.assertPointInSubgroup(R)
+}
+
+// assertInputInSubgroup is [Curve.assertPointInSubgroup] for scalar
+// multiplication inputs: a compile-time constant point (e.g. the generator in
+// [Curve.JointScalarMulBase]) is checked natively instead, costing no
+// constraints. A constant that fails the native check is still checked
+// in-circuit.
+func (c *Curve[B, S]) assertInputInSubgroup(R *AffinePoint[B]) {
+	if px, ok := c.baseApi.ConstantValue(&R.X); ok {
+		if py, ok := c.baseApi.ConstantValue(&R.Y); ok {
+			var sc S
+			if combCheckPoint(px, py, c.params.A, c.params.B, c.baseModulus(), sc.Modulus()) == nil {
+				return
+			}
+		}
+	}
 	c.assertPointInSubgroup(R)
 }
 
 func (c *Curve[B, S]) assertPointInSubgroup(R *AffinePoint[B]) {
 	cc := c.params.CofactorClearing
+	if cc == nil && c.params.EndoSubgroupTest[0] != nil {
+		c.assertEndoSubgroupTest(R)
+		return
+	}
 	if cc == nil {
 		// Skipping is sound only because every on-curve point is in the
 		// subgroup. Without that, a missing constant would turn this assertion
@@ -583,6 +616,38 @@ func (c *Curve[B, S]) assertPointInSubgroup(R *AffinePoint[B]) {
 	c.AssertIsOnCurve(Sp)
 	cS := c.mulByConstant(Sp, cc)
 	c.AssertIsEqual(cS, c.Select(skipZero, cS, R))
+}
+
+// assertEndoSubgroupTest asserts [k1]R + [k2]Φ(R) = O for
+// (k1, k2) = [CurveParams.EndoSubgroupTest], skipping the (0,0) infinity
+// encoding. R must already be known to be on the curve.
+//
+// Both multiplications go through [Curve.mulByConstant], whose guards only
+// reject, so for an adversarial R the computed points are exactly [k1]R and
+// [k2]Φ(R) and the final equality is the exact group relation. Completeness:
+// for R in G1, k1, k2 < r are nonzero mod r, so no intermediate is exceptional.
+func (c *Curve[B, S]) assertEndoSubgroupTest(R *AffinePoint[B]) {
+	k1, k2 := c.params.EndoSubgroupTest[0], c.params.EndoSubgroupTest[1]
+	if k2 == nil || k1.Sign() <= 0 || k2.Sign() <= 0 || c.thirdRootOne == nil || c.params.Eigenvalue == nil {
+		panic("sw_emulated: EndoSubgroupTest needs positive (k1, k2) and an endomorphism")
+	}
+	var sc S
+	r := sc.Modulus()
+	if k1.Cmp(r) >= 0 || k2.Cmp(r) >= 0 {
+		panic("sw_emulated: EndoSubgroupTest constants must be below r")
+	}
+	// completeness on G1, where Φ acts as [Eigenvalue]
+	chk := new(big.Int).Mul(k2, c.params.Eigenvalue)
+	chk.Add(chk, k1).Mod(chk, r)
+	if chk.Sign() != 0 {
+		panic("sw_emulated: EndoSubgroupTest inconsistent with Eigenvalue: k1 + k2·λ ≢ 0 mod r")
+	}
+	skipZero := c.api.And(c.baseApi.IsZero(&R.X), c.baseApi.IsZero(&R.Y))
+	Rsafe := c.Select(skipZero, &c.GeneratorMultiples()[3], R)
+	phiR := &AffinePoint[B]{X: *c.baseApi.Mul(&Rsafe.X, c.thirdRootOne), Y: Rsafe.Y}
+	a := c.mulByConstant(Rsafe, k1)
+	b := c.mulByConstant(phiR, k2)
+	c.AssertIsEqual(b, c.Neg(a))
 }
 
 // double doubles p and return it. It doesn't modify p.
@@ -848,17 +913,22 @@ func (c *Curve[B, S]) muxY8Signed(signBit frontend.Variable, selector frontend.V
 //     set of [Curve.scalarMulGLVAndFakeGLV] and currently include BN254,
 //     BLS12-381, BW6-761 and secp256k1.
 //
-// ScalarMul calls scalarMulFakeGLV or scalarMulGLVAndFakeGLV depending on whether an efficient endomorphism is available.
+// ScalarMul calls scalarMulFakeGLV when there is no efficient endomorphism,
+// classic GLV ([Curve.scalarMulGLV]) on [CurveParams.PreferClassicGLV] curves
+// (BLS12-381 G1, BW6-761 G1) and scalarMulGLVAndFakeGLV otherwise.
 //
-// N.B. For scalarMulGLVAndFakeGLV, the result is undefined when the input point is
-// not on the prime order subgroup. For scalarMulFakeGLV the result is well
-// defined for any point on the curve
+// N.B. For the endomorphism-based methods, the result is undefined when the
+// input point is not in the prime-order subgroup. For scalarMulFakeGLV the
+// result is well defined for any point on the curve. On PreferClassicGLV
+// curves ScalarMul therefore asserts that p is in the prime-order subgroup
+// ([Curve.AssertIsInSubgroup]); pass [algopts.WithNoSubgroupMembershipCheck]
+// to skip this when the caller has already checked it.
 //
 // The returned point is on the curve and in the prime-order subgroup, on every
-// supported curve ((0,0) excepted). The fake-GLV paths hint the result rather
-// than compute it, so curve membership is enforced by an explicit check and
-// subgroup membership by [Curve.assertPointInSubgroup]; callers need not
-// re-assert either.
+// supported curve ((0,0) excepted), provided p is on the curve. The fake-GLV
+// paths hint the result rather than compute it, so curve membership is
+// enforced by an explicit check and subgroup membership by
+// [Curve.assertPointInSubgroup]; classic GLV computes it from a subgroup input.
 //
 // When p is a compile-time constant point of prime order r (for example a
 // point from a fixed verification key or SRS), the method automatically uses
@@ -882,7 +952,8 @@ func (c *Curve[B, S]) ScalarMul(p *AffinePoint[B], s *emulated.Element[S], opts 
 	switch {
 	case hasEndo && c.params.PreferClassicGLV:
 		// cofactor curves where the fake-GLV subgroup clearing outweighs its
-		// r^(1/4) savings (e.g. BLS12-381 G1); classic GLV is faster and sound.
+		// r^(1/4) savings (e.g. BLS12-381 G1). scalarMulGLV checks that p is in
+		// the subgroup unless the caller opted out.
 		return c.scalarMulGLV(p, s, opts...)
 	case hasEndo:
 		// scalarMulGLVAndFakeGLV returns an unbound (possibly torsion-shifted)
@@ -898,6 +969,27 @@ func (c *Curve[B, S]) ScalarMul(p *AffinePoint[B], s *emulated.Element[S], opts 
 // scalarMulGLV computes [s]Q using an efficient endomorphism and returns it. It doesn't modify Q nor s.
 // It implements an optimized version based on algorithm 1 of [Halo] (see Section 6.2 and appendix C).
 //
+// Q must be on the curve (not checked here). Unless
+// [algopts.WithNoSubgroupMembershipCheck] is given, Q is asserted to lie in the
+// prime-order subgroup ([Curve.AssertIsInSubgroup]); with that option the
+// caller must guarantee it. On a cofactor curve Φ acts as [λ] only on the
+// subgroup, so for any other Q the result would not be [s]Q.
+//
+// Soundness against the sub-scalar hint: the decomposition is only
+// constrained by s1 + λ·s2 ≡ s mod r, so a prover can pick bounded sub-scalars
+// that steer the incomplete main loop into an exceptional step (e.g.
+// doubleAndAdd(U, U), whose chord slope is then unconstrained). To rule this
+// out, Acc starts as Q + Φ(Q) + T0 with T0 = [CurveParams.GLVTorsionOffset] of
+// odd prime order m ∤ r. For Q in the subgroup, every accumulator is
+// G + [c]T0 with G in the subgroup and c ≢ 0 mod m (doublings multiply c by 2,
+// table additions leave it unchanged), while every table entry lies in the
+// subgroup. Hence: a doubling never sees a 2-torsion point (all orders are
+// odd); doubleAndAdd(p, q) never has p = ±q (different T0 components); its
+// second chord never has p+q = ±p (q ≠ O, and p+q = −p would need 2c ≡ 0 mod m);
+// and the low-bit corrections add subgroup points to a non-subgroup Acc. The
+// known [2^k]T0 is removed at the end. The table itself only combines
+// [a]Q + [b]Φ(Q) with |a|, |b| ≤ 3, which is never exceptional for Q ≠ O.
+//
 // ⚠️  When [algopts.WithIncompleteArithmetic] is set, this method is faster but
 // not complete. The exact exceptional set is not documented and should be
 // treated as implementation-dependent.
@@ -910,6 +1002,10 @@ func (c *Curve[B, S]) scalarMulGLV(Q *AffinePoint[B], s *emulated.Element[S], op
 	cfg, err := algopts.NewConfig(opts...)
 	if err != nil {
 		panic(err)
+	}
+	if !cfg.NoGroupMembership {
+		// accepts the (0,0) infinity encoding
+		c.assertInputInSubgroup(Q)
 	}
 	var st S
 	nbits := st.Modulus().BitLen()>>1 + 2
@@ -1033,6 +1129,16 @@ func (c *Curve[B, S]) scalarMulGLV(Q *AffinePoint[B], s *emulated.Element[S], op
 	// note that half the points are negatives of the other half,
 	// hence have the same X coordinates.
 
+	// Torsion offset: Acc = Q + Φ(Q) + T0 with T0 of small odd order outside
+	// the prime-order subgroup (see the soundness note on this method). The
+	// table entries above (including T2) stay offset-free. T2 ∈ G1∖{O} and
+	// T0 ∉ G1, so this incomplete addition is not exceptional.
+	t0 := c.glvTorsionOffset()
+	Acc = c.add(Acc, &AffinePoint[B]{X: *c.baseApi.NewElement(t0.x), Y: *c.baseApi.NewElement(t0.y)})
+	// number of doublings applied to Acc from here on; Acc carries
+	// [2^nbDoublings]T0 at the end of the loop.
+	nbDoublings := 0
+
 	// when nbits is even, we need to handle the first iteration separately
 	if nbits%2 == 0 {
 		// Acc = [2]Acc ± Q ± Φ(Q)
@@ -1044,6 +1150,7 @@ func (c *Curve[B, S]) scalarMulGLV(Q *AffinePoint[B], s *emulated.Element[S], op
 		// when bits are 00 (T==-Acc) or 11 (T==Acc).
 		Acc = c.double(Acc)
 		Acc = c.add(Acc, T)
+		nbDoublings++
 	} else {
 		// when nbits is odd we start the main loop at normally nbits - 1
 		nbits++
@@ -1076,6 +1183,7 @@ func (c *Curve[B, S]) scalarMulGLV(Q *AffinePoint[B], s *emulated.Element[S], op
 		// Acc = [4]Acc + T
 		Acc = c.double(Acc)
 		Acc = c.doubleAndAdd(Acc, T)
+		nbDoublings += 2
 	}
 
 	// i = 0
@@ -1087,12 +1195,76 @@ func (c *Curve[B, S]) scalarMulGLV(Q *AffinePoint[B], s *emulated.Element[S], op
 	tablePhiQ[0] = addFn(tablePhiQ[0], Acc)
 	Acc = c.Select(s2bits[0], Acc, tablePhiQ[0])
 
+	// remove the offset, now [2^nbDoublings]T0, a compile-time constant. The
+	// G1 part of Acc is O when [s]Q = O, which addFn handles in complete mode
+	// (in incomplete mode that case makes the circuit unsatisfiable).
+	off := glvTorsionOffsetMultiple(t0, nbDoublings, c.params.A, c.baseModulus())
+	Acc = addFn(Acc, &AffinePoint[B]{X: *c.baseApi.NewElement(off.x), Y: *c.baseApi.NewElement(new(big.Int).Sub(c.baseModulus(), off.y))})
+
 	if !cfg.IncompleteArithmetic {
 		zero := c.baseApi.Zero()
 		Acc = c.Select(isPointAtInfinity, &AffinePoint[B]{X: *zero, Y: *zero}, Acc)
 	}
 
 	return Acc
+}
+
+// baseModulus returns the base field modulus.
+func (c *Curve[B, S]) baseModulus() *big.Int {
+	var fp B
+	return fp.Modulus()
+}
+
+// glvTorsionOffset returns the classic-GLV torsion offset T0
+// ([CurveParams.GLVTorsionOffset]) after checking at compile time that it is a
+// curve point of the declared odd prime order m ≠ r. It panics if the curve
+// has no (valid) offset, so classic GLV can't silently run without it.
+func (c *Curve[B, S]) glvTorsionOffset() *combAffine {
+	x, y := c.params.GLVTorsionOffset[0], c.params.GLVTorsionOffset[1]
+	m := c.params.GLVTorsionOffsetOrder
+	if x == nil || y == nil {
+		panic("sw_emulated: classic GLV requires CurveParams.GLVTorsionOffset")
+	}
+	var sc S
+	r := sc.Modulus()
+	if m < 3 || m >= 1<<16 || !new(big.Int).SetUint64(m).ProbablyPrime(20) || r.Cmp(new(big.Int).SetUint64(m)) == 0 {
+		panic("sw_emulated: GLVTorsionOffsetOrder must be an odd prime in [3, 2^16) different from r")
+	}
+	p := c.baseModulus()
+	t0 := &combAffine{x: new(big.Int).Mod(x, p), y: new(big.Int).Mod(y, p)}
+	// on curve
+	lhs := new(big.Int).Mul(t0.y, t0.y)
+	rhs := new(big.Int).Mul(t0.x, t0.x)
+	rhs.Mul(rhs, t0.x).Add(rhs, c.params.B)
+	if c.params.A != nil {
+		rhs.Add(rhs, new(big.Int).Mul(c.params.A, t0.x))
+	}
+	if lhs.Sub(lhs, rhs).Mod(lhs, p).Sign() != 0 {
+		panic("sw_emulated: GLVTorsionOffset is not on the curve")
+	}
+	// [m-1]T0 == -T0, i.e. [m]T0 = O. T0 ≠ O and m prime, so the order is m.
+	acc, err := combDouble(t0, c.params.A, p)
+	for i := uint64(3); err == nil && i < m; i++ {
+		acc, err = combAdd(acc, t0, p)
+	}
+	neg := combNeg(t0, p)
+	if err != nil || acc.x.Cmp(neg.x) != 0 || acc.y.Cmp(new(big.Int).Mod(neg.y, p)) != 0 {
+		panic("sw_emulated: GLVTorsionOffset does not have order GLVTorsionOffsetOrder")
+	}
+	return t0
+}
+
+// glvTorsionOffsetMultiple returns [2^k]T0. T0 has odd order, so no
+// intermediate is 2-torsion or O.
+func glvTorsionOffsetMultiple(t0 *combAffine, k int, a, p *big.Int) *combAffine {
+	res := t0
+	for i := 0; i < k; i++ {
+		var err error
+		if res, err = combDouble(res, a, p); err != nil {
+			panic(fmt.Sprintf("sw_emulated: torsion offset multiple: %v", err))
+		}
+	}
+	return res
 }
 
 // scalarMulJoye computes [s]p and returns it. It doesn't modify p nor s.
@@ -1242,23 +1414,27 @@ func (c *Curve[B, S]) jointScalarMulGenericUnsafe(p1, p2 *AffinePoint[B], s1, s2
 // not complete. The exceptional set includes at least zero scalars, points at
 // infinity and p1 = ±p2, and may additionally include sparse
 // implementation-dependent failures from precomputations and accumulator
-// collisions in [Curve.jointScalarMulGLVUnsafe].
+// collisions in [Curve.jointScalarMulGLVUnsafe]. On PreferClassicGLV curves the
+// option is ignored and complete classic GLV is used.
 func (c *Curve[B, S]) jointScalarMulGLV(p1, p2 *AffinePoint[B], s1, s2 *emulated.Element[S], opts ...algopts.AlgebraOption) *AffinePoint[B] {
 	cfg, err := algopts.NewConfig(opts...)
 	if err != nil {
 		panic(fmt.Sprintf("parse opts: %v", err))
 	}
+	// On PreferClassicGLV curves (e.g. BLS12-381 G1) route each summand
+	// through complete classic GLV, matching [Curve.ScalarMul]/[Curve.ScalarMulBase]:
+	// for subgroup inputs (checked by scalarMulGLV) its computed output is in
+	// the subgroup, and it is cheaper than GLV+fake-GLV once the (here
+	// full-cofactor) clearing is included. This is also done in incomplete
+	// mode, where it is cheaper than [Curve.jointScalarMulGLVUnsafe] on these
+	// curves.
+	if c.params.PreferClassicGLV {
+		copts := classicGLVCompleteOpts(cfg.NoGroupMembership)
+		res1 := c.scalarMulGLV(p1, s1, copts...)
+		res2 := c.scalarMulGLV(p2, s2, copts...)
+		return c.AddUnified(res1, res2)
+	}
 	if !cfg.IncompleteArithmetic {
-		// On PreferClassicGLV curves (e.g. BLS12-381 G1) route each summand
-		// through classic GLV, matching [Curve.ScalarMul]/[Curve.ScalarMulBase]:
-		// its computed output is inherently in-subgroup and cheaper than
-		// GLV+fake-GLV once the (here full-cofactor) clearing is included.
-		if c.params.PreferClassicGLV {
-			// classic GLV: computed, inherently in-subgroup, no binding needed.
-			res1 := c.scalarMulGLV(p1, s1, opts...)
-			res2 := c.scalarMulGLV(p2, s2, opts...)
-			return c.AddUnified(res1, res2)
-		}
 		// Deferred binding: each summand is unbound (torsion-shiftable), but its
 		// subgroup part is exact, so bind the SUM once instead of each summand.
 		res1 := c.scalarMulGLVAndFakeGLV(p1, s1, opts...)
@@ -1271,10 +1447,30 @@ func (c *Curve[B, S]) jointScalarMulGLV(p1, p2 *AffinePoint[B], s1, s2 *emulated
 	}
 }
 
+// classicGLVCompleteOpts returns the options for a complete-arithmetic
+// [Curve.scalarMulGLV] call that keeps the caller's subgroup-check opt-out.
+// scalarMulGLV reads no other option.
+func classicGLVCompleteOpts(noGroupMembership bool) []algopts.AlgebraOption {
+	if noGroupMembership {
+		return []algopts.AlgebraOption{algopts.WithNoSubgroupMembershipCheck()}
+	}
+	return nil
+}
+
 // jointScalarMulGLVUnsafe computes [s]Q + [t]R using Shamir's trick with an efficient endomorphism and returns it. It doesn't modify Q, R nor s, t.
+// It is only used on prime-order curves (PreferClassicGLV curves take the
+// classic-GLV path in [Curve.jointScalarMulGLV]).
 // ⚠️  The exceptional set includes at least zero scalars, points equal to
 // (0,0), and Q = ±R. Additional sparse implementation-dependent failures may
 // arise from incomplete precomputations and accumulator collisions.
+//
+// Soundness: the sub-scalars are hinted and only constrained by
+// s1 + λ·s2 ≡ s mod r, so a prover can steer the accumulator into an
+// exceptional step (e.g. [2]Acc == Bi). Every incomplete chord is therefore
+// guarded by an x-coordinate inequality, and the remaining degenerate slopes
+// (tangent at y = 0, chord on opposite points) are unsatisfiable on their own.
+// Exceptional inputs thus make the circuit unsatisfiable instead of yielding a
+// wrong result.
 func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulated.Element[S]) *AffinePoint[B] {
 	// We use the endomorphism à la GLV to compute [s]Q + [t]R as
 	// 		[s1]Q + [s2]Φ(Q) + [t1]R + [t2]Φ(R)
@@ -1350,11 +1546,14 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 
 	// precompute Q+R, -Q-R, Q-R, -Q+R, Φ(Q)+Φ(R), -Φ(Q)-Φ(R), Φ(Q)-Φ(R), -Φ(Q)+Φ(R)
 	var tableS, tablePhiS [4]*AffinePoint[B]
+	// Every incomplete chord below is guarded (addGuarded): for adversarial
+	// Q, R or decompositions a chord on equal points would leave its slope
+	// unconstrained.
 	tableS[0] = tableQ[0]
-	tableS[0] = c.Add(tableS[0], tableR[0])
+	tableS[0] = c.addGuarded(tableS[0], tableR[0])
 	tableS[1] = c.Neg(tableS[0])
 	tableS[2] = tableQ[1]
-	tableS[2] = c.Add(tableS[2], tableR[0])
+	tableS[2] = c.addGuarded(tableS[2], tableR[0])
 	tableS[3] = c.Neg(tableS[2])
 	// Build the Φ-side combinations directly from the correctly-signed
 	// tablePhiQ/tablePhiR (mirroring tableS from tableQ/tableR). The previous
@@ -1362,14 +1561,14 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 	// signs — while re-applying only the s2/t2 signs, so the Φ(Q)/Φ(R) digits
 	// picked up ε_s1/ε_t1 and were negated whenever s1 < 0 or t1 < 0 (a malicious
 	// hint can select such a lattice rep).
-	tablePhiS[0] = c.Add(tablePhiQ[0], tablePhiR[0])
+	tablePhiS[0] = c.addGuarded(tablePhiQ[0], tablePhiR[0])
 	tablePhiS[1] = c.Neg(tablePhiS[0])
-	tablePhiS[2] = c.Add(tablePhiQ[1], tablePhiR[0])
+	tablePhiS[2] = c.addGuarded(tablePhiQ[1], tablePhiR[0])
 	tablePhiS[3] = c.Neg(tablePhiS[2])
 
 	// we suppose that the first bits of the sub-scalars are 1 and set:
 	// 		Acc = Q + R + Φ(Q) + Φ(R)
-	Acc := c.Add(tableS[1], tablePhiS[1])
+	Acc := c.addGuarded(tableS[1], tablePhiS[1])
 	b1 := Acc
 	// then we conditionally add to Acc either G (the base point) or
 	// conditionally Φ²(G) (if Acc==-G) to avoid incomplete additions in the
@@ -1392,7 +1591,7 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 	g := c.Select(isAccNegGenerator, g1, g0)
 	// Acc = Q + R + Φ(Q) + Φ(R) + G or
 	// Q + R + Φ(Q) + Φ(R) + Φ²(G) ( = -G+Φ²(G) = -2G-Φ(G) )
-	Acc = c.Add(Acc, g)
+	Acc = c.addGuarded(Acc, g)
 
 	s1bits := c.scalarApi.ToBits(s1)
 	s2bits := c.scalarApi.ToBits(s2)
@@ -1402,19 +1601,19 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 	// At each iteration we look up the point Bi from:
 	// 		B1  = +Q + R + Φ(Q) + Φ(R)
 	// 		B2  = +Q + R + Φ(Q) - Φ(R)
-	B2 := c.Add(tableS[1], tablePhiS[2])
+	B2 := c.addGuarded(tableS[1], tablePhiS[2])
 	// 		b3  = +Q + R - Φ(Q) + Φ(R)
-	b3 := c.Add(tableS[1], tablePhiS[3])
+	b3 := c.addGuarded(tableS[1], tablePhiS[3])
 	// 		B4  = +Q + R - Φ(Q) - Φ(R)
-	B4 := c.Add(tableS[1], tablePhiS[0])
+	B4 := c.addGuarded(tableS[1], tablePhiS[0])
 	// 		b5  = +Q - R + Φ(Q) + Φ(R)
-	b5 := c.Add(tableS[2], tablePhiS[1])
+	b5 := c.addGuarded(tableS[2], tablePhiS[1])
 	// 		B6  = +Q - R + Φ(Q) - Φ(R)
-	B6 := c.Add(tableS[2], tablePhiS[2])
+	B6 := c.addGuarded(tableS[2], tablePhiS[2])
 	// 		b7  = +Q - R - Φ(Q) + Φ(R)
-	b7 := c.Add(tableS[2], tablePhiS[3])
+	b7 := c.addGuarded(tableS[2], tablePhiS[3])
 	// 		B8  = +Q - R - Φ(Q) - Φ(R)
-	B8 := c.Add(tableS[2], tablePhiS[0])
+	B8 := c.addGuarded(tableS[2], tablePhiS[0])
 	// 		B10 = -Q + R + Φ(Q) - Φ(R)
 	B10 := c.Neg(b7)
 	// 		B12 = -Q + R - Φ(Q) - Φ(R)
@@ -1460,8 +1659,9 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 		}
 		// Acc = [2]Acc + Bi
 		if iAcc != nil {
-			c.implicitDoubleAndAdd(iAcc, Bi)
+			c.implicitDoubleAndAddGuarded(iAcc, Bi)
 		} else {
+			c.baseApi.AssertIsDifferent(&Acc.X, &Bi.X)
 			Acc = c.doubleAndAdd(Acc, Bi)
 		}
 	}
@@ -1471,13 +1671,13 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 
 	// i = 0
 	// subtract the Q, R, Φ(Q), Φ(R) if the first bits are 0
-	tableQ[0] = c.Add(tableQ[0], Acc)
+	tableQ[0] = c.addGuarded(tableQ[0], Acc)
 	Acc = c.Select(s1bits[0], Acc, tableQ[0])
-	tablePhiQ[0] = c.Add(tablePhiQ[0], Acc)
+	tablePhiQ[0] = c.addGuarded(tablePhiQ[0], Acc)
 	Acc = c.Select(s2bits[0], Acc, tablePhiQ[0])
-	tableR[0] = c.Add(tableR[0], Acc)
+	tableR[0] = c.addGuarded(tableR[0], Acc)
 	Acc = c.Select(t1bits[0], Acc, tableR[0])
-	tablePhiR[0] = c.Add(tablePhiR[0], Acc)
+	tablePhiR[0] = c.addGuarded(tablePhiR[0], Acc)
 	Acc = c.Select(t2bits[0], Acc, tablePhiR[0])
 
 	// subtract [2^nbits]G or conditionally [2^nbits]Φ²(G)
@@ -1493,7 +1693,7 @@ func (c *Curve[B, S]) jointScalarMulGLVUnsafe(Q, R *AffinePoint[B], s, t *emulat
 		// [2^nbits]G
 		&gm,
 	)
-	Acc = c.Add(Acc, c.Neg(g))
+	Acc = c.addGuarded(Acc, c.Neg(g))
 
 	return Acc
 
@@ -1523,8 +1723,8 @@ func (c *Curve[B, S]) ScalarMulBase(s *emulated.Element[S], opts ...algopts.Alge
 	switch {
 	case hasEndo && c.params.PreferClassicGLV:
 		// cofactor curves where the fake-GLV subgroup clearing outweighs its
-		// r^(1/4) savings (e.g. BLS12-381 G1); classic GLV is faster and sound.
-		// Kept consistent with the [Curve.ScalarMul] dispatch.
+		// r^(1/4) savings (e.g. BLS12-381 G1). Kept consistent with the
+		// [Curve.ScalarMul] dispatch.
 		return c.scalarMulGLV(c.Generator(), s, opts...)
 	case hasEndo:
 		q := c.scalarMulGLVAndFakeGLV(c.Generator(), s, opts...)
@@ -1549,7 +1749,11 @@ func (c *Curve[B, S]) ScalarMulBase(s *emulated.Element[S], opts ...algopts.Alge
 //   - s1 and s2 must NOT be 0
 //
 // Incomplete mode additionally inherits sparse implementation-dependent
-// failures from the underlying joint-scalar algorithm.
+// failures from the underlying joint-scalar algorithm. Exceptional inputs make
+// the circuit unsatisfiable; they never yield a wrong result.
+//
+// On [CurveParams.PreferClassicGLV] curves (BLS12-381, BW6-761) the option is
+// ignored and the complete method is used, as it is cheaper there.
 //
 // JointScalarMulBase is used to verify an ECDSA signature (r,s) for example on
 // the secp256k1 curve. In this case, p is a public key, s2=r/s and s1=hash/s.
@@ -1568,6 +1772,14 @@ func (c *Curve[B, S]) JointScalarMulBase(p *AffinePoint[B], s2, s1 *emulated.Ele
 	cfg, err := algopts.NewConfig(opts...)
 	if err != nil {
 		panic(fmt.Sprintf("parse opts: %v", err))
+	}
+	if _, cerr := c.combData(c.combWindow()); cerr == nil && c.params.PreferClassicGLV {
+		// On PreferClassicGLV curves always use the comb and complete classic
+		// GLV, also in incomplete mode: it is cheaper there than the joint
+		// Shamir loop, and complete.
+		sm1 := c.scalarMulBaseComb(s1, c.combWindow())
+		sm2 := c.ScalarMul(p, s2, classicGLVCompleteOpts(cfg.NoGroupMembership)...)
+		return c.AddUnified(sm1, sm2)
 	}
 	if _, cerr := c.combData(c.combWindow()); cerr == nil && !cfg.IncompleteArithmetic {
 		// In complete mode, compute the fixed-base part with the comb method
@@ -1600,12 +1812,17 @@ func (c *Curve[B, S]) JointScalarMulBase(p *AffinePoint[B], s2, s1 *emulated.Ele
 // not complete. It inherits the exceptional sets of the underlying scalar-mul
 // calls and additionally depends on internal accumulator and prefix-sum
 // collisions, so the incomplete exceptional set is not fully characterized at
-// the API level.
+// the API level. Exceptional inputs make the circuit unsatisfiable; they never
+// yield a wrong result. On [CurveParams.PreferClassicGLV] curves the option is
+// ignored and complete arithmetic is used, as it is cheaper there.
 //
 // The returned point is on the curve and in the prime-order subgroup ((0,0)
 // excepted) — see [Curve.ScalarMul]. The subgroup binding is applied once to
 // the aggregate sum, not per summand, which is sound because each summand's
-// accumulator already pins its subgroup part exactly.
+// accumulator already pins its subgroup part exactly. On PreferClassicGLV
+// curves the input points are instead asserted to be in the subgroup (skip
+// with [algopts.WithNoSubgroupMembershipCheck]); with [algopts.WithFoldingScalarMul]
+// this includes p[0], which is only added.
 func (c *Curve[B, S]) MultiScalarMul(p []*AffinePoint[B], s []*emulated.Element[S], opts ...algopts.AlgebraOption) (*AffinePoint[B], error) {
 
 	if len(p) == 0 {
@@ -1618,7 +1835,20 @@ func (c *Curve[B, S]) MultiScalarMul(p []*AffinePoint[B], s []*emulated.Element[
 	if err != nil {
 		return nil, fmt.Errorf("new config: %w", err)
 	}
-	addFn := c.Add
+	if cfg.IncompleteArithmetic && c.params.PreferClassicGLV {
+		// complete classic GLV is cheaper than the incomplete joint loop on
+		// these curves: drop the incomplete option, keep the others that
+		// matter here.
+		opts = classicGLVCompleteOpts(cfg.NoGroupMembership)
+		if cfg.FoldMulti {
+			opts = append(opts, algopts.WithFoldingScalarMul())
+		}
+		cfg.IncompleteArithmetic = false
+	}
+	// In incomplete mode the partial results are merged with the guarded
+	// incomplete addition: two equal summands (which a prover controlling
+	// points or scalars can arrange) must not leave the chord slope free.
+	addFn := c.addGuarded
 	if !cfg.IncompleteArithmetic {
 		addFn = c.AddUnified
 	}
@@ -1697,11 +1927,23 @@ func (c *Curve[B, S]) MultiScalarMul(p []*AffinePoint[B], s []*emulated.Element[
 		if len(s) == 0 {
 			return nil, fmt.Errorf("need scalar for folding")
 		}
+		gamma := s[0]
+		hasEndo := c.eigenvalue != nil && c.thirdRootOne != nil
+		if hasEndo && c.params.PreferClassicGLV && !cfg.NoGroupMembership {
+			// classic GLV needs subgroup inputs. The ScalarMul inputs below are
+			// sums of p[1..] and earlier ScalarMul outputs, so they are in the
+			// subgroup once p[1..] are: check those once instead of each
+			// intermediate. p[0] is only added, but is checked too so that the
+			// result is in the subgroup.
+			for i := range p {
+				c.assertInputInSubgroup(p[i])
+			}
+			opts = append(opts, algopts.WithNoSubgroupMembershipCheck())
+		}
 		// with a single point the result is p[0] (gamma^0 * p[0])
 		if len(p) == 1 {
 			return p[0], nil
 		}
-		gamma := s[0]
 		res := c.ScalarMul(p[len(p)-1], gamma, opts...)
 		for i := len(p) - 2; i > 0; i-- {
 			res = addFn(p[i], res)
@@ -1718,8 +1960,8 @@ func (c *Curve[B, S]) MultiScalarMul(p []*AffinePoint[B], s []*emulated.Element[
 // ⚠️  When [algopts.WithIncompleteArithmetic] is set, this method is faster but
 // not complete. Besides Q=(0,0) and s=0, the documented exceptional set also
 // includes the small structured scalar set
-// {±1, ±3, ±3⁻¹ mod r}. Outside of this set, the method is intended for
-// random non-adversarial inputs.
+// {±1, ±3, ±3⁻¹ mod r}. Exceptional inputs make the circuit unsatisfiable
+// (every incomplete chord is guarded); they never yield a wrong result.
 // (0,0) is not on the curve but we conventionally take it as the
 // neutral/infinity point as per the [EVM].
 //
@@ -1780,7 +2022,27 @@ func (c *Curve[B, S]) scalarMulFakeGLV(Q *AffinePoint[B], s *emulated.Element[S]
 	var isInputPointAtInfinity frontend.Variable
 	one := c.baseApi.One()
 	dummy := &AffinePoint[B]{X: *one, Y: *one}
-	addFn := c.Add
+	// In incomplete mode every chord is guarded (addGuarded, and an
+	// x-inequality before each doubleAndAdd). R and the sub-scalars are
+	// prover-chosen, so an unguarded chord on equal points would leave its
+	// slope free and the closing check below would no longer be the exact
+	// relation [s1]Q + [s2]R = O. The tangent steps need no guard: y ≡ 0 would
+	// be a 2-torsion point, which these prime-order curves do not have.
+	//
+	// In complete mode the table, offset and corrections use AddUnified, but
+	// the loop's unified doubleAndAddGeneric is not exact: on a zero chord
+	// denominator it pins λ to the numerator against a dummy denominator and
+	// then forces λ = 0. That keeps the s = 0 and Q = (0,0) branches satisfiable
+	// (their accumulator is discarded by the final Select). On any other path an
+	// exceptional step yields a wrong point, but one fully determined by the
+	// witness: no slope is left free. A prover can choose R = [k]Q to force such
+	// a step, which uses up k, and the closing check Acc == [3]R (two
+	// coordinates) must then still hold by coincidence, with probability about
+	// 1/p per attempt over polynomially many choices of iteration, sign and
+	// decomposition. Complete mode is therefore sound heuristically rather than
+	// exactly; asserting `discarded OR x₁ ≠ x₂` on the loop chords would make
+	// it exact.
+	addFn := c.addGuarded
 	if !cfg.IncompleteArithmetic {
 		addFn = c.AddUnified
 		// if Q=(0,0) we assign a dummy (1,1) to Q and R and continue
@@ -1922,6 +2184,9 @@ func (c *Curve[B, S]) scalarMulFakeGLV(Q *AffinePoint[B], s *emulated.Element[S]
 		}
 		// Acc = [4]Acc + T
 		Acc = c.doubleGeneric(Acc, !cfg.IncompleteArithmetic)
+		if cfg.IncompleteArithmetic {
+			c.baseApi.AssertIsDifferent(&Acc.X, &T.X)
+		}
 		Acc = c.doubleAndAddGeneric(Acc, T, !cfg.IncompleteArithmetic)
 	}
 
@@ -1956,6 +2221,9 @@ func (c *Curve[B, S]) scalarMulFakeGLV(Q *AffinePoint[B], s *emulated.Element[S]
 	// 		Acc = [4]Acc + T + [3]R
 	T = addFn(T, tableR[2])
 	Acc = c.doubleGeneric(Acc, !cfg.IncompleteArithmetic)
+	if cfg.IncompleteArithmetic {
+		c.baseApi.AssertIsDifferent(&Acc.X, &T.X)
+	}
 	Acc = c.doubleAndAddGeneric(Acc, T, !cfg.IncompleteArithmetic)
 
 	// i = 0
@@ -1998,7 +2266,8 @@ func (c *Curve[B, S]) scalarMulFakeGLV(Q *AffinePoint[B], s *emulated.Element[S]
 // ⚠️  When [algopts.WithIncompleteArithmetic] is set, this method is faster but
 // not complete. Besides P=(0,0) and s in {0, ±1}, there is a sparse
 // point-dependent exceptional set coming from incomplete precomputations and the
-// initial bias step. This mode is intended for random non-adversarial inputs.
+// initial bias step. Exceptional inputs make the circuit unsatisfiable (every
+// incomplete chord is guarded); they never yield a wrong result.
 // (0,0) is not on the curve but we conventionally take it as the
 // neutral/infinity point as per the [EVM].
 //
@@ -2169,7 +2438,13 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 	// ([Curve.ScalarMul], [Curve.ScalarMulBase], [Curve.jointScalarMulGLV],
 	// [Curve.MultiScalarMul]) do so — once per aggregate output, not per summand.
 
-	addFn := c.Add
+	// In incomplete mode every chord is guarded (addGuarded and the guarded
+	// loop step below). Q is prover-chosen and the sub-scalars are hinted, so
+	// an unguarded chord on equal points would leave its slope free and the
+	// final accumulator check would no longer be the exact relation
+	// [u1+λu2]P + [v1+λv2]Q = O. With the guards every step is exact or
+	// unsatisfiable. Complete mode uses exact unified formulas throughout.
+	addFn := c.addGuarded
 	if !cfg.IncompleteArithmetic {
 		addFn = c.AddUnified
 	}
@@ -2297,8 +2572,9 @@ func (c *Curve[B, S]) scalarMulGLVAndFakeGLV(P *AffinePoint[B], s *emulated.Elem
 			Acc = c.doubleGeneric(Acc, true)
 			Acc = addFn(Acc, Bi)
 		} else if iAcc != nil {
-			c.implicitDoubleAndAdd(iAcc, Bi)
+			c.implicitDoubleAndAddGuarded(iAcc, Bi)
 		} else {
+			c.baseApi.AssertIsDifferent(&Acc.X, &Bi.X)
 			Acc = c.doubleAndAdd(Acc, Bi)
 		}
 	}
