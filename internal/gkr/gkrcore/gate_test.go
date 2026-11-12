@@ -411,14 +411,14 @@ func TestBytecode(t *testing.T) {
 			assert.Equal(t, expected, constants)
 			assert.Equal(t, tt.instructions, compiled.Evaluate.Instructions)
 			assert.Equal(t, tt.nbRegisters, compiled.Evaluate.NbRegisters())
-			assert.NoError(t, compiled.Evaluate.CheckConstantPositions())
+			assert.NoError(t, compiled.Evaluate.CheckEvaluatorAssumptions())
 		})
 	}
 }
 
-// TestCheckConstantPositionsRejectsInputWrite checks that a hand-built bytecode with an instruction
+// TestCheckEvaluatorAssumptionsRejectsInputWrite checks that a hand-built bytecode with an instruction
 // that writes the register of an input is rejected, naming the instruction.
-func TestCheckConstantPositionsRejectsInputWrite(t *testing.T) {
+func TestCheckEvaluatorAssumptionsRejectsInputWrite(t *testing.T) {
 	bytecode := gkr.GateBytecode{
 		Instructions: []gkr.GateInstruction{
 			{Op: gkr.OpAdd, Inputs: []uint16{0, 1}, Dst: 2},
@@ -426,18 +426,18 @@ func TestCheckConstantPositionsRejectsInputWrite(t *testing.T) {
 		},
 		NbIn: 2,
 	}
-	assert.EqualError(t, bytecode.CheckConstantPositions(), "instruction 1 (mul): writes the register of input 1")
+	assert.EqualError(t, bytecode.CheckEvaluatorAssumptions(), "instruction 1 (mul): writes the register of input 1")
 }
 
-// TestCheckConstantPositionsRejectsConstantAfterSecond checks that a hand-built bytecode with a
+// TestCheckEvaluatorAssumptionsRejectsLateConstant checks that a hand-built bytecode with a
 // constant in position 2 of an Add is rejected, naming the instruction.
-func TestCheckConstantPositionsRejectsConstantAfterSecond(t *testing.T) {
+func TestCheckEvaluatorAssumptionsRejectsLateConstant(t *testing.T) {
 	bytecode := gkr.GateBytecode{
 		Instructions: []gkr.GateInstruction{{Op: gkr.OpAdd, Inputs: []uint16{0, 1, 3}, Dst: 2}},
 		Constants:    []*big.Int{big.NewInt(5)},
 		NbIn:         2,
 	}
-	assert.EqualError(t, bytecode.CheckConstantPositions(), "instruction 0 (add): constant operand at position 2")
+	assert.EqualError(t, bytecode.CheckEvaluatorAssumptions(), "instruction 0 (add): constant operand at position 2")
 }
 
 func TestCompileGateFunction(t *testing.T) {

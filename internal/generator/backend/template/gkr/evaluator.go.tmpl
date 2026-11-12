@@ -44,9 +44,9 @@ type {{ $ge }} struct {
 
 // New{{ $ge }} creates an evaluator for the given compiled gate.
 // The constants are preloaded and the evaluator is ready for evaluation. It panics if the gate's
-// CheckConstantPositions returns an error.
+// CheckEvaluatorAssumptions returns an error.
 func New{{ $ge }}(gate gkr.GateBytecode, elementPool ...*{{ $poly }}.Pool{{ $suffix }}) {{ $ge }} {
-	if err := gate.CheckConstantPositions(); err != nil {
+	if err := gate.CheckEvaluatorAssumptions(); err != nil {
 		panic(err)
 	}
 	e := {{ $ge }}{

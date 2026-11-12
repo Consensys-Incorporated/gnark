@@ -72,11 +72,11 @@ func (g *GateBytecode) EvaluatorSize() int {
 	return g.NbRegisters() + g.NbConstants()
 }
 
-// CheckConstantPositions returns an error naming the first instruction that writes the register of an
-// input, or whose constant operands are not where the evaluators read them first: an Add or Mul can
-// only have them at index 0, a Sub can only have them at index 0 or 1, and the operand at index 1 of a
-// MulAcc is a register.
-func (g *GateBytecode) CheckConstantPositions() error {
+// CheckEvaluatorAssumptions returns an error describing the first instruction that breaks an
+// assumption of evaluators over blocks of instances, which branch only on an instruction's first
+// operands and read their inputs in the caller's memory. The current evaluators do not need these
+// assumptions.
+func (g *GateBytecode) CheckEvaluatorAssumptions() error {
 	nbRegisters := g.NbRegisters()
 	for i, inst := range g.Instructions {
 		if int(inst.Dst) < g.NbIn {

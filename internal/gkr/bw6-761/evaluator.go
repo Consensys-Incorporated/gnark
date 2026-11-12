@@ -28,9 +28,9 @@ type GateEvaluator struct {
 
 // NewGateEvaluator creates an evaluator for the given compiled gate.
 // The constants are preloaded and the evaluator is ready for evaluation. It panics if the gate's
-// CheckConstantPositions returns an error.
+// CheckEvaluatorAssumptions returns an error.
 func NewGateEvaluator(gate gkr.GateBytecode, elementPool ...*polynomial.Pool) GateEvaluator {
-	if err := gate.CheckConstantPositions(); err != nil {
+	if err := gate.CheckEvaluatorAssumptions(); err != nil {
 		panic(err)
 	}
 	e := GateEvaluator{
