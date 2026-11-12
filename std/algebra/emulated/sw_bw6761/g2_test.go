@@ -108,3 +108,46 @@ func TestScalarMulG2ClassicGLVSound(t *testing.T) {
 	assert.NoError(err)
 	assert.Error(ccs.IsSolved(fullwBad), "a torsion-shifted output must be rejected")
 }
+
+type fakeGLVG2Circuit struct {
+	In, Res G2Affine
+	S       Scalar
+
+	opts []algopts.AlgebraOption
+}
+
+func (c *fakeGLVG2Circuit) Define(api frontend.API) error {
+	g2, err := NewG2(api)
+	if err != nil {
+		return err
+	}
+	res := g2.scalarMulGLVAndFakeGLV(&c.In, &c.S, c.opts...)
+	g2.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+// TestScalarMulGLVAndFakeGLVG2 checks that the (currently unused)
+// GLV+fake-GLV scalar multiplication still computes [s]Q in both modes, with
+// the incomplete chords guarded.
+func TestScalarMulGLVAndFakeGLVG2(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, _, gen := bw6761.Generators()
+	var Q, res bw6761.G2Affine
+	Q.ScalarMultiplication(&gen, big.NewInt(12345))
+	s, _ := new(big.Int).SetString("4b9e3c0a9d1f2e7c6b5a49382716051f0e1d2c3b4a59687766554433221100ff", 16)
+	res.ScalarMultiplication(&Q, s)
+	for _, tc := range []struct {
+		name string
+		opts []algopts.AlgebraOption
+	}{
+		{"complete", nil},
+		{"incomplete", []algopts.AlgebraOption{algopts.WithIncompleteArithmetic()}},
+	} {
+		assert.Run(func(assert *test.Assert) {
+			err := test.IsSolved(&fakeGLVG2Circuit{opts: tc.opts},
+				&fakeGLVG2Circuit{In: NewG2Affine(Q), S: emulated.ValueOf[ScalarField](s), Res: NewG2Affine(res)},
+				ecc.BN254.ScalarField())
+			assert.NoError(err)
+		}, tc.name)
+	}
+}

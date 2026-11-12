@@ -770,3 +770,405 @@ func TestMultiScalarMulG2EdgeCases(t *testing.T) {
 		&MultiScalarMulTest{Points: cP, Scalars: cS, Res: NewG2Affine(res)}, ecc.BN254.ScalarField())
 	assert.NoError(err)
 }
+
+// divE2HintZeroOverZero returns a replacement for the fields_bls12381 divE2Hint
+// which computes x/y honestly, except for x = y = 0 where it returns lam. This
+// is the slope a malicious prover picks for a chord on equal points.
+func divE2HintZeroOverZero(lam bls12381.E2) (solver.HintID, solver.Hint) {
+	var id solver.HintID
+	found := false
+	for _, h := range fields_bls12381.GetHints() {
+		if name := solver.GetHintName(h); len(name) >= len(".divE2Hint") && name[len(name)-len(".divE2Hint"):] == ".divE2Hint" {
+			id, found = solver.GetHintID(h), true
+		}
+	}
+	if !found {
+		panic("divE2Hint not found")
+	}
+	return id, func(field *big.Int, inputs, outputs []*big.Int) error {
+		return emulated.UnwrapHint(inputs, outputs, func(_ *big.Int, in, out []*big.Int) error {
+			var a, b, c bls12381.E2
+			a.A0.SetBigInt(in[0])
+			a.A1.SetBigInt(in[1])
+			b.A0.SetBigInt(in[2])
+			b.A1.SetBigInt(in[3])
+			if a.IsZero() && b.IsZero() {
+				c = lam
+			} else {
+				c.Inverse(&b).Mul(&c, &a)
+			}
+			c.A0.BigInt(out[0])
+			c.A1.BigInt(out[1])
+			return nil
+		})
+	}
+}
+
+type multiScalarMulConstG2Test struct {
+	Scalars []Scalar
+	Res     G2Affine
+
+	points []bls12381.G2Affine
+	opts   []algopts.AlgebraOption
+}
+
+func (c *multiScalarMulConstG2Test) Define(api frontend.API) error {
+	g2, err := NewG2(api)
+	if err != nil {
+		return fmt.Errorf("new G2 struct: %w", err)
+	}
+	ps := make([]*G2Affine, len(c.points))
+	for i := range c.points {
+		p := NewG2AffineFixed(c.points[i])
+		ps[i] = &p
+	}
+	ss := make([]*Scalar, len(c.Scalars))
+	for i := range c.Scalars {
+		ss[i] = &c.Scalars[i]
+	}
+	res, err := g2.MultiScalarMul(ps, ss, c.opts...)
+	if err != nil {
+		return err
+	}
+	g2.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+type multiScalarMulFoldedOptsG2Test struct {
+	Points []G2Affine
+	Gamma  Scalar
+	Res    G2Affine
+
+	opts []algopts.AlgebraOption
+}
+
+func (c *multiScalarMulFoldedOptsG2Test) Define(api frontend.API) error {
+	g2, err := NewG2(api)
+	if err != nil {
+		return fmt.Errorf("new G2 struct: %w", err)
+	}
+	ps := make([]*G2Affine, len(c.Points))
+	for i := range c.Points {
+		ps[i] = &c.Points[i]
+	}
+	res, err := g2.MultiScalarMul(ps, []*Scalar{&c.Gamma}, append([]algopts.AlgebraOption{algopts.WithFoldingScalarMul()}, c.opts...)...)
+	if err != nil {
+		return err
+	}
+	g2.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+// TestMultiScalarMulG2IncompleteCollisionRegression is a regression for
+// https://github.com/Consensys-Incorporated/gnark/issues/1922: with
+// [algopts.WithIncompleteArithmetic], G2.MultiScalarMul aggregated the summands
+// with the chord-only g2.add, whose slope is pinned by λ·(q.x − p.x) = q.y − p.y.
+// When the running sum equals the next summand this is λ·0 = 0 and λ is free:
+//
+//   - variable points, MSM([Q, Q], [s, s]): λ = √(3x) gives (x, −y) = −[s]Q,
+//     which passes the final subgroup check;
+//   - constant points (comb path), no subgroup check on the result: the stock
+//     hint (λ = 0) gives the off-curve (−2x, −y), accepted without any hint
+//     replacement;
+//   - folding, MSM([P0, P1], γ) with P0 = [γ]P1: the last add has no check on
+//     its result either, so the stock hint again gives (−2x, −y).
+//
+// A colliding aggregation must make the circuit unsatisfiable. The honest
+// witness of non-colliding inputs must still solve.
+func TestMultiScalarMulG2IncompleteCollisionRegression(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, _, gen := bls12381.Generators()
+	incomplete := []algopts.AlgebraOption{algopts.WithIncompleteArithmetic()}
+	var three bls12381.E2
+	three.A0.SetUint64(3)
+
+	// s such that 3·x([s]Q) is a square in Fp², so that λ = √(3x) exists.
+	var Q, sQ bls12381.G2Affine
+	Q.ScalarMultiplication(&gen, big.NewInt(12345))
+	var s *big.Int
+	var sqrt3x bls12381.E2
+	for k := 1; k < 256 && s == nil; k++ {
+		cand := oddDecompositionScalar(byte(k))
+		sQ.ScalarMultiplication(&Q, cand)
+		sqrt3x.Mul(&sQ.X, &three)
+		if sqrt3x.Legendre() == 1 {
+			sqrt3x.Sqrt(&sqrt3x)
+			s = cand
+		}
+	}
+	if s == nil {
+		t.Fatal("no scalar with 3·x([s]Q) a square among the 255 candidates")
+	}
+	var negSQ bls12381.G2Affine
+	negSQ.Neg(&sQ)
+	if forged := chordWithSlope(sQ, sQ, sqrt3x); !forged.Equal(&negSQ) {
+		t.Fatal("λ = √(3x) must give −P")
+	}
+	stockForged := chordWithSlope(sQ, sQ, bls12381.E2{})
+	scalarAssign := []Scalar{emulated.ValueOf[ScalarField](s), emulated.ValueOf[ScalarField](s)}
+
+	assert.Run(func(assert *test.Assert) {
+		circuit := &MultiScalarMulTest{Points: make([]G2Affine, 2), Scalars: make([]Scalar, 2), opts: incomplete}
+		witness := func(Q2 bls12381.G2Affine, res bls12381.G2Affine) *MultiScalarMulTest {
+			return &MultiScalarMulTest{
+				Points:  []G2Affine{NewG2Affine(Q), NewG2Affine(Q2)},
+				Scalars: scalarAssign,
+				Res:     NewG2Affine(res),
+			}
+		}
+		// honest, non-colliding
+		var Q2, honest, tmp bls12381.G2Affine
+		Q2.ScalarMultiplication(&gen, big.NewInt(67890))
+		tmp.ScalarMultiplication(&Q2, s)
+		honest.Add(&sQ, &tmp)
+		assert.NoError(test.IsSolved(circuit, witness(Q2, honest), ecc.BN254.ScalarField()), "honest MSM must solve")
+		// forged −[s]Q instead of [2s]Q
+		id, h := divE2HintZeroOverZero(sqrt3x)
+		err := test.IsSolved(circuit, witness(Q, negSQ), ecc.BN254.ScalarField(), test.WithReplacementHint(id, h))
+		assert.Error(err, "MSM([Q,Q],[s,s]) = −[s]Q accepted — soundness break")
+	}, "variable")
+
+	assert.Run(func(assert *test.Assert) {
+		var Q2, honest, tmp bls12381.G2Affine
+		Q2.ScalarMultiplication(&gen, big.NewInt(67890))
+		tmp.ScalarMultiplication(&Q2, s)
+		honest.Add(&sQ, &tmp)
+		honestCircuit := &multiScalarMulConstG2Test{Scalars: make([]Scalar, 2), points: []bls12381.G2Affine{Q, Q2}, opts: incomplete}
+		assert.NoError(test.IsSolved(honestCircuit,
+			&multiScalarMulConstG2Test{Scalars: scalarAssign, Res: NewG2Affine(honest)},
+			ecc.BN254.ScalarField()), "honest MSM must solve")
+		circuit := &multiScalarMulConstG2Test{Scalars: make([]Scalar, 2), points: []bls12381.G2Affine{Q, Q}, opts: incomplete}
+		for _, tc := range []struct {
+			name string
+			res  bls12381.G2Affine
+			opts []test.TestEngineOption
+		}{
+			{"stock-hint", stockForged, nil},
+			{"sqrt3x-hint", negSQ, func() []test.TestEngineOption {
+				id, h := divE2HintZeroOverZero(sqrt3x)
+				return []test.TestEngineOption{test.WithReplacementHint(id, h)}
+			}()},
+		} {
+			err := test.IsSolved(circuit, &multiScalarMulConstG2Test{Scalars: scalarAssign, Res: NewG2Affine(tc.res)},
+				ecc.BN254.ScalarField(), tc.opts...)
+			assert.Error(err, "constant MSM([Q,Q],[s,s]) forged (%s) — soundness break", tc.name)
+		}
+	}, "constant")
+
+	assert.Run(func(assert *test.Assert) {
+		// P0 = [γ]P1, so the last add is P0 + [γ]P1 = P0 + P0.
+		gamma := s
+		P1 := Q
+		P0 := sQ
+		circuit := &multiScalarMulFoldedOptsG2Test{Points: make([]G2Affine, 2), opts: incomplete}
+		witness := func(p0, res bls12381.G2Affine) *multiScalarMulFoldedOptsG2Test {
+			return &multiScalarMulFoldedOptsG2Test{
+				Points: []G2Affine{NewG2Affine(p0), NewG2Affine(P1)},
+				Gamma:  emulated.ValueOf[ScalarField](gamma),
+				Res:    NewG2Affine(res),
+			}
+		}
+		var P0h, honest bls12381.G2Affine
+		P0h.ScalarMultiplication(&gen, big.NewInt(424242))
+		honest.Add(&P0h, &sQ)
+		assert.NoError(test.IsSolved(circuit, witness(P0h, honest), ecc.BN254.ScalarField()), "honest folded MSM must solve")
+		err := test.IsSolved(circuit, witness(P0, stockForged), ecc.BN254.ScalarField())
+		assert.Error(err, "folded MSM forged with stock hint — soundness break")
+		id, h := divE2HintZeroOverZero(sqrt3x)
+		err = test.IsSolved(circuit, witness(P0, negSQ), ecc.BN254.ScalarField(), test.WithReplacementHint(id, h))
+		assert.Error(err, "folded MSM forged with λ = √(3x) — soundness break")
+	}, "folded")
+}
+
+type chordGuardG2Circuit struct {
+	P, Q, Res G2Affine
+
+	dbl, guarded bool
+}
+
+func (c *chordGuardG2Circuit) Define(api frontend.API) error {
+	g2, err := NewG2(api)
+	if err != nil {
+		return fmt.Errorf("new G2 struct: %w", err)
+	}
+	var r *G2Affine
+	switch {
+	case c.dbl && c.guarded:
+		r = g2.doubleAndAddGuarded(&c.P, &c.Q)
+	case c.dbl:
+		r = g2.doubleAndAdd(&c.P, &c.Q)
+	case c.guarded:
+		r = g2.addGuarded(&c.P, &c.Q)
+	default:
+		r = g2.add(&c.P, &c.Q)
+	}
+	g2.AssertIsEqual(r, &c.Res)
+	return nil
+}
+
+// doubleAndAddWithSlope returns doubleAndAdd(P, Q) computed natively with the
+// formulas of g2.doubleAndAdd and the first slope λ1 forced to lam.
+func doubleAndAddWithSlope(P, Q bls12381.G2Affine, lam bls12381.E2) bls12381.G2Affine {
+	var x2, l2, t bls12381.E2
+	x2.Square(&lam).Sub(&x2, &P.X).Sub(&x2, &Q.X)
+	t.Sub(&x2, &P.X).Inverse(&t)
+	l2.Double(&P.Y).Mul(&l2, &t).Add(&l2, &lam)
+	var r bls12381.G2Affine
+	r.X.Square(&l2).Sub(&r.X, &P.X).Sub(&r.X, &x2)
+	r.Y.Sub(&r.X, &P.X).Mul(&r.Y, &l2).Sub(&r.Y, &P.Y)
+	return r
+}
+
+// TestChordGuardG2 checks that addGuarded and doubleAndAddGuarded, used for
+// every incomplete chord of G2.scalarMulGLVAndFakeGLV and the incomplete
+// G2.MultiScalarMul aggregation, reject equal inputs. On equal inputs the
+// unguarded chord slope is free (λ·0 = 0): with a replaced divE2Hint the plain
+// add and doubleAndAdd are satisfied by a prover-chosen slope.
+func TestChordGuardG2(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, _, gen := bls12381.Generators()
+	var P, P2 bls12381.G2Affine
+	P.ScalarMultiplication(&gen, big.NewInt(12345))
+	P2.ScalarMultiplication(&gen, big.NewInt(67890))
+	var lam bls12381.E2
+	lam.A0.SetUint64(42)
+	lam.A1.SetUint64(7)
+	id, h := divE2HintZeroOverZero(lam)
+	forgedAdd := chordWithSlope(P, P, lam)
+	forgedDbl := doubleAndAddWithSlope(P, P, lam)
+	var honestAdd, honestDbl bls12381.G2Affine
+	honestAdd.Add(&P, &P2)
+	honestDbl.Double(&P).Add(&honestDbl, &P2)
+
+	for _, dbl := range []bool{false, true} {
+		forged, honest := forgedAdd, honestAdd
+		if dbl {
+			forged, honest = forgedDbl, honestDbl
+		}
+		w := func(q, res bls12381.G2Affine) *chordGuardG2Circuit {
+			return &chordGuardG2Circuit{P: NewG2Affine(P), Q: NewG2Affine(q), Res: NewG2Affine(res)}
+		}
+		// equal inputs: the unguarded chord accepts the prover-chosen slope
+		err := test.IsSolved(&chordGuardG2Circuit{dbl: dbl}, w(P, forged), ecc.BN254.ScalarField(), test.WithReplacementHint(id, h))
+		assert.NoError(err, "dbl=%v: unguarded chord must accept a free slope on equal inputs", dbl)
+		// the guarded chord rejects it
+		err = test.IsSolved(&chordGuardG2Circuit{dbl: dbl, guarded: true}, w(P, forged), ecc.BN254.ScalarField(), test.WithReplacementHint(id, h))
+		assert.Error(err, "dbl=%v: guarded chord must reject equal inputs", dbl)
+		// distinct inputs still solve
+		err = test.IsSolved(&chordGuardG2Circuit{dbl: dbl, guarded: true}, w(P2, honest), ecc.BN254.ScalarField())
+		assert.NoError(err, "dbl=%v: guarded chord must accept distinct inputs", dbl)
+	}
+}
+
+// chordWithSlope returns g2.add(P, Q) computed natively with the chord formula
+// and the slope lam: (λ² − P.x − Q.x, λ(P.x − x_r) − P.y).
+func chordWithSlope(P, Q bls12381.G2Affine, lam bls12381.E2) bls12381.G2Affine {
+	var r bls12381.G2Affine
+	r.X.Square(&lam).Sub(&r.X, &P.X).Sub(&r.X, &Q.X)
+	r.Y.Sub(&P.X, &r.X).Mul(&r.Y, &lam).Sub(&r.Y, &P.Y)
+	return r
+}
+
+// chordFromInfinity returns g2.add((0,0), Q): the chord slope Q.y/Q.x is
+// unique, so this is what an incomplete aggregation computes when a summand is
+// the (0,0) encoding of O.
+func chordFromInfinity(Q bls12381.G2Affine) bls12381.G2Affine {
+	var lam bls12381.E2
+	lam.Inverse(&Q.X).Mul(&lam, &Q.Y)
+	return chordWithSlope(bls12381.G2Affine{}, Q, lam)
+}
+
+type multiScalarMulFoldedConstLastG2Test struct {
+	P0    G2Affine
+	Gamma Scalar
+	Res   G2Affine
+
+	p1   bls12381.G2Affine
+	opts []algopts.AlgebraOption
+}
+
+func (c *multiScalarMulFoldedConstLastG2Test) Define(api frontend.API) error {
+	g2, err := NewG2(api)
+	if err != nil {
+		return fmt.Errorf("new G2 struct: %w", err)
+	}
+	p1 := NewG2AffineFixed(c.p1)
+	res, err := g2.MultiScalarMul([]*G2Affine{&c.P0, &p1}, []*Scalar{&c.Gamma}, append([]algopts.AlgebraOption{algopts.WithFoldingScalarMul()}, c.opts...)...)
+	if err != nil {
+		return err
+	}
+	g2.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+// TestMultiScalarMulG2IncompleteZeroScalarRegression checks that a zero scalar
+// cannot forge the incomplete G2.MultiScalarMul output. The comb (constant
+// points) returns the (0,0) encoding of O for s ≡ 0, and the incomplete
+// aggregation adds it with the chord formula, whose slope is then unique: the
+// result is a fixed wrong point, which a prover who chooses the scalars could
+// claim. The same happens in the folding path for γ = 0 and a constant last
+// point. With more than one summand, zero scalars are exceptional in incomplete
+// mode and must make the circuit unsatisfiable; a single summand is not
+// aggregated, so its (0,0) is the correct result.
+func TestMultiScalarMulG2IncompleteZeroScalarRegression(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, _, gen := bls12381.Generators()
+	incomplete := []algopts.AlgebraOption{algopts.WithIncompleteArithmetic()}
+	var P1, P2, s2P2 bls12381.G2Affine
+	P1.ScalarMultiplication(&gen, big.NewInt(12345))
+	P2.ScalarMultiplication(&gen, big.NewInt(67890))
+	s2 := big.NewInt(987654321)
+	s2P2.ScalarMultiplication(&P2, s2)
+
+	assert.Run(func(assert *test.Assert) {
+		circuit := &multiScalarMulConstG2Test{Scalars: make([]Scalar, 2), points: []bls12381.G2Affine{P1, P2}, opts: incomplete}
+		w := func(s1 *big.Int, res bls12381.G2Affine) *multiScalarMulConstG2Test {
+			return &multiScalarMulConstG2Test{
+				Scalars: []Scalar{emulated.ValueOf[ScalarField](s1), emulated.ValueOf[ScalarField](s2)},
+				Res:     NewG2Affine(res),
+			}
+		}
+		// sanity: non-zero scalars solve
+		var honest, tmp bls12381.G2Affine
+		tmp.ScalarMultiplication(&P1, big.NewInt(5))
+		honest.Add(&tmp, &s2P2)
+		assert.NoError(test.IsSolved(circuit, w(big.NewInt(5), honest), ecc.BN254.ScalarField()), "honest MSM must solve")
+		// s1 = 0: (0,0) + [s2]P2 via the chord
+		err := test.IsSolved(circuit, w(big.NewInt(0), chordFromInfinity(s2P2)), ecc.BN254.ScalarField())
+		assert.Error(err, "constant MSM with a zero scalar forged — soundness break")
+		// s1 = r ≡ 0 as well
+		err = test.IsSolved(circuit, w(fr_bls12381.Modulus(), chordFromInfinity(s2P2)), ecc.BN254.ScalarField())
+		assert.Error(err, "constant MSM with a scalar r ≡ 0 forged — soundness break")
+	}, "constant")
+
+	assert.Run(func(assert *test.Assert) {
+		circuit := &multiScalarMulConstG2Test{Scalars: make([]Scalar, 1), points: []bls12381.G2Affine{P1}, opts: incomplete}
+		for _, s1 := range []*big.Int{big.NewInt(0), fr_bls12381.Modulus()} {
+			err := test.IsSolved(circuit,
+				&multiScalarMulConstG2Test{Scalars: []Scalar{emulated.ValueOf[ScalarField](s1)}, Res: NewG2Affine(bls12381.G2Affine{})},
+				ecc.BN254.ScalarField())
+			assert.NoError(err, "single constant summand with s1 = %s must give (0,0)", s1)
+		}
+	}, "single-constant")
+
+	assert.Run(func(assert *test.Assert) {
+		// MSM([P0, P1], γ) = P0 + [γ]P1 with P1 constant: γ = 0 gives P0 + (0,0).
+		circuit := &multiScalarMulFoldedConstLastG2Test{p1: P1, opts: incomplete}
+		w := func(gamma *big.Int, res bls12381.G2Affine) *multiScalarMulFoldedConstLastG2Test {
+			return &multiScalarMulFoldedConstLastG2Test{P0: NewG2Affine(P2), Gamma: emulated.ValueOf[ScalarField](gamma), Res: NewG2Affine(res)}
+		}
+		var honest, tmp bls12381.G2Affine
+		tmp.ScalarMultiplication(&P1, big.NewInt(5))
+		honest.Add(&P2, &tmp)
+		assert.NoError(test.IsSolved(circuit, w(big.NewInt(5), honest), ecc.BN254.ScalarField()), "honest folded MSM must solve")
+		// g2.add(p[0], (0,0)): p = P2, q = (0,0)
+		var lam bls12381.E2
+		lam.Neg(&P2.Y)
+		var nx bls12381.E2
+		nx.Neg(&P2.X).Inverse(&nx)
+		lam.Mul(&lam, &nx)
+		forged := chordWithSlope(P2, bls12381.G2Affine{}, lam)
+		err := test.IsSolved(circuit, w(big.NewInt(0), forged), ecc.BN254.ScalarField())
+		assert.Error(err, "folded MSM with γ = 0 forged — soundness break")
+	}, "folded")
+}
