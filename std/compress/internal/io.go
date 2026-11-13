@@ -34,10 +34,11 @@ func (r *RangeChecker) AssertLessThan(bound uint, c ...frontend.Variable) {
 	default:
 		cRangeTable, ok := r.tables[bound]
 		if !ok {
-			cRangeTable := logderivlookup.New(r.api)
+			cRangeTable = logderivlookup.New(r.api)
 			for i := uint(0); i < bound; i++ {
 				cRangeTable.Insert(0)
 			}
+			r.tables[bound] = cRangeTable
 		}
 		_ = cRangeTable.Lookup(c...)
 		return
