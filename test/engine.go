@@ -41,6 +41,18 @@ type engine struct {
 	q       *big.Int // field modulus
 	// mHintsFunctions map[hint.ID]hintFunction
 	constVars bool
+	// constant records which values are known to be constants. Constness is a
+	// property of the value, so it cannot be answered by a single engine-wide flag:
+	// a circuit can mix witness inputs and constants, and the compiler distinguishes
+	// them.
+	//
+	// Absent means NON-constant, deliberately. Every operation that produces a value
+	// must opt its result in, and there are around twenty-five of them. If one is
+	// missed, the result degrades to non-constant, which is what master already
+	// reports. The opposite default fails open: a witness-derived value that slipped
+	// through an untracked operation would be announced as a constant, and callers
+	// branch on that.
+	constant map[*big.Int]struct{}
 	kvstore.Store
 	blueprints                []constraint.Blueprint
 	internalVariables         []*big.Int
@@ -101,6 +113,7 @@ func IsSolved(circuit, witness frontend.Circuit, field *big.Int, opts ...TestEng
 		curveID:   utils.FieldToCurve(field),
 		q:         new(big.Int).Set(field),
 		constVars: false,
+		constant:  make(map[*big.Int]struct{}),
 		Store:     kvstore.New(),
 	}
 	for _, opt := range opts {
@@ -182,7 +195,7 @@ func (e *engine) Add(i1, i2 frontend.Variable, in ...frontend.Variable) frontend
 		res.Add(res, e.toBigInt(in[i]))
 	}
 	res.Mod(res, e.modulus())
-	return res
+	return e.taint(res, append([]frontend.Variable{i1, i2}, in...)...)
 }
 
 func (e *engine) MulAcc(a, b, c frontend.Variable) frontend.Variable {
@@ -194,7 +207,7 @@ func (e *engine) MulAcc(a, b, c frontend.Variable) frontend.Variable {
 	res.Add(_a, bc).Mod(res, e.modulus())
 
 	pool.BigInt.Put(bc)
-	return res
+	return e.taint(res, a, b, c)
 }
 
 func (e *engine) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) frontend.Variable {
@@ -206,20 +219,24 @@ func (e *engine) Sub(i1, i2 frontend.Variable, in ...frontend.Variable) frontend
 		res.Sub(res, e.toBigInt(in[i]))
 	}
 	res.Mod(res, e.modulus())
-	return res
+	return e.taint(res, append([]frontend.Variable{i1, i2}, in...)...)
 }
 
 func (e *engine) Neg(i1 frontend.Variable) frontend.Variable {
 	res := new(big.Int)
 	res.Neg(e.toBigInt(i1))
 	res.Mod(res, e.modulus())
-	return res
+	return e.taint(res, i1)
 }
 
 func (e *engine) Mul(i1, i2 frontend.Variable, in ...frontend.Variable) frontend.Variable {
 	atomic.AddUint64(&cptMul, 1)
 	b2 := e.toBigInt(i2)
-	if len(in) == 0 && b2.IsUint64() && b2.Uint64() <= 1 {
+	// The allocation shortcut returns before taint, so it may only be taken when i2 is
+	// genuinely constant. Gated on the runtime value alone, a witness that happens to
+	// solve to 0 or 1 would make the product read as constant, which is the over-claim
+	// this file exists to avoid: neither builder can fold a product of two variables.
+	if len(in) == 0 && e.isConstValue(i2) && b2.IsUint64() && b2.Uint64() <= 1 {
 		// special path to avoid useless allocations
 		if b2.Uint64() == 0 {
 			return 0
@@ -235,7 +252,7 @@ func (e *engine) Mul(i1, i2 frontend.Variable, in ...frontend.Variable) frontend
 		res.Mul(res, e.toBigInt(in[i]))
 		res.Mod(res, e.modulus())
 	}
-	return res
+	return e.taint(res, append([]frontend.Variable{i1, i2}, in...)...)
 }
 
 func (e *engine) Div(i1, i2 frontend.Variable) frontend.Variable {
@@ -245,7 +262,7 @@ func (e *engine) Div(i1, i2 frontend.Variable) frontend.Variable {
 	}
 	res.Mul(res, e.toBigInt(i1))
 	res.Mod(res, e.modulus())
-	return res
+	return e.taint(res, i1, i2)
 }
 
 func (e *engine) DivUnchecked(i1, i2 frontend.Variable) frontend.Variable {
@@ -259,7 +276,7 @@ func (e *engine) DivUnchecked(i1, i2 frontend.Variable) frontend.Variable {
 	}
 	res.Mul(res, b1)
 	res.Mod(res, e.modulus())
-	return res
+	return e.taint(res, i1, i2)
 }
 
 func (e *engine) Inverse(i1 frontend.Variable) frontend.Variable {
@@ -267,7 +284,7 @@ func (e *engine) Inverse(i1 frontend.Variable) frontend.Variable {
 	if res.ModInverse(e.toBigInt(i1), e.modulus()) == nil {
 		panic("no inverse")
 	}
-	return res
+	return e.taint(res, i1)
 }
 
 func (e *engine) BatchInvert(in []frontend.Variable) []frontend.Variable {
@@ -281,7 +298,7 @@ func (e *engine) BatchInvert(in []frontend.Variable) []frontend.Variable {
 
 	res := make([]frontend.Variable, len(in))
 	for i := 0; i < len(in); i++ {
-		res[i] = _out[i]
+		res[i] = e.taint(_out[i], in[i])
 	}
 	return res
 }
@@ -343,7 +360,7 @@ func (e *engine) ToBinary(i1 frontend.Variable, n ...int) []frontend.Variable {
 	r := make([]frontend.Variable, nbBits)
 	ri := make([]frontend.Variable, nbBits)
 	for i := 0; i < len(r); i++ {
-		r[i] = (b1.Bit(i))
+		r[i] = e.taint(new(big.Int).SetUint64(uint64(b1.Bit(i))), i1)
 		ri[i] = r[i]
 	}
 
@@ -379,7 +396,7 @@ func (e *engine) FromBinary(v ...frontend.Variable) frontend.Variable {
 	}
 	r.Mod(r, e.modulus())
 
-	return r
+	return e.taint(r, v...)
 }
 
 func (e *engine) Xor(i1, i2 frontend.Variable) frontend.Variable {
@@ -388,7 +405,7 @@ func (e *engine) Xor(i1, i2 frontend.Variable) frontend.Variable {
 	e.mustBeBoolean(b2)
 	res := new(big.Int)
 	res.Xor(b1, b2)
-	return res
+	return e.taint(res, i1, i2)
 }
 
 func (e *engine) Or(i1, i2 frontend.Variable) frontend.Variable {
@@ -397,7 +414,7 @@ func (e *engine) Or(i1, i2 frontend.Variable) frontend.Variable {
 	e.mustBeBoolean(b2)
 	res := new(big.Int)
 	res.Or(b1, b2)
-	return res
+	return e.taint(res, i1, i2)
 }
 
 func (e *engine) And(i1, i2 frontend.Variable) frontend.Variable {
@@ -406,7 +423,7 @@ func (e *engine) And(i1, i2 frontend.Variable) frontend.Variable {
 	e.mustBeBoolean(b2)
 	res := new(big.Int)
 	res.And(b1, b2)
-	return res
+	return e.taint(res, i1, i2)
 }
 
 // Select if b is true, yields i1 else yields i2
@@ -414,10 +431,12 @@ func (e *engine) Select(b frontend.Variable, i1, i2 frontend.Variable) frontend.
 	b1 := e.toBigInt(b)
 	e.mustBeBoolean(b1)
 
+	chosen := i2
 	if b1.Uint64() == 1 {
-		return e.toBigInt(i1)
+		chosen = i1
 	}
-	return (e.toBigInt(i2))
+	res := new(big.Int).Set(e.toBigInt(chosen))
+	return e.taint(res, b, i1, i2)
 }
 
 // Lookup2 performs a 2-bit lookup between i1, i2, i3, i4 based on bits b0
@@ -430,7 +449,8 @@ func (e *engine) Lookup2(b0, b1 frontend.Variable, i0, i1, i2, i3 frontend.Varia
 	e.mustBeBoolean(s1)
 	lookup := new(big.Int).Lsh(s1, 1)
 	lookup.Or(lookup, s0)
-	return e.toBigInt([]frontend.Variable{i0, i1, i2, i3}[lookup.Uint64()])
+	chosen := e.toBigInt([]frontend.Variable{i0, i1, i2, i3}[lookup.Uint64()])
+	return e.taint(new(big.Int).Set(chosen), b0, b1, i0, i1, i2, i3)
 }
 
 // IsZero returns 1 if a is zero, 0 otherwise
@@ -438,10 +458,10 @@ func (e *engine) IsZero(i1 frontend.Variable) frontend.Variable {
 	b1 := e.toBigInt(i1)
 
 	if b1.IsUint64() && b1.Uint64() == 0 {
-		return big.NewInt(1)
+		return e.taint(big.NewInt(1), i1)
 	}
 
-	return big.NewInt(0)
+	return e.taint(big.NewInt(0), i1)
 }
 
 // Cmp returns 1 if i1>i2, 0 if i1==i2, -1 if i1<i2
@@ -450,7 +470,7 @@ func (e *engine) Cmp(i1, i2 frontend.Variable) frontend.Variable {
 	b2 := e.toBigInt(i2)
 	res := big.NewInt(int64(b1.Cmp(b2)))
 	res.Mod(res, e.modulus())
-	return res
+	return e.taint(res, i1, i2)
 }
 
 func (e *engine) AssertIsEqual(i1, i2 frontend.Variable) {
@@ -585,7 +605,38 @@ func (e *engine) NewHintForId(id solver.HintID, nbOutputs int, inputs ...fronten
 // ConstantValue returns the big.Int value of v
 func (e *engine) ConstantValue(v frontend.Variable) (*big.Int, bool) {
 	r := e.toBigInt(v)
-	return r, e.constVars
+	if e.constVars {
+		// the legacy option still forces everything to read as constant
+		return r, true
+	}
+	_, isConst := e.constant[r]
+	return r, isConst
+}
+
+// taint marks res constant when every operand it was computed from is constant.
+// An operation that never calls this leaves its result non-constant, which is the
+// safe direction.
+func (e *engine) taint(res *big.Int, inputs ...frontend.Variable) *big.Int {
+	if e.constant == nil {
+		e.constant = make(map[*big.Int]struct{})
+	}
+	for _, in := range inputs {
+		if !e.isConstValue(in) {
+			return res
+		}
+	}
+	e.constant[res] = struct{}{}
+	return res
+}
+
+// isConstValue reports whether v is a literal or a value derived only from
+// literals. A Go value that is not a *big.Int reached the engine as a literal.
+func (e *engine) isConstValue(v frontend.Variable) bool {
+	if b, ok := v.(*big.Int); ok {
+		_, isConst := e.constant[b]
+		return isConst
+	}
+	return true
 }
 
 func (e *engine) IsBoolean(v frontend.Variable) bool {
@@ -606,8 +657,13 @@ func (e *engine) toBigInt(i1 frontend.Variable) *big.Int {
 	case big.Int:
 		return &vv
 	default:
+		// anything that is not already a *big.Int arrived as a Go literal
 		b := utils.FromInterface(i1)
 		b.Mod(&b, e.modulus())
+		if e.constant == nil {
+			e.constant = make(map[*big.Int]struct{})
+		}
+		e.constant[&b] = struct{}{}
 		return &b
 	}
 }
@@ -676,8 +732,11 @@ func (e *engine) copyWitness(to, from frontend.Circuit) {
 		if val.Sign() < 0 {
 			val.Add(&val, e.modulus())
 		}
-		wValueReduced := reflect.ValueOf(val)
-		tInput.Set(wValueReduced)
+		// stored as a pointer so the value has a stable identity the engine can
+		// track. As a big.Int value it would be copied into a fresh pointer on
+		// every toBigInt call, and constness could not follow it.
+		pv := new(big.Int).Set(&val)
+		tInput.Set(reflect.ValueOf(pv))
 		i++
 		return nil
 	}
