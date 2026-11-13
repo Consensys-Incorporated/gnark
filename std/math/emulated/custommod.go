@@ -84,6 +84,13 @@ func (f *Field[T]) ModMulCanonical(a, b *Element[T], modulus *Element[T]) *Eleme
 // is intended, wrap it in [Field.ReduceStrict] explicitly.
 func (f *Field[T]) ModAdd(a, b *Element[T], modulus *Element[T]) *Element[T] {
 	f.checkModulus(modulus)
+	// [Field.reduceAndOp] is inlined below, but we must keep the limb-width
+	// enforcement it performs on its inputs: without it a witness element whose
+	// limbs are wider than [FieldParams.BitsPerLimb] (hand-built via
+	// [Element.Limbs]) represents a different integer in-circuit than the one a
+	// verifier recomposes from the same limbs.
+	f.enforceWidthConditional(a)
+	f.enforceWidthConditional(b)
 	// inlined version of [Field.reduceAndOp] which uses variable-modulus reduction
 	var nextOverflow uint
 	var err error
@@ -146,6 +153,15 @@ func (f *Field[T]) modSub(a, b *Element[T], modulus *Element[T]) *Element[T] {
 // is intended, wrap it in [Field.ReduceStrict] explicitly.
 func (f *Field[T]) ModAssertIsEqual(a, b *Element[T], modulus *Element[T]) {
 	f.checkModulus(modulus)
+	// as in the fixed-modulus [Field.AssertIsEqual], the inputs must be
+	// range-checked here. [Field.modSub] does not enforce the limb widths, and
+	// the [Field.enforceWidthConditional] inside [Field.checkZero] is a no-op on
+	// the internal element it receives. Without these two calls a hand-built
+	// witness with limbs wider than [FieldParams.BitsPerLimb] proves a statement
+	// about the signed lift of the limb rather than the value a verifier
+	// recomposes.
+	f.enforceWidthConditional(a)
+	f.enforceWidthConditional(b)
 	// like fixed modulus AssertIsEqual, but uses current Sub implementation for
 	// computing the diff
 	diff := f.modSub(b, a, modulus)
