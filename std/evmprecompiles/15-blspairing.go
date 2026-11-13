@@ -28,8 +28,10 @@ import (
 //
 // SECURITY: the bit returned by [ECPairBLSMillerLoopAndFinalExpCheck] is
 // one-sided and must not be used to attest a pairing-check *failure*; see the
-// note on that method. [ECPairBLS] itself is unaffected: it asserts the
-// product is 1 and never consumes the bit.
+// note on that method and the sound pair
+// [ECPairBLSMillerLoopAndFinalExpCheckSuccess] /
+// [ECPairBLSMillerLoopAndFinalExpCheckFailure]. [ECPairBLS] itself is
+// unaffected: it asserts the product is 1 and never consumes the bit.
 //
 // [BLS12_PAIRING_CHECK]: https://eips.ethereum.org/EIPS/eip-2537
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
@@ -125,6 +127,11 @@ func ECPairBLSMillerLoopAndMul(api frontend.API, accumulator *sw_bls12381.GTEl, 
 // 1. Since the pairing-check precompile returning false is an observable EVM
 // outcome, a caller that trusts this bit can be made to attest a failure for a
 // check that in fact succeeds.
+//
+// Deprecated: use the two sound fixed circuits
+// [ECPairBLSMillerLoopAndFinalExpCheckSuccess] and
+// [ECPairBLSMillerLoopAndFinalExpCheckFailure] instead, selecting between them
+// on the (public) precompile return value.
 func ECPairBLSMillerLoopAndFinalExpCheck(api frontend.API, accumulator *sw_bls12381.GTEl, P *sw_bls12381.G1Affine, Q *sw_bls12381.G2Affine, expectedIsSuccess frontend.Variable) error {
 	api.AssertIsBoolean(expectedIsSuccess)
 	pairing, err := sw_bls12381.NewPairing(api)
@@ -136,5 +143,56 @@ func ECPairBLSMillerLoopAndFinalExpCheck(api frontend.API, accumulator *sw_bls12
 	pairing.AssertIsOnG1(P)
 	isSuccess := pairing.IsMillerLoopAndFinalExpOne(P, Q, accumulator)
 	api.AssertIsEqual(expectedIsSuccess, isSuccess)
+	return nil
+}
+
+// ECPairBLSMillerLoopAndFinalExpCheckSuccess implements the fixed circuit for
+// the *success* branch of the final step of [ECPairBLS]: a Miller loop of
+// fixed size 1, a multiplication with the accumulator in 𝔽p¹², and an
+// assertion that the resulting multi-pairing is 1.
+//
+// It uses the residue-witness argument of Section 4 of [On Proving Pairings],
+// which is sound for the == 1 direction: the circuit is satisfiable if and
+// only if ∏ᵢ e(Pᵢ, Qᵢ) == 1.
+//
+// Together with [ECPairBLSMillerLoopAndFinalExpCheckFailure] this replaces the
+// one-sided [ECPairBLSMillerLoopAndFinalExpCheck]: the caller selects the
+// circuit matching the precompile's return value, which is public, and so pays
+// the cost of a real final exponentiation only on the (rarer) failure branch.
+//
+// [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
+func ECPairBLSMillerLoopAndFinalExpCheckSuccess(api frontend.API, accumulator *sw_bls12381.GTEl, P *sw_bls12381.G1Affine, Q *sw_bls12381.G2Affine) error {
+	pairing, err := sw_bls12381.NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	// Miller loop below already checks that Q is in G2, but doesn't check that
+	// P is. So we do it manually.
+	pairing.AssertIsOnG1(P)
+	pairing.AssertMillerLoopAndFinalExpIsOne(P, Q, accumulator)
+	return nil
+}
+
+// ECPairBLSMillerLoopAndFinalExpCheckFailure implements the fixed circuit for
+// the *failure* branch of the final step of [ECPairBLS]: a Miller loop of
+// fixed size 1, a multiplication with the accumulator in 𝔽p¹², a real final
+// exponentiation, and an assertion that the resulting multi-pairing is *not*
+// 1.
+//
+// Unlike [ECPairBLSMillerLoopAndFinalExpCheck] this is sound: the circuit is
+// satisfiable if and only if ∏ᵢ e(Pᵢ, Qᵢ) != 1. Proving the != 1 direction
+// requires the order-r component of the Miller loop output, so the cheap
+// residue-witness argument cannot be used here and a full final
+// exponentiation is unavoidable.
+func ECPairBLSMillerLoopAndFinalExpCheckFailure(api frontend.API, accumulator *sw_bls12381.GTEl, P *sw_bls12381.G1Affine, Q *sw_bls12381.G2Affine) error {
+	pairing, err := sw_bls12381.NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	// Miller loop below already checks that Q is in G2, but doesn't check that
+	// P is. So we do it manually.
+	pairing.AssertIsOnG1(P)
+	isSuccess := pairing.IsMillerLoopAndFinalExpOneSound(P, Q, accumulator)
+	api.AssertIsEqual(isSuccess, 0)
 	return nil
 }

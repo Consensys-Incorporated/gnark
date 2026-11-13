@@ -962,8 +962,6 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P []*G1Affine, Q []*G2Affine, pre
 // the result lies in the same equivalence class as the reduced pairing
 // purported to be 1.
 //
-// This method is needed for evmprecompiles/ecpair.
-//
 // SECURITY: the returned bit is one-sided. A return value of 1 proves the
 // product is 1. A return value of 0 proves NOTHING: the residue witness is
 // only constrained to be invertible, so a prover can always force 0. Do not
@@ -977,7 +975,12 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P []*G1Affine, Q []*G2Affine, pre
 // product is in fact 1, and the circuit stays satisfiable. The converse is
 // impossible: a returned 1 does prove the product is 1.
 //
-// Use [Pairing.AssertMillerLoopAndFinalExpIsOne] when the product must be 1.
+// Use [Pairing.AssertMillerLoopAndFinalExpIsOne] when the product must be 1,
+// and [Pairing.IsMillerLoopAndFinalExpOneSound] when the bit itself has to be
+// trusted in both directions (it runs a real final exponentiation and is
+// therefore considerably more expensive).
+//
+// This method is needed for evmprecompiles/ecpair.
 //
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
 func (pr *Pairing) IsMillerLoopAndFinalExpOne(P *G1Affine, Q *G2Affine, previous *GTEl) frontend.Variable {
@@ -989,4 +992,27 @@ func (pr *Pairing) IsMillerLoopAndFinalExpOne(P *G1Affine, Q *G2Affine, previous
 
 	res := pr.IsEqual(t2, pr.Ext12.One())
 	return res
+}
+
+// IsMillerLoopAndFinalExpOneSound computes the Miller loop between P and Q,
+// multiplies it in 𝔽p¹² by previous, applies a real final exponentiation and
+// returns a boolean indicating whether the reduced pairing is 1.
+//
+// Unlike [Pairing.IsMillerLoopAndFinalExpOne], the returned bit is sound in
+// both directions: it is 1 if and only if ∏ e(P,Q)·previous == 1. Nothing in
+// the computation is prover-supplied, so the bit may be used to attest a
+// pairing-check failure.
+//
+// It is significantly more expensive than [Pairing.IsMillerLoopAndFinalExpOne]
+// because proving f^((p¹²-1)/r) ≠ 1 requires the order-r component of f, i.e.
+// an exponentiation of full final-exponentiation weight. There is no known
+// cheaper sound argument for the ≠ 1 direction.
+func (pr *Pairing) IsMillerLoopAndFinalExpOneSound(P *G1Affine, Q *G2Affine, previous *GTEl) frontend.Variable {
+	ml, err := pr.MillerLoopAndMul(P, Q, previous)
+	if err != nil {
+		// err is non-nil only for mismatched P and Q lengths, which cannot happen here
+		panic(err)
+	}
+	res := pr.FinalExponentiation(ml)
+	return pr.IsEqual(res, pr.Ext12.One())
 }
