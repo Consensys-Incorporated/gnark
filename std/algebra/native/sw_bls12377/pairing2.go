@@ -294,8 +294,8 @@ func NewPairing(api frontend.API) *Pairing {
 // modify the inputs. It returns an error if there is a mismatch between the
 // lengths of the inputs.
 //
-// When the Qᵢ carry precomputed lines (G2Affine.Lines), they are trusted
-// input — see [NewG2AffineFixedPlaceholder] for the security assumptions.
+// When the Qᵢ carry precomputed lines (G2Affine.Lines), the lines must be
+// compile-time constants — see [ErrNonConstantLines].
 func (pr *Pairing) MillerLoop(P []*G1Affine, Q []*G2Affine) (*GT, error) {
 	inP := make([]G1Affine, len(P))
 	for i := range P {
@@ -318,11 +318,8 @@ func (pr *Pairing) FinalExponentiation(e *GT) *GT {
 
 // Pair computes a full multi-pairing on the input pairs.
 //
-// When the Qᵢ carry precomputed lines (G2Affine.Lines), they are trusted
-// input — see [NewG2AffineFixedPlaceholder] for the security assumptions. To
-// assert a pairing equation over untrusted G2 inputs, prefer
-// [Pairing.PairingCheck], which binds the result to the point coordinates
-// even when precomputed lines are supplied.
+// When the Qᵢ carry precomputed lines (G2Affine.Lines), the lines must be
+// compile-time constants — see [ErrNonConstantLines].
 func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GT, error) {
 	inP := make([]G1Affine, len(P))
 	for i := range P {
@@ -340,8 +337,9 @@ func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GT, error) {
 // the result is an identity element in the target group. It returns an error if
 // there is a mismatch between the lengths of the inputs.
 //
-// The asserted equation binds the result to the point coordinates even when
-// the Qᵢ carry precomputed lines — see the package-level [PairingCheck].
+// When the Qᵢ carry precomputed lines (G2Affine.Lines), the lines must be
+// compile-time constants: they are not bound to the point coordinates — see
+// the package-level [PairingCheck] and [ErrNonConstantLines].
 func (pr *Pairing) PairingCheck(P []*G1Affine, Q []*G2Affine) error {
 	inP := make([]G1Affine, len(P))
 	for i := range P {
@@ -599,10 +597,13 @@ func NewG2Affine(v bls12377.G2Affine) G2Affine {
 // NewG2AffineFixed returns witness of v with precomputations for efficient
 // pairing computation.
 //
-// When the value is used as a witness, the precomputed lines are not
-// constrained to correspond to the point coordinates — see
-// [NewG2AffineFixedPlaceholder] for the security assumptions of precomputed
-// lines.
+// The precomputed lines are not constrained to correspond to the point
+// coordinates, so the pairing functions only accept them when they are
+// compile-time constants — see [ErrNonConstantLines]. In practice this means
+// the value must be fixed by the circuit author: a circuit field tagged
+// `gnark:"-"`, or a value built inside Define. Assigning it through the
+// witness no longer works; use [NewG2Affine] there instead, so that the lines
+// are computed in-circuit from the constrained coordinates.
 func NewG2AffineFixed(v bls12377.G2Affine) G2Affine {
 	lines := precomputeLines(v)
 	return G2Affine{
@@ -611,21 +612,18 @@ func NewG2AffineFixed(v bls12377.G2Affine) G2Affine {
 	}
 }
 
-// NewG2AffineFixedPlaceholder returns a placeholder for the circuit compilation
-// when witness will be given with line precomputations using
-// [NewG2AffineFixed].
+// NewG2AffineFixedPlaceholder returns a placeholder that allocates the point
+// coordinates and all line evaluations as witness variables.
 //
-// Security note: the placeholder allocates the point coordinates and all line
-// evaluations as witness variables. [MillerLoop] and [Pair] consume the line
-// evaluations directly: they neither constrain the lines to correspond to the
-// point coordinates nor check the coordinates are on the curve or in the
-// correct subgroup. The witness assignment is therefore trusted — use this
-// placeholder only when the assignment is fixed by the circuit author (e.g. a
-// hardcoded verifying key or SRS), or when the pairing result is checked with
-// [PairingCheck], which binds the result to the point coordinates. For
-// prover-supplied G2 points used with [Pair] or [MillerLoop], use
-// [NewG2Affine] instead so that the lines are computed in-circuit from the
-// constrained coordinates.
+// Deprecated: the pairing functions no longer accept witness-supplied line
+// evaluations, so a circuit built on this placeholder fails to compile with
+// [ErrNonConstantLines]. Nothing constrains the lines to correspond to the
+// point coordinates — not even [PairingCheck], whose non-residue witness hint
+// generates no constraints — so a prover able to choose both the lines and
+// the hint output could forge the pairing result for an arbitrary Qᵢ.P. Fix
+// the point at compile time with [NewG2AffineFixed] instead (a field tagged
+// `gnark:"-"`, or a value built inside Define), or use [NewG2Affine] and let
+// the lines be computed in-circuit.
 func NewG2AffineFixedPlaceholder() G2Affine {
 	var lines lineEvaluations
 	for i := 0; i < len(bls12377.LoopCounter)-1; i++ {

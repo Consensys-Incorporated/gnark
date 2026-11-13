@@ -12,6 +12,7 @@ import (
 	bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377"
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/std/algebra/native/fields_bls12377"
 	"github.com/consensys/gnark/test"
 )
@@ -54,7 +55,10 @@ func (circuit *pairingBLS377) Define(api frontend.API) error {
 	pr := NewPairing(api)
 	pr.AssertIsOnG1(&circuit.P)
 	pr.AssertIsOnG2(&circuit.Q)
-	pairingRes, _ := Pair(api, []G1Affine{circuit.P}, []G2Affine{circuit.Q})
+	pairingRes, errp := Pair(api, []G1Affine{circuit.P}, []G2Affine{circuit.Q})
+	if errp != nil {
+		return errp
+	}
 	pairingRes.AssertIsEqual(api, circuit.Res)
 
 	return nil
@@ -109,15 +113,21 @@ func TestTriplePairingBLS377(t *testing.T) {
 
 }
 
+// pairingFixedBLS377 pairs a witness G1 point against a G2 point fixed by the
+// circuit author at compile time. Q carries precomputed lines, which are only
+// accepted when they are compile-time constants -- hence the `gnark:"-"` tag.
 type pairingFixedBLS377 struct {
 	P   G1Affine
-	Q   G2Affine
+	Q   G2Affine `gnark:"-"`
 	Res GT
 }
 
 func (circuit *pairingFixedBLS377) Define(api frontend.API) error {
 
-	pairingRes, _ := Pair(api, []G1Affine{circuit.P}, []G2Affine{circuit.Q})
+	pairingRes, errp := Pair(api, []G1Affine{circuit.P}, []G2Affine{circuit.Q})
+	if errp != nil {
+		return errp
+	}
 	pairingRes.AssertIsEqual(api, circuit.Res)
 
 	return nil
@@ -128,21 +138,22 @@ func TestPairingFixedBLS377(t *testing.T) {
 	// pairing test data
 	P, Q, _, pairingRes := pairingData()
 
-	witness := pairingBLS377{
+	witness := pairingFixedBLS377{
 		P:   NewG1Affine(P),
-		Q:   NewG2AffineFixed(Q),
 		Res: NewGTEl(pairingRes),
 	}
 	assert := test.NewAssert(t)
-	assert.CheckCircuit(&pairingFixedBLS377{Q: NewG2AffineFixedPlaceholder()}, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
+	assert.CheckCircuit(&pairingFixedBLS377{Q: NewG2AffineFixed(Q)}, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
 
 }
 
+// doublePairingFixedBLS377 pairs witness G1 points against G2 points fixed by
+// the circuit author at compile time; see [pairingFixedBLS377].
 type doublePairingFixedBLS377 struct {
 	P0  G1Affine
 	P1  G1Affine
-	Q0  G2Affine
-	Q1  G2Affine
+	Q0  G2Affine `gnark:"-"`
+	Q1  G2Affine `gnark:"-"`
 	Res GT
 }
 
@@ -162,12 +173,10 @@ func TestDoublePairingFixedBLS377(t *testing.T) {
 	witness := doublePairingFixedBLS377{
 		P0:  NewG1Affine(P[0]),
 		P1:  NewG1Affine(P[1]),
-		Q0:  NewG2AffineFixed(Q[0]),
-		Q1:  NewG2AffineFixed(Q[1]),
 		Res: NewGTEl(pairingRes),
 	}
 	assert := test.NewAssert(t)
-	assert.CheckCircuit(&doublePairingFixedBLS377{Q0: NewG2AffineFixedPlaceholder(), Q1: NewG2AffineFixedPlaceholder()}, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
+	assert.CheckCircuit(&doublePairingFixedBLS377{Q0: NewG2AffineFixed(Q[0]), Q1: NewG2AffineFixed(Q[1])}, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
 
 }
 
@@ -369,4 +378,62 @@ func doublePairingFixedQData() (P [2]bls12377.G1Affine, Q [2]bls12377.G2Affine, 
 	milRes, _ = bls12377.MillerLoop([]bls12377.G1Affine{P[0], P[1]}, []bls12377.G2Affine{Q[0], Q[1]})
 	pairingRes = bls12377.FinalExponentiation(&milRes)
 	return
+}
+
+// fixedQPairingCheckBLS377 asserts e(P1,Q1)·e(P2,Q2) == 1 for G2 points that
+// the circuit author fixes at compile time. The `gnark:"-"` tag keeps them out
+// of the witness, so their precomputed lines stay compile-time constants.
+type fixedQPairingCheckBLS377 struct {
+	P1, P2 G1Affine
+	Q1, Q2 G2Affine `gnark:"-"`
+}
+
+func (circuit *fixedQPairingCheckBLS377) Define(api frontend.API) error {
+	return PairingCheck(api, []G1Affine{circuit.P1, circuit.P2}, []G2Affine{circuit.Q1, circuit.Q2})
+}
+
+// TestPairingRejectsWitnessLines is a regression test for the
+// precomputed-lines soundness bug: when Qᵢ.Lines comes from the witness,
+// nothing in the constraint system binds the lines to Qᵢ.P. The point
+// coordinates enter the system only as inputs to the pairingCheckHint, which
+// generates no constraints, so a malicious prover could keep honest lines and
+// an honest residue witness while assigning an unrelated Qᵢ.P.
+//
+// [NewG2AffineFixedPlaceholder] allocates the lines as witness variables, so
+// a circuit built on it must now fail to compile.
+func TestPairingRejectsWitnessLines(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, err := frontend.Compile(ecc.BW6_761.ScalarField(), r1cs.NewBuilder, &pairingCheckBLS377{
+		Q1: NewG2AffineFixedPlaceholder(),
+		Q2: NewG2AffineFixedPlaceholder(),
+	})
+	assert.Error(err, "witness-supplied G2 lines must be rejected")
+	assert.ErrorIs(err, ErrNonConstantLines)
+
+	_, err = frontend.Compile(ecc.BW6_761.ScalarField(), r1cs.NewBuilder, &pairingFixedBLS377{
+		Q: NewG2AffineFixedPlaceholder(),
+	})
+	assert.Error(err, "witness-supplied G2 lines must be rejected")
+	assert.ErrorIs(err, ErrNonConstantLines)
+}
+
+// TestPairingAcceptsConstantLines covers the honest precomputation path that
+// must keep working: lines fixed by the circuit author at compile time.
+func TestPairingAcceptsConstantLines(t *testing.T) {
+	assert := test.NewAssert(t)
+	P, Q := pairingCheckData()
+	circuit := &fixedQPairingCheckBLS377{
+		Q1: NewG2AffineFixed(Q[0]),
+		Q2: NewG2AffineFixed(Q[1]),
+	}
+	ccs, err := frontend.Compile(ecc.BW6_761.ScalarField(), r1cs.NewBuilder, circuit)
+	assert.NoError(err, "compile-time constant lines must be accepted")
+
+	honest := &fixedQPairingCheckBLS377{
+		P1: NewG1Affine(P[0]),
+		P2: NewG1Affine(P[1]),
+	}
+	w, err := frontend.NewWitness(honest, ecc.BW6_761.ScalarField())
+	assert.NoError(err)
+	assert.NoError(ccs.IsSolved(w), "honest witness with constant lines must solve")
 }

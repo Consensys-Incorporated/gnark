@@ -912,3 +912,117 @@ func TestFinalExponentiationIsOneRejectsZeroWitness(t *testing.T) {
 		test.WithReplacementHint(solver.GetHintID(finalExpHint), zeroHintOutputs))
 	assert.Error(err, "all-zero residue witness must be rejected by the invertibility anchor")
 }
+
+// fixedQPairingCheckCircuit pairs two prover-supplied G1 points against two
+// G2 points that the circuit author fixes at compile time. The `gnark:"-"`
+// tag keeps In1G2/In2G2 out of the witness, so their precomputed lines stay
+// compile-time constants.
+type fixedQPairingCheckCircuit struct {
+	In1G1 G1Affine
+	In2G1 G1Affine
+	In1G2 G2Affine `gnark:"-"`
+	In2G2 G2Affine `gnark:"-"`
+}
+
+func (c *fixedQPairingCheckCircuit) Define(api frontend.API) error {
+	pairing, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	return pairing.PairingCheck([]*G1Affine{&c.In1G1, &c.In2G1}, []*G2Affine{&c.In1G2, &c.In2G2})
+}
+
+// TestPairingCheckRejectsWitnessLines is a regression test for the
+// precomputed-lines soundness bug: when Qᵢ.Lines comes from the witness,
+// nothing in the constraint system binds the lines to Qᵢ.P. The point
+// coordinates enter the system only as inputs to the pairingCheckHint, which
+// generates no constraints, so a malicious prover could keep honest lines and
+// an honest residue witness while assigning an unrelated (even public) Qᵢ.P.
+//
+// [NewG2AffineFixedPlaceholder] allocates the lines as witness variables, so
+// a circuit built on it must now fail to compile.
+func TestPairingCheckRejectsWitnessLines(t *testing.T) {
+	assert := test.NewAssert(t)
+	placeholder := &PairingCheckCircuit{
+		In1G2: NewG2AffineFixedPlaceholder(),
+		In2G2: NewG2AffineFixedPlaceholder(),
+	}
+	_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, placeholder)
+	assert.Error(err, "witness-supplied G2 lines must be rejected")
+	assert.ErrorIs(err, ErrNonConstantLines)
+
+	// same for MillerLoop
+	_, err = frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &MillerLoopCircuit{
+		In1G2: NewG2AffineFixedPlaceholder(),
+		In2G2: NewG2AffineFixedPlaceholder(),
+	})
+	assert.Error(err, "witness-supplied G2 lines must be rejected")
+	assert.ErrorIs(err, ErrNonConstantLines)
+}
+
+// TestPairingCheckAcceptsConstantLines covers the honest precomputation path
+// that must keep working: lines fixed by the circuit author at compile time.
+// It also shows why that path is sound — Qᵢ.P is a constant too, so there is
+// nothing left for a malicious prover to swap. The hint is overridden with a
+// recorded replay to model a prover that does not run the honest solver.
+func TestPairingCheckAcceptsConstantLines(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	// e(a,2b) * e(-2a,b) == 1
+	p1, q1 := randomG1G2Affines()
+	var p2 bn254.G1Affine
+	p2.Double(&p1).Neg(&p2)
+	var q2 bn254.G2Affine
+	q2.Set(&q1)
+	q1.Double(&q1)
+	ok, err := bn254.PairingCheck([]bn254.G1Affine{p1, p2}, []bn254.G2Affine{q1, q2})
+	assert.NoError(err)
+	assert.True(ok, "sanity: the honest statement must be true")
+
+	circuit := &fixedQPairingCheckCircuit{
+		In1G2: NewG2AffineFixed(q1),
+		In2G2: NewG2AffineFixed(q2),
+	}
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+	assert.NoError(err, "compile-time constant lines must be accepted")
+
+	var recorded []*big.Int
+	record := func(mod *big.Int, inputs, outputs []*big.Int) error {
+		if err := pairingCheckHint(mod, inputs, outputs); err != nil {
+			return err
+		}
+		recorded = make([]*big.Int, len(outputs))
+		for i := range outputs {
+			recorded[i] = new(big.Int).Set(outputs[i])
+		}
+		return nil
+	}
+	honest := &fixedQPairingCheckCircuit{
+		In1G1: NewG1Affine(p1),
+		In2G1: NewG1Affine(p2),
+	}
+	hw, err := frontend.NewWitness(honest, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	err = ccs.IsSolved(hw, solver.OverrideHint(solver.GetHintID(pairingCheckHint), record))
+	assert.NoError(err, "honest witness with constant lines must solve")
+	assert.NotEmpty(recorded, "sanity: hint outputs recorded")
+
+	// A prover replaying those hint outputs against a different G1 assignment
+	// must fail: the lines (and hence Q) are nailed down by the circuit.
+	var p3 bn254.G1Affine
+	p3.Double(&p1)
+	forged := &fixedQPairingCheckCircuit{
+		In1G1: NewG1Affine(p3),
+		In2G1: NewG1Affine(p2),
+	}
+	replay := func(_ *big.Int, _, outputs []*big.Int) error {
+		for i := range outputs {
+			outputs[i].Set(recorded[i])
+		}
+		return nil
+	}
+	fw, err := frontend.NewWitness(forged, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	err = ccs.IsSolved(fw, solver.OverrideHint(solver.GetHintID(pairingCheckHint), replay))
+	assert.Error(err, "replayed hint outputs must not satisfy a false statement")
+}

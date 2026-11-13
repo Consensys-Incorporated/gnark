@@ -21,6 +21,11 @@ type Pairing struct {
 	curve  *sw_emulated.Curve[BaseField, ScalarField]
 	g2     *G2
 	g1     *G1
+
+	// computedLines caches line evaluations computed in-circuit, keyed by the
+	// G2 input they were computed from. Scoped to this Pairing instance, and
+	// hence to one builder.
+	computedLines map[*G2Affine]*lineEvaluations
 }
 
 type baseEl = emulated.Element[BaseField]
@@ -87,14 +92,11 @@ func NewPairing(api frontend.API) (*Pairing, error) {
 // When Qᵢ does not carry precomputed lines (Qᵢ.Lines == nil), the lines are
 // computed in-circuit and Qᵢ is asserted to be on the curve and in the
 // correct subgroup. When Qᵢ carries precomputed lines, they are used directly
-// and Qᵢ.P is never read: the point is not checked and the lines are not
-// constrained to correspond to it — precomputed lines are trusted input, see
-// [NewG2AffineFixedPlaceholder] for the security assumptions.
+// and Qᵢ.P is never read: nothing constrains the lines to correspond to it,
+// so they must be compile-time constants and witness-supplied lines are
+// rejected with [ErrNonConstantLines].
 //
-// This function does not check Pᵢ. See AssertIsOnG1. To assert a pairing
-// equation over untrusted G2 inputs, prefer [Pairing.PairingCheck], which
-// binds the result to the point coordinates even when precomputed lines are
-// supplied.
+// This function does not check Pᵢ. See AssertIsOnG1.
 func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 	res, err := pr.MillerLoop(P, Q)
 	if err != nil {
@@ -107,12 +109,12 @@ func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 // PairingCheck calculates the reduced pairing for a set of points and asserts if the result is One
 // ∏ᵢ e(Pᵢ, Qᵢ) =? 1
 //
-// The non-residue witness hint is computed from the point coordinates, so the
-// asserted equation binds the result to the coordinates of Qᵢ.P even when Qᵢ
-// carries precomputed lines: lines not corresponding to Qᵢ.P make the circuit
-// unsatisfiable. When the lines are computed in-circuit (Qᵢ.Lines == nil),
-// Qᵢ is additionally asserted to be on the curve and in the correct subgroup;
-// with supplied lines no point checks are performed.
+// When the lines are computed in-circuit (Qᵢ.Lines == nil), Qᵢ is asserted to
+// be on the curve and in the correct subgroup. When Qᵢ carries precomputed
+// lines they must be compile-time constants ([ErrNonConstantLines]) and no
+// in-circuit point check is performed: the non-residue witness hint takes the
+// coordinates of Qᵢ.P as input but generates no constraints, so it does not
+// bind the lines to Qᵢ.P.
 //
 // This function doesn't check that the Pᵢ are in the correct subgroup.
 func (pr *Pairing) PairingCheck(P []*G1Affine, Q []*G2Affine) error {
@@ -167,13 +169,9 @@ func (pr *Pairing) PairingCheck(P []*G1Affine, Q []*G2Affine) error {
 		A11: *pr.curveF.Zero(),
 	}
 
-	lines := make([]lineEvaluations, nQ)
-	for i := range Q {
-		if Q[i].Lines == nil {
-			Qlines := pr.computeLines(&Q[i].P)
-			Q[i].Lines = &Qlines
-		}
-		lines[i] = *Q[i].Lines
+	lines, err := pr.prepareLines(Q)
+	if err != nil {
+		return err
 	}
 
 	res, err := pr.millerLoopLines(P, lines, residueWitnessInv, false)
@@ -400,9 +398,9 @@ var loopCounter = [64]int8{
 // When Qᵢ does not carry precomputed lines (Qᵢ.Lines == nil), the lines are
 // computed in-circuit and Qᵢ is asserted to be on the curve and in the
 // correct subgroup. When Qᵢ carries precomputed lines, they are used directly
-// and Qᵢ.P is never read: the point is not checked and the lines are not
-// constrained to correspond to it — precomputed lines are trusted input, see
-// [NewG2AffineFixedPlaceholder] for the security assumptions.
+// and Qᵢ.P is never read: nothing constrains the lines to correspond to it,
+// so they must be compile-time constants and witness-supplied lines are
+// rejected with [ErrNonConstantLines].
 //
 // This function does not check Pᵢ. See AssertIsOnG1.
 func (pr *Pairing) MillerLoop(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
@@ -412,16 +410,107 @@ func (pr *Pairing) MillerLoop(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 	if n == 0 || n != len(Q) {
 		return nil, errors.New("invalid inputs sizes")
 	}
-	lines := make([]lineEvaluations, len(Q))
-	for i := range Q {
-		if Q[i].Lines == nil {
-			Qlines := pr.computeLines(&Q[i].P)
-			Q[i].Lines = &Qlines
-		}
-		lines[i] = *Q[i].Lines
+	lines, err := pr.prepareLines(Q)
+	if err != nil {
+		return nil, err
 	}
 	return pr.millerLoopLines(P, lines, nil, true)
 
+}
+
+// ErrNonConstantLines is returned by the pairing methods when a G2 input
+// carries precomputed line evaluations (G2Affine.Lines) that are not
+// compile-time constants.
+//
+// Precomputed lines encode the whole Miller ladder of the point and are
+// consumed directly by the Miller loop; nothing in the constraint system ties
+// them back to G2Affine.P, and verifying that they do would cost as much as
+// recomputing them. Caller-supplied lines are therefore only safe when the
+// circuit author fixes them at compile time (a hardcoded verifying key or
+// SRS, e.g. a field tagged `gnark:"-"` or a [NewG2AffineFixed] value built
+// inside Define). Lines coming from the witness are under the prover's
+// control and are rejected.
+//
+// To pair a prover-supplied G2 point, assign it with [NewG2Affine] (no
+// lines) so that the lines are computed in-circuit from the constrained
+// coordinates, which also asserts the point is on the twist and in G2.
+var ErrNonConstantLines = errors.New("precomputed G2 line evaluations are not compile-time constants; use NewG2Affine so that the lines are computed in-circuit")
+
+// tracksConstants reports whether the builder can identify compile-time
+// constants at all. The test engine deliberately answers "not a constant" for
+// every value so that circuits cannot take constant-folding shortcuts; there
+// we cannot tell a trusted precomputation from a prover-supplied one and fall
+// back to recomputing the lines in-circuit, which is always sound.
+func (pr *Pairing) tracksConstants() bool {
+	_, ok := pr.api.Compiler().ConstantValue(0)
+	return ok
+}
+
+// assertConstantLines returns [ErrNonConstantLines] unless every coordinate
+// of every supplied line evaluation is a compile-time constant.
+//
+// An [emulated.Element] that was never initialised (no limbs and no witness
+// value) recomposes to the constant zero, so an all-zero set of lines -- e.g.
+// a [NewG2AffineFixedPlaceholder] value built inside Define instead of being
+// used as a circuit field -- would pass a purely per-coordinate test. Real
+// precomputations always have at least one non-zero coordinate, so such a set
+// is rejected as well.
+func (pr *Pairing) assertConstantLines(lines *lineEvaluations) error {
+	var nonZero bool
+	for i := range lines {
+		for j := range lines[i] {
+			l := lines[i][j]
+			if l == nil {
+				// not every slot of the ladder carries a line
+				continue
+			}
+			for _, e := range [...]*baseEl{&l.R0.A0, &l.R0.A1, &l.R1.A0, &l.R1.A1} {
+				c, ok := pr.curveF.ConstantValue(e)
+				if !ok {
+					return ErrNonConstantLines
+				}
+				nonZero = nonZero || c.Sign() != 0
+			}
+		}
+	}
+	if !nonZero {
+		return ErrNonConstantLines
+	}
+	return nil
+}
+
+// prepareLines returns the line evaluations to feed to the Miller loop for
+// every Qi. When Qi carries no lines they are computed in-circuit (which also
+// asserts Qi.P is on the twist and in G2); when it does, they must be
+// compile-time constants, see [ErrNonConstantLines].
+func (pr *Pairing) prepareLines(Q []*G2Affine) ([]lineEvaluations, error) {
+	tracksConstants := pr.tracksConstants()
+	lines := make([]lineEvaluations, len(Q))
+	for i := range Q {
+		if Q[i].Lines != nil && tracksConstants {
+			if err := pr.assertConstantLines(Q[i].Lines); err != nil {
+				return nil, fmt.Errorf("G2 input %d: %w", i, err)
+			}
+			lines[i] = *Q[i].Lines
+			continue
+		}
+		// Cache the in-circuit computation per Pairing instance rather than
+		// writing it back into Q[i].Lines: the computed lines hold wires of
+		// the current builder, and caching them on the caller's circuit
+		// struct would leak them into a later compilation of the same
+		// circuit value.
+		if cached, ok := pr.computedLines[Q[i]]; ok {
+			lines[i] = *cached
+			continue
+		}
+		Qlines := pr.computeLines(&Q[i].P)
+		if pr.computedLines == nil {
+			pr.computedLines = make(map[*G2Affine]*lineEvaluations)
+		}
+		pr.computedLines[Q[i]] = &Qlines
+		lines[i] = Qlines
+	}
+	return lines, nil
 }
 
 // millerLoopLines computes the multi-Miller loop from points in G1 and precomputed lines in G2
@@ -853,8 +942,9 @@ func (pr *Pairing) AssertMillerLoopAndFinalExpIsOne(P *G1Affine, Q *G2Affine, pr
 // This proves only the product ∏ e(Pᵢ,Qᵢ) · previous == 1, not the
 // individual pairings.
 //
-// When Qᵢ.Lines is supplied, the precomputed lines are used directly and are
-// not constrained to correspond to Qᵢ.P; they are trusted input.
+// When Qᵢ.Lines is supplied, the precomputed lines are used directly and
+// nothing constrains them to correspond to Qᵢ.P, so they must be compile-time
+// constants — see [ErrNonConstantLines].
 //
 // It returns an error if P and Q are empty or have different lengths.
 //
@@ -925,13 +1015,9 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P []*G1Affine, Q []*G2Affine, pre
 		A11: *pr.curveF.Zero(),
 	}
 
-	lines := make([]lineEvaluations, nQ)
-	for i := range Q {
-		if Q[i].Lines == nil {
-			Qlines := pr.computeLines(&Q[i].P)
-			Q[i].Lines = &Qlines
-		}
-		lines[i] = *Q[i].Lines
+	lines, err := pr.prepareLines(Q)
+	if err != nil {
+		return nil, err
 	}
 
 	res, err := pr.millerLoopLines(P, lines, residueWitnessInv, false)
