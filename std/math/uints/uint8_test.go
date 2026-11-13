@@ -3,9 +3,12 @@ package uints
 import (
 	"fmt"
 	"math/bits"
+	"strings"
 	"testing"
 
+	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/test"
 )
 
@@ -41,6 +44,15 @@ func TestLeftRotation(t *testing.T) {
 	assert.CheckCircuit(&lrotCirc{Shift: -16}, test.WithValidAssignment(&lrotCirc{In: NewU32(0x12345678), Shift: -16, Out: NewU32(bits.RotateLeft32(0x12345678, -16))}))
 }
 
+func TestLeftRotationOutOfRange(t *testing.T) {
+	for _, shift := range []int{32, 40, -32, -40} {
+		_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &lrotCirc{Shift: shift})
+		if err == nil || !strings.Contains(err.Error(), "out of range") {
+			t.Errorf("Lrot(%d): expected an out of range error, got %v", shift, err)
+		}
+	}
+}
+
 type rshiftCircuit struct {
 	In, Expected U32
 	Shift        int
@@ -62,6 +74,9 @@ func TestRshift(t *testing.T) {
 	assert.CheckCircuit(&rshiftCircuit{Shift: 12}, test.WithValidAssignment(&rshiftCircuit{Shift: 12, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 12)}))
 	assert.CheckCircuit(&rshiftCircuit{Shift: 3}, test.WithValidAssignment(&rshiftCircuit{Shift: 3, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 3)}))
 	assert.CheckCircuit(&rshiftCircuit{Shift: 11}, test.WithValidAssignment(&rshiftCircuit{Shift: 11, In: NewU32(0x12345678), Expected: NewU32(0x12345678 >> 11)}))
+	// shifts by the full width or more
+	assert.CheckCircuit(&rshiftCircuit{Shift: 32}, test.WithValidAssignment(&rshiftCircuit{Shift: 32, In: NewU32(0x12345678), Expected: NewU32(0)}))
+	assert.CheckCircuit(&rshiftCircuit{Shift: 40}, test.WithValidAssignment(&rshiftCircuit{Shift: 40, In: NewU32(0x12345678), Expected: NewU32(0)}))
 }
 
 type valueOfCircuit[T Long] struct {
