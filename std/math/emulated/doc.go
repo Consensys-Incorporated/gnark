@@ -207,5 +207,22 @@ passed as an argument to the operation.
 The type parameter for the [Field] should be sufficiently big to allow to fit
 the inputs and the modulus. Recommended to use predefined [emparams.Mod1e512] or
 [emparams.Mod1e4096].
+
+# Debugging failing assertions
+
+The multiplication checks (including the ones used for equality checking) are
+not performed where the operations are called, but all together in a deferred
+callback once the circuit is defined. This allows to share the random
+challenge between all the checks, but it also means that the constraint which
+fails for an invalid witness is created in the deferred callback and not in the
+circuit definition.
+
+When the circuit is compiled with the debug build tag (go build -tags debug),
+the package records the call stack of every operation which creates a deferred
+check. The error of a failing check (both in the test engine and when solving a
+compiled constraint system) then points to the place in the circuit definition
+where the failing operation, for example [Field.AssertIsEqual], was called, in
+the same way as for the native API. Without the debug build tag the call stack
+is not recorded and there is no overhead.
 */
 package emulated
