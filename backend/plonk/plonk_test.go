@@ -211,13 +211,13 @@ func BenchmarkProver(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			pk, _, err := plonk.Setup(ccs, srs, srsLagrange)
+			pk, _, err := benchSetup(ccs, srs, srsLagrange)
 			if err != nil {
 				b.Fatal(err)
 			}
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_, _ = plonk.Prove(ccs, pk, fullWitness)
+				_, _ = benchProve(ccs, pk, fullWitness)
 			}
 		})
 	}
