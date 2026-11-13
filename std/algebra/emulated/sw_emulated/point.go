@@ -105,19 +105,22 @@ type AffinePoint[Base emulated.FieldParams] struct {
 
 // MarshalScalar marshals the scalar into bits. Compatible with scalar
 // marshalling in gnark-crypto.
+//
+// The result is always canonical: the returned bits are the big-endian
+// encoding of the unique integer in [0, r) congruent to s. This is required
+// because the marshalling methods exist to feed Fiat-Shamir transcripts, where
+// several accepted encodings of the same value would let the prover grind the
+// challenge and would diverge from the out-of-circuit verifier.
+//
+// The variadic options are parsed for validity but do not change the result;
+// [algopts.WithCanonicalBitRepresentation] is now the (only) behaviour.
 func (c *Curve[B, S]) MarshalScalar(s emulated.Element[S], opts ...algopts.AlgebraOption) []frontend.Variable {
-	cfg, err := algopts.NewConfig(opts...)
-	if err != nil {
+	if _, err := algopts.NewConfig(opts...); err != nil {
 		panic(fmt.Sprintf("parse opts: %v", err))
 	}
 	var fr S
 	nbBits := 8 * ((fr.Modulus().BitLen() + 7) / 8)
-	var sReduced *emulated.Element[S]
-	if cfg.ToBitsCanonical {
-		sReduced = c.scalarApi.ReduceStrict(&s)
-	} else {
-		sReduced = c.scalarApi.Reduce(&s)
-	}
+	sReduced := c.scalarApi.ReduceStrict(&s)
 	res := c.scalarApi.ToBits(sReduced)[:nbBits]
 	slices.Reverse(res)
 	return res
@@ -125,21 +128,17 @@ func (c *Curve[B, S]) MarshalScalar(s emulated.Element[S], opts ...algopts.Algeb
 
 // MarshalG1 marshals the affine point into bits. The output is compatible with
 // the point marshalling in gnark-crypto.
+//
+// As for [Curve.MarshalScalar], the coordinates are always reduced to their
+// canonical representative before being decomposed into bits.
 func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption) []frontend.Variable {
-	cfg, err := algopts.NewConfig(opts...)
-	if err != nil {
+	if _, err := algopts.NewConfig(opts...); err != nil {
 		panic(fmt.Sprintf("parse opts: %v", err))
 	}
 	var fp B
 	nbBits := 8 * ((fp.Modulus().BitLen() + 7) / 8)
-	var x, y *emulated.Element[B]
-	if cfg.ToBitsCanonical {
-		x = c.baseApi.ReduceStrict(&p.X)
-		y = c.baseApi.ReduceStrict(&p.Y)
-	} else {
-		x = c.baseApi.Reduce(&p.X)
-		y = c.baseApi.Reduce(&p.Y)
-	}
+	x := c.baseApi.ReduceStrict(&p.X)
+	y := c.baseApi.ReduceStrict(&p.Y)
 	bx := c.baseApi.ToBits(x)[:nbBits]
 	by := c.baseApi.ToBits(y)[:nbBits]
 	slices.Reverse(bx)
