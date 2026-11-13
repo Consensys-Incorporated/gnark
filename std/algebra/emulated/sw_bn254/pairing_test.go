@@ -14,6 +14,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
+	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/test"
 )
 
@@ -911,4 +912,87 @@ func TestFinalExponentiationIsOneRejectsZeroWitness(t *testing.T) {
 	err = test.IsSolved(&FinalExponentiationIsOne{}, &witness, ecc.BN254.ScalarField(),
 		test.WithReplacementHint(solver.GetHintID(finalExpHint), zeroHintOutputs))
 	assert.Error(err, "all-zero residue witness must be rejected by the invertibility anchor")
+}
+
+// forgedMillerLoopAndCheckFinalExpHint is a malicious replacement for
+// [millerLoopAndCheckFinalExpHint]. It returns residueWitness = 1 (which is
+// invertible, so it passes the only value constraint the circuit imposes on
+// it) and cubicNonResiduePower = 0 (which has the required 𝔽p⁶ shape, the only
+// constraint the circuit imposes on it). The resulting t2 is 0, hence != 1,
+// hence IsMillerLoopAndFinalExpOne returns 0 whatever the real pairing product
+// is.
+func forgedMillerLoopAndCheckFinalExpHint(_ *big.Int, nativeInputs, nativeOutputs []*big.Int) error {
+	return emulated.UnwrapHint(nativeInputs, nativeOutputs,
+		func(_ *big.Int, _, outputs []*big.Int) error {
+			for i := range outputs {
+				outputs[i].SetInt64(0)
+			}
+			// residueWitness = 1 in tower coordinates
+			outputs[0].SetInt64(1)
+			return nil
+		})
+}
+
+// millerLoopSuccessWitness returns (previous, P, Q) such that the multi-pairing
+// e(p,q)·e(-p,q) is 1, with previous the Miller loop of the first pair in the
+// accumulator convention used by [Pairing.MillerLoopAndMul].
+func millerLoopSuccessWitness(t *testing.T) (bn254.GT, bn254.G1Affine, bn254.G2Affine) {
+	t.Helper()
+	p, q := randomG1G2Affines()
+	var np bn254.G1Affine
+	np.Neg(&p)
+	ok, err := bn254.PairingCheck([]bn254.G1Affine{p, np}, []bn254.G2Affine{q, q})
+	if err != nil || !ok {
+		t.Fatalf("expected a valid pairing check: %v %v", ok, err)
+	}
+	lines := bn254.PrecomputeLines(q)
+	mlres, err := bn254.MillerLoopFixedQ(
+		[]bn254.G1Affine{p},
+		[][2][len(bn254.LoopCounter)]bn254.LineEvaluationAff{lines},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mlres, np, q
+}
+
+// TestIsMillerLoopAndFinalExpOneIsOneSided is a regression test for
+// GHSA-76v9-555f-fpfh. It pins down the documented limitation of
+// [Pairing.IsMillerLoopAndFinalExpOne]: a prover that replaces the
+// residue-witness hint can force the returned bit to 0 even though the
+// pairing product is in fact 1, and the constraint system stays satisfiable.
+//
+// The test engine always runs the honest hint, so the forgery is only visible
+// against a compiled constraint system.
+func TestIsMillerLoopAndFinalExpOneIsOneSided(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	mlres, np, q := millerLoopSuccessWitness(t)
+
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &IsMillerLoopAndFinalExpCircuit{})
+	assert.NoError(err)
+
+	// the honest prover must prove success
+	honest, err := frontend.NewWitness(&IsMillerLoopAndFinalExpCircuit{
+		Prev:     NewGTEl(mlres),
+		P:        NewG1Affine(np),
+		Q:        NewG2Affine(q),
+		Expected: 1,
+	}, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	assert.NoError(ccs.IsSolved(honest), "honest witness must solve with Expected = 1")
+
+	// a malicious prover claims failure for the very same inputs
+	malicious, err := frontend.NewWitness(&IsMillerLoopAndFinalExpCircuit{
+		Prev:     NewGTEl(mlres),
+		P:        NewG1Affine(np),
+		Q:        NewG2Affine(q),
+		Expected: 0,
+	}, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	assert.Error(ccs.IsSolved(malicious), "the honest hint cannot prove Expected = 0 here")
+
+	hintID := solver.GetHintID(millerLoopAndCheckFinalExpHint)
+	err = ccs.IsSolved(malicious, solver.OverrideHint(hintID, forgedMillerLoopAndCheckFinalExpHint))
+	assert.NoError(err, "IsMillerLoopAndFinalExpOne is one-sided: a forged residue witness forces the bit to 0")
 }

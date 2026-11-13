@@ -26,6 +26,11 @@ import (
 // See the methods [ECPairMillerLoopAndMul] and [ECPairMillerLoopAndFinalExpCheck] for the fixed circuits.
 // See the method [ECPairIsOnG2] for the check that Qᵢ are on G2.
 //
+// SECURITY: the bit returned by [ECPairMillerLoopAndFinalExpCheck] is
+// one-sided and must not be used to attest a pairing-check *failure*; see the
+// note on that method. [ECPair] itself is unaffected: it asserts the product
+// is 1 and never consumes the bit.
+//
 // [ALT_BN128_PAIRING_CHECK]: https://github.com/ethereum/execution-specs/blob/master/src/ethereum/cancun/vm/precompiled_contracts/alt_bn128.py
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
 func ECPair(api frontend.API, P []*sw_bn254.G1Affine, Q []*sw_bn254.G2Affine) {
@@ -90,6 +95,18 @@ func ECPairMillerLoopAndMul(api frontend.API, accumulator *sw_bn254.GTEl, P *sw_
 // ECPairMillerLoopAndFinalExpCheck implements the fixed circuit for a Miller
 // loop of fixed size 1 followed by a multiplication with an accumulator in
 // 𝔽p¹², and a check that the result corresponds to the expected result.
+//
+// SECURITY: the returned bit is one-sided. A return value of 1 proves the
+// product is 1. A return value of 0 proves NOTHING: the residue witness is
+// only constrained to be invertible, so a prover can always force 0. Do not
+// use this result to attest a pairing-check failure.
+//
+// In other words, this circuit only binds expectedIsSuccess == 1 to the
+// pairing product being 1. With expectedIsSuccess == 0 a malicious prover can
+// satisfy the circuit for *any* input, including one whose pairing product is
+// 1. Since `ecPairing` returning false is an observable EVM outcome, a caller
+// that trusts this bit can be made to attest a failure for a check that in
+// fact succeeds.
 func ECPairMillerLoopAndFinalExpCheck(api frontend.API, accumulator *sw_bn254.GTEl, P *sw_bn254.G1Affine, Q *sw_bn254.G2Affine, expectedIsSuccess frontend.Variable) error {
 	api.AssertIsBoolean(expectedIsSuccess)
 	pairing, err := sw_bn254.NewPairing(api)

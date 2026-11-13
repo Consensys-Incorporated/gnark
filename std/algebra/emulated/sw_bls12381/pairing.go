@@ -964,6 +964,21 @@ func (pr *Pairing) millerLoopAndFinalExpResult(P []*G1Affine, Q []*G2Affine, pre
 //
 // This method is needed for evmprecompiles/ecpair.
 //
+// SECURITY: the returned bit is one-sided. A return value of 1 proves the
+// product is 1. A return value of 0 proves NOTHING: the residue witness is
+// only constrained to be invertible, so a prover can always force 0. Do not
+// use this result to attest a pairing-check failure.
+//
+// Concretely, the residue witness and the scaling factor come from
+// [millerLoopAndCheckFinalExpHint]. The witness is constrained only to be
+// invertible and the scaling factor only to have the shape of an 𝔽p⁶ element;
+// neither is pinned to a value. A malicious prover that replaces the hint
+// (residue witness 1, scaling factor 0) makes the returned value 0 while the
+// product is in fact 1, and the circuit stays satisfiable. The converse is
+// impossible: a returned 1 does prove the product is 1.
+//
+// Use [Pairing.AssertMillerLoopAndFinalExpIsOne] when the product must be 1.
+//
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
 func (pr *Pairing) IsMillerLoopAndFinalExpOne(P *G1Affine, Q *G2Affine, previous *GTEl) frontend.Variable {
 	t2, err := pr.millerLoopAndFinalExpResult([]*G1Affine{P}, []*G2Affine{Q}, previous)

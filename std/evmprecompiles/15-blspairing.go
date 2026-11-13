@@ -23,8 +23,13 @@ import (
 // of the number of inputs.  We can extend this routine to handle a 2-by-2
 // logic but we prefer a minimal number of circuits (2).
 //
-// See the methods [ECPairMillerLoopAndMul] and [ECPairMillerLoopAndFinalExpCheck] for the fixed circuits.
+// See the methods [ECPairBLSMillerLoopAndMul] and [ECPairBLSMillerLoopAndFinalExpCheck] for the fixed circuits.
 // See the methods [ECPairBLSIsOnG1] and [ECPairBLSIsOnG2] for the check that Pᵢ and Qᵢ are on G1 and resp. G2.
+//
+// SECURITY: the bit returned by [ECPairBLSMillerLoopAndFinalExpCheck] is
+// one-sided and must not be used to attest a pairing-check *failure*; see the
+// note on that method. [ECPairBLS] itself is unaffected: it asserts the
+// product is 1 and never consumes the bit.
 //
 // [BLS12_PAIRING_CHECK]: https://eips.ethereum.org/EIPS/eip-2537
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
@@ -105,9 +110,21 @@ func ECPairBLSMillerLoopAndMul(api frontend.API, accumulator *sw_bls12381.GTEl, 
 	return nil
 }
 
-// ECPairMillerLoopAndFinalExpCheck implements the fixed circuit for a Miller
+// ECPairBLSMillerLoopAndFinalExpCheck implements the fixed circuit for a Miller
 // loop of fixed size 1 followed by a multiplication with an accumulator in
 // 𝔽p¹², and a check that the result corresponds to the expected result.
+//
+// SECURITY: the returned bit is one-sided. A return value of 1 proves the
+// product is 1. A return value of 0 proves NOTHING: the residue witness is
+// only constrained to be invertible, so a prover can always force 0. Do not
+// use this result to attest a pairing-check failure.
+//
+// In other words, this circuit only binds expectedIsSuccess == 1 to the
+// pairing product being 1. With expectedIsSuccess == 0 a malicious prover can
+// satisfy the circuit for *any* input, including one whose pairing product is
+// 1. Since the pairing-check precompile returning false is an observable EVM
+// outcome, a caller that trusts this bit can be made to attest a failure for a
+// check that in fact succeeds.
 func ECPairBLSMillerLoopAndFinalExpCheck(api frontend.API, accumulator *sw_bls12381.GTEl, P *sw_bls12381.G1Affine, Q *sw_bls12381.G2Affine, expectedIsSuccess frontend.Variable) error {
 	api.AssertIsBoolean(expectedIsSuccess)
 	pairing, err := sw_bls12381.NewPairing(api)
