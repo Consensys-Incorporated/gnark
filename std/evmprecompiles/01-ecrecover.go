@@ -17,10 +17,19 @@ import (
 // in the former case. To enforce this check, the strictRange variable should be
 // set to 1.
 //
+// The signature scalars must satisfy 0 < r, s < Fr (and additionally
+// s <= (Fr-1)/2 when strictRange is set). This is a precondition of the
+// gadget, not a failure mode: an (r, s) outside that range makes the circuit
+// unsatisfiable rather than returning the zero point. Callers that have to
+// account for out-of-range precompile calldata must therefore filter it before
+// calling ECRecover, exactly as they already had to for r, s >= Fr.
+//
 // The isFailure variable is set to 1 when the inputs are expected to be invalid
 // in the context of ECRecover. The failure cases are:
 //  1. The public key is zero.
 //  2. The value r^3 + 7 is not a quadratic residue.
+//
+// In both failure cases the returned point is exactly (0, 0).
 //
 // [ECRECOVER]: https://github.com/ethereum/execution-specs/blob/master/src/ethereum/cancun/vm/precompiled_contracts/ecrecover.py
 func ECRecover(api frontend.API, msg emulated.Element[emulated.Secp256k1Fr],
@@ -54,14 +63,24 @@ func ECRecover(api frontend.API, msg emulated.Element[emulated.Secp256k1Fr],
 	api.AssertIsBoolean(v)
 
 	// with the encoding we may have that r,s < 2*Fr (i.e. not r,s < Fr). Apply more thorough checks.
-	frField.AssertIsLessOrEqual(&r, frField.Modulus())
+	//
+	// The EVM requires 0 < r, s < Fr. [Field.AssertIsLessOrEqual] is inclusive,
+	// so we compare against Fr-1 and exclude zero separately. Both halves
+	// matter for soundness: Div(a, b) only constrains div*b == a, so an
+	// admitted r == 0 mod Fr (either r = 0 or r = Fr) together with
+	// msg == s == 0 mod Fr makes the constraints for u1 and u2 vacuous and lets
+	// the prover choose the recovered public key freely.
+	nMinusOne := new(big.Int).Sub(emfr.Modulus(), big.NewInt(1))
+	frField.AssertIsLessOrEqual(&r, frField.NewElement(nMinusOne))
+	api.AssertIsEqual(frField.IsZero(&r), 0)
 	// Ethereum Yellow Paper defines that the check for s should be more strict
 	// when checking transaction signatures (Appendix F). There we should check
 	// that s <= (Fr-1)/2
 	halfFr := new(big.Int).Sub(emfr.Modulus(), big.NewInt(1))
 	halfFr.Div(halfFr, big.NewInt(2))
-	bound := frField.Select(strictRange, frField.NewElement(halfFr), frField.Modulus())
+	bound := frField.Select(strictRange, frField.NewElement(halfFr), frField.NewElement(nMinusOne))
 	frField.AssertIsLessOrEqual(&s, bound)
+	api.AssertIsEqual(frField.IsZero(&s), 0)
 
 	// compute P, the public key
 	// we cannot directly use the field emulation hint calling wrappers as we work between two fields.
@@ -139,7 +158,13 @@ func ECRecover(api frontend.API, msg emulated.Element[emulated.Secp256k1Fr],
 	api.AssertIsEqual(isEqual, api.Sub(1, isQNRFailure))
 	// check that the result is zero if isFailure is true. This holds because in
 	// case of any failure the returned public key from hint is zero.
-	isZero := fpField.IsZero(&P.X)
+	//
+	// We have to pin both coordinates, not only P.X: in the QNR failure branch
+	// the equality assertion above is already discharged by xIsEqual == 0, so
+	// nothing else binds P.Y and the prover could return (0, y) for an
+	// arbitrary y. P is the return value of this gadget, so a caller deriving
+	// an address from X || Y would get a prover-chosen value.
+	isZero := api.Mul(fpField.IsZero(&P.X), fpField.IsZero(&P.Y))
 	api.AssertIsEqual(isZero, isFailure)
 	// when there was a QNR failure then the computed public key C is random. We
 	// only check for zero public key failure in case of no QNR failure.
