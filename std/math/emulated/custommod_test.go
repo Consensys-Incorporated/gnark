@@ -349,3 +349,69 @@ func TestModAddRejectsWideLimb(t *testing.T) {
 		assert.NoError(solveCircuit(t, circuit, assignment))
 	}, "honest")
 }
+
+type modMulCanonicalCircuit[T FieldParams] struct {
+	Modulus  Element[T] `gnark:",public"`
+	A        Element[T] `gnark:",public"`
+	B        Element[T] `gnark:",public"`
+	Expected Element[T] `gnark:",public"`
+}
+
+func (c *modMulCanonicalCircuit[T]) Define(api frontend.API) error {
+	f, err := NewField[T](api)
+	if err != nil {
+		return fmt.Errorf("new variable modulus: %w", err)
+	}
+	res := f.ModMulCanonical(&c.A, &c.B, &c.Modulus)
+	f.AssertIsEqual(&c.Expected, res)
+	return nil
+}
+
+func TestModMulCanonicalRejectsZeroModulus(t *testing.T) {
+	assert := test.NewAssert(t)
+	circuit := &modMulCanonicalCircuit[emparams.Mod1e256]{}
+
+	assert.Run(func(assert *test.Assert) {
+		assignment := &modMulCanonicalCircuit[emparams.Mod1e256]{
+			Modulus:  ValueOf[emparams.Mod1e256](0),
+			A:        ValueOf[emparams.Mod1e256](3),
+			B:        ValueOf[emparams.Mod1e256](5),
+			Expected: ValueOf[emparams.Mod1e256](15),
+		}
+		assert.Error(solveCircuit(t, circuit, assignment), "zero modulus must be rejected")
+	}, "zero modulus")
+
+	assert.Run(func(assert *test.Assert) {
+		assignment := &modMulCanonicalCircuit[emparams.Mod1e256]{
+			Modulus:  ValueOf[emparams.Mod1e256](7),
+			A:        ValueOf[emparams.Mod1e256](3),
+			B:        ValueOf[emparams.Mod1e256](5),
+			Expected: ValueOf[emparams.Mod1e256](1),
+		}
+		assert.NoError(solveCircuit(t, circuit, assignment))
+	}, "modulus 7")
+}
+
+type constZeroModulusCircuit[T FieldParams] struct {
+	A Element[T]
+	B Element[T]
+}
+
+func (c *constZeroModulusCircuit[T]) Define(api frontend.API) error {
+	f, err := NewField[T](api)
+	if err != nil {
+		return fmt.Errorf("new variable modulus: %w", err)
+	}
+	zero := ValueOf[T](0)
+	f.ModMul(&c.A, &c.B, &zero)
+	return nil
+}
+
+func TestConstantZeroModulusRejected(t *testing.T) {
+	assert := test.NewAssert(t)
+	// checkModulus panics on a constant zero modulus; the frontend recovers the
+	// panic into a compile error.
+	_, err := frontend.Compile(bn254ScalarField(), r1cs.NewBuilder, &constZeroModulusCircuit[emparams.Mod1e256]{})
+	assert.Error(err)
+	assert.Contains(err.Error(), "variable modulus must be non-zero")
+}
