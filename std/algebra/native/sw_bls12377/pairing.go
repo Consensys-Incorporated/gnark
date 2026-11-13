@@ -533,6 +533,15 @@ func divE2WithZeroGuard(api frontend.API, n, d fields_bls12377.E2) fields_bls123
 // invYWithInfinityGuard returns 1/y, or 0 when y is 0. The G1 point at infinity
 // is represented as (0,0) and setting yInv to 0 makes its line evaluations
 // equal to 1, so the point doesn't contribute to the Miller loop.
+//
+// SECURITY: only the y coordinate is inspected, so this makes y == 0 the
+// in-circuit encoding of the point at infinity for ANY x. With yInv = 0 (and
+// hence xNegOverY = 0) every line evaluates to 1, so any (x, 0) — on the curve
+// or not — is a free identity element for the Miller loop. Callers MUST assert
+// that each G1 input is on the curve (and in G1) before relying on the result;
+// see [Pairing.AssertIsOnG1]. The G1 inputs are prover-supplied in every
+// recursion verifier, so omitting that check is a total soundness break, not a
+// hardening nicety.
 func invYWithInfinityGuard(api frontend.API, y frontend.Variable) frontend.Variable {
 	isYZero := api.IsZero(y)
 	y = api.Select(isYZero, 1, y)

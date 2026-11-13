@@ -617,10 +617,37 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) IsValidProof(vk VerifyingKey[G1El, G2El
 	kSum = v.curve.AddUnified(kSum, &vk.G1.K[0])
 
 	for i := range proof.Commitments {
+		// proof.Commitments[i] is asserted to be in G1 by AssertCommitment
+		// above, so this is a chord between two genuine G1 points. It is still
+		// an incomplete addition: hitting kSum.X == Commitments[i].X leaves the
+		// slope unconstrained. Reaching that requires inverting the
+		// commitment's Fiat-Shamir hash (the commitment is bound into the
+		// challenge that defines kSum), so it is not exploitable. A guarded
+		// addition would close it, but algebra.Curve exposes only Add and
+		// AddUnified; adding AddGuarded means extending the interface and all
+		// four backends, which is out of scope for this fix.
 		kSum = v.curve.Add(kSum, &proof.Commitments[i].G1El)
 	}
 
-	if opt.forceSubgroupCheck {
+	// Ar, Krs and Bs are prover-supplied. They must be validated before being
+	// paired: the in-circuit Miller loop takes y == 0 to mean the point at
+	// infinity, so an unchecked (x, 0) is a free identity element, and a point
+	// outside the prime-order subgroup pairs to the same value as its
+	// in-subgroup part (the pairing is a homomorphism into µ_r and the
+	// cofactor torsion has order coprime to r). The native verifier checks all
+	// three unconditionally; so do we.
+	//
+	// AssertIsOnG2(&proof.Bs) is redundant on sw_bn254 and sw_bls12381, whose
+	// computeLines asserts the twist equation and the G2 subgroup while
+	// building the lines in-circuit. It is NOT redundant on native
+	// sw_bls12377 (computeLines has no assertion) nor on sw_bw6761 (which
+	// documents the gap on Pairing.Pair), and those are exactly the
+	// deployed recursion curves. Keeping it unconditional for all four trades
+	// a redundant check on two curves for not having to make soundness depend
+	// on which pairing backend the type parameters resolve to — and on
+	// whether proof.Bs happens to carry precomputed lines, in which case the
+	// in-circuit assertion is skipped even on BN254/BLS12-381.
+	if !opt.noSubgroupCheck {
 		v.pairing.AssertIsOnG1(&proof.Ar)
 		v.pairing.AssertIsOnG1(&proof.Krs)
 		v.pairing.AssertIsOnG2(&proof.Bs)

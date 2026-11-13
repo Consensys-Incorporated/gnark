@@ -16,6 +16,7 @@ import (
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra"
+	"github.com/consensys/gnark/std/algebra/algopts"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bls12381"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bn254"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_bw6761"
@@ -686,6 +687,35 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) PrepareVerification(vk VerifyingKey[FR,
 		return nil, nil, nil, fmt.Errorf("claimed values number mismatch: expected %d, got %d", 6+len(vk.Qcp), len(proof.BatchedProof.ClaimedValues))
 	}
 
+	cfg, err := newCfg(opts...)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("apply options: %w", err)
+	}
+
+	// Validate the prover-supplied G1 points before they are absorbed into the
+	// transcript. The native verifier (backend/plonk/.../verify.go) subgroup-
+	// checks nine proof points; Z, BatchedProof.Quotient and
+	// ZShiftedOpening.Quotient are covered downstream by
+	// kzg.BatchVerifyMultiPoints, and the remaining seven are checked here.
+	//
+	// Without these, LRO, H and the BSB22 commitments reach only the folding
+	// MSMs, which assert nothing about their inputs on BN254 and on native
+	// BLS12-377. The in-circuit group law is then evaluated on points that are
+	// not group elements, which invalidates the extraction argument PLONK
+	// soundness rests on, and leaves the incomplete `Add` of H[0] below
+	// operating on unconstrained coordinates.
+	if !cfg.noSubgroupCheck {
+		for i := range proof.LRO {
+			v.pairing.AssertIsOnG1(&proof.LRO[i].G1El)
+		}
+		for i := range proof.H {
+			v.pairing.AssertIsOnG1(&proof.H[i].G1El)
+		}
+		for i := range proof.Bsb22Commitments {
+			v.pairing.AssertIsOnG1(&proof.Bsb22Commitments[i].G1El)
+		}
+	}
+
 	fs, err := recursion.NewTranscript(v.api, fr.Modulus(), []string{"gamma", "beta", "alpha", "zeta"})
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("init new transcript: %w", err)
@@ -863,7 +893,9 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) PrepareVerification(vk VerifyingKey[FR,
 	zetaPowerNPlusTwoSquare := v.scalarApi.Mul(zetaPowerNPlusTwo, zetaPowerNPlusTwo) // ζ²⁽ⁿ⁺²⁾
 
 	// [H₀] + ζⁿ⁺²*[H₁] + ζ²⁽ⁿ⁺²⁾*[H₂]
-	foldedH, err := v.curve.MultiScalarMul([]*G1El{&proof.H[1].G1El, &proof.H[2].G1El}, []*emulated.Element[FR]{zetaPowerNPlusTwo, zetaPowerNPlusTwoSquare})
+	// H[1] and H[2] were asserted to be in G1 above (or the caller opted out),
+	// so the MSM does not need to re-check their membership.
+	foldedH, err := v.curve.MultiScalarMul([]*G1El{&proof.H[1].G1El, &proof.H[2].G1El}, []*emulated.Element[FR]{zetaPowerNPlusTwo, zetaPowerNPlusTwoSquare}, algopts.WithNoSubgroupMembershipCheck())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("folded H: %w", err)
 	}
@@ -889,7 +921,10 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) PrepareVerification(vk VerifyingKey[FR,
 		zhZeta, // third part
 	)
 
-	linearizedPolynomialDigest, err := v.curve.MultiScalarMul(points, scalars)
+	// The inputs are the BSB22 commitments (asserted above), trusted verifying
+	// key points, proof.Z (asserted by kzg.BatchVerifyMultiPoints) and the
+	// derived foldedH, so the MSM does not need to re-check membership.
+	linearizedPolynomialDigest, err := v.curve.MultiScalarMul(points, scalars, algopts.WithNoSubgroupMembershipCheck())
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("linearized polynomial digest MSM: %w", err)
 	}
