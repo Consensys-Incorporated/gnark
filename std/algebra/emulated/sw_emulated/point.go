@@ -8,7 +8,6 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/algopts"
 	"github.com/consensys/gnark/std/math/emulated"
-	"github.com/consensys/gnark/std/math/emulated/emparams"
 )
 
 // New returns a new [Curve] instance over the base field Base and scalar field
@@ -136,7 +135,8 @@ func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption)
 		panic(fmt.Sprintf("parse opts: %v", err))
 	}
 	var fp B
-	nbBits := 8 * ((fp.Modulus().BitLen() + 7) / 8)
+	bitLen := fp.Modulus().BitLen()
+	nbBits := 8 * ((bitLen + 7) / 8)
 	x := c.baseApi.ReduceStrict(&p.X)
 	y := c.baseApi.ReduceStrict(&p.Y)
 	bx := c.baseApi.ToBits(x)[:nbBits]
@@ -146,9 +146,11 @@ func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption)
 	res := make([]frontend.Variable, 2*nbBits)
 	copy(res, bx)
 	copy(res[len(bx):], by)
-	switch any(fp).(type) {
-	case emparams.Secp256k1Fp:
-		// in gnark-crypto we do not store the infinity bit for secp256k1 points
+	if spareBits[B]() < 2 {
+		// The leading byte of the encoding is fully used by X, there is no
+		// room for a flag. This is the case for secp256k1, P-256 and P-384,
+		// for which gnark-crypto (and SEC1) do not store an infinity flag
+		// either. Writing res[1] here would silently overwrite a bit of X.
 		return res
 	}
 	xZ := c.baseApi.IsZero(x)
@@ -161,11 +163,25 @@ func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption)
 	return res
 }
 
-// different curves have different marshalling for zero point
-func (c *Curve[B, S]) marshalZeroG1() frontend.Variable {
+// spareBits returns the number of unused high-order bits in the leading byte
+// of the big-endian, byte-aligned encoding of an element of B. Note that the
+// spare bits are counted from the *byte* boundary -- which is what the
+// encoding is padded to -- and not from the limb boundary.
+func spareBits[B emulated.FieldParams]() int {
 	var fp B
-	unusedBits := 64 - (fp.Modulus().BitLen() % 64)
-	if unusedBits >= 3 {
+	bitLen := fp.Modulus().BitLen()
+	return 8*((bitLen+7)/8) - bitLen
+}
+
+// marshalZeroG1 returns the value of the infinity flag bit (res[1]) used by
+// gnark-crypto for the uncompressed encoding of the point at infinity. Curves
+// with at least three spare bits in the leading byte carry an
+// "uncompressed infinity" mask (e.g. 0b010<<5 for BLS12-381, which is exactly
+// res[1]); curves with only two spare bits (BN254) use a 2-bit mask with no
+// uncompressed infinity flag. Callers must not use this when there are fewer
+// than two spare bits -- there is no flag to write at all then.
+func (c *Curve[B, S]) marshalZeroG1() frontend.Variable {
+	if spareBits[B]() >= 3 {
 		return 1
 	}
 	return 0
