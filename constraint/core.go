@@ -8,11 +8,8 @@ import (
 
 	"github.com/blang/semver/v4"
 	"github.com/consensys/gnark"
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/debug"
-	"github.com/consensys/gnark/internal/smallfields"
-	"github.com/consensys/gnark/internal/utils"
 	"github.com/consensys/gnark/logger"
 	"github.com/consensys/gnark/profile"
 )
@@ -200,8 +197,11 @@ func (system *System) CheckSerializationHeader() error {
 	if !ok {
 		return fmt.Errorf("when parsing serialized modulus: %s", system.ScalarField)
 	}
-	curveID := utils.FieldToCurve(scalarField)
-	if curveID == ecc.UNKNOWN && !(smallfields.IsSmallField(scalarField)) {
+	// accept every modulus the builders can compile over. Grumpkin is not in
+	// gnark.Curves() (it has no proving backend), so FieldToCurve does not
+	// recognize it, but its constraint systems can still be compiled, solved
+	// and serialized.
+	if !FitsElement[U64](scalarField) && !FitsElement[U64W1](scalarField) && !FitsElement[U32](scalarField) {
 		return fmt.Errorf("unsupported scalar field %s", scalarField.Text(16))
 	}
 	system.q = new(big.Int).Set(scalarField)
