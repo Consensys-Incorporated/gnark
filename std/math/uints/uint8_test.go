@@ -5,7 +5,9 @@ import (
 	"math/bits"
 	"testing"
 
+	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/test"
 )
 
@@ -39,6 +41,50 @@ func TestLeftRotation(t *testing.T) {
 	assert.CheckCircuit(&lrotCirc{Shift: -3}, test.WithValidAssignment(&lrotCirc{In: NewU32(0x12345678), Shift: -3, Out: NewU32(bits.RotateLeft32(0x12345678, -3))}))
 	assert.CheckCircuit(&lrotCirc{Shift: -11}, test.WithValidAssignment(&lrotCirc{In: NewU32(0x12345678), Shift: -11, Out: NewU32(bits.RotateLeft32(0x12345678, -11))}))
 	assert.CheckCircuit(&lrotCirc{Shift: -16}, test.WithValidAssignment(&lrotCirc{In: NewU32(0x12345678), Shift: -16, Out: NewU32(bits.RotateLeft32(0x12345678, -16))}))
+}
+
+func TestLeftRotationZero(t *testing.T) {
+	assert := test.NewAssert(t)
+	assert.CheckCircuit(&lrotCirc{Shift: 0}, test.WithValidAssignment(&lrotCirc{In: NewU32(0x12345678), Shift: 0, Out: NewU32(0x12345678)}))
+}
+
+func TestRotationOutOfRange(t *testing.T) {
+	assert := test.NewAssert(t)
+	for _, shift := range []int{32, 33, 64, -32, -33} {
+		_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &lrotCirc{Shift: shift})
+		assert.Error(err, "Lrot by %d should be rejected", shift)
+		_, err = frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &rrotCirc{Shift: shift})
+		assert.Error(err, "Rrot by %d should be rejected", shift)
+	}
+	for _, shift := range []int{32, 40, -1} {
+		_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &rshiftCircuit{Shift: shift})
+		assert.Error(err, "Rshift by %d should be rejected", shift)
+	}
+}
+
+type rrotCirc struct {
+	In    U32
+	Out   U32
+	Shift int
+}
+
+func (c *rrotCirc) Define(api frontend.API) error {
+	uapi, err := New[U32](api)
+	if err != nil {
+		return err
+	}
+	res := uapi.Rrot(c.In, c.Shift)
+	uapi.AssertEq(c.Out, res)
+	return nil
+}
+
+func TestRightRotation(t *testing.T) {
+	assert := test.NewAssert(t)
+	for _, shift := range []int{0, 3, 8, 11, 16, 31, -4, -17} {
+		assert.Run(func(assert *test.Assert) {
+			assert.CheckCircuit(&rrotCirc{Shift: shift}, test.WithValidAssignment(&rrotCirc{In: NewU32(0x12345678), Shift: shift, Out: NewU32(bits.RotateLeft32(0x12345678, -shift))}))
+		}, fmt.Sprintf("shift=%d", shift))
+	}
 }
 
 type rshiftCircuit struct {
