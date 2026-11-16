@@ -160,11 +160,14 @@ func WithProverOpts(proverOpts ...backend.ProverOption) TestingOption {
 }
 
 // WithSolverOpts is a testing option which uses the given solverOpts when
-// calling constraint system solver.
+// calling constraint system solver. Options from repeated calls accumulate.
 func WithSolverOpts(solverOpts ...solver.Option) TestingOption {
 	return func(opt *testingConfig) error {
-		opt.proverOpts = append(opt.proverOpts, backend.WithSolverOptions(solverOpts...))
-		opt.solverOpts = solverOpts
+		opt.solverOpts = append(opt.solverOpts, solverOpts...)
+		// backend.WithSolverOptions replaces the prover's solver options, so pass the
+		// accumulated list; the last one applied wins.
+		all := append([]solver.Option(nil), opt.solverOpts...)
+		opt.proverOpts = append(opt.proverOpts, backend.WithSolverOptions(all...))
 		return nil
 	}
 }

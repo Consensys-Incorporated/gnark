@@ -14,6 +14,11 @@ func optionsTestHint(_ *big.Int, in []*big.Int, out []*big.Int) error {
 	return nil
 }
 
+func optionsTestHintB(_ *big.Int, in []*big.Int, out []*big.Int) error {
+	out[0].Set(in[0])
+	return nil
+}
+
 func TestProverOptsKeepSolverOpts(t *testing.T) {
 	for name, opts := range map[string][]TestingOption{
 		"solver_then_prover": {
@@ -43,5 +48,28 @@ func TestProverOptsKeepSolverOpts(t *testing.T) {
 				t.Fatal("expected the prover hash to field function to be set")
 			}
 		})
+	}
+}
+
+func TestSolverOptsAccumulate(t *testing.T) {
+	var opt testingConfig
+	for _, o := range []TestingOption{
+		WithSolverOpts(solver.WithHints(optionsTestHint)),
+		WithProverOpts(backend.WithProverHashToFieldFunction(sha256.New())),
+		WithSolverOpts(solver.WithHints(optionsTestHintB)),
+	} {
+		if err := o(&opt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(opt.solverOpts) != 2 {
+		t.Fatalf("expected both solver options for the solver, got %d", len(opt.solverOpts))
+	}
+	cfg, err := backend.NewProverConfig(opt.proverOpts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.SolverOpts) != 2 {
+		t.Fatalf("expected both solver options in the prover config, got %d", len(cfg.SolverOpts))
 	}
 }
