@@ -334,6 +334,41 @@ func (r *resources) eqAcc(e, m polynomial.MultiLin, q []fr.Element) {
 	}, 512).Wait()
 }
 
+// fwdDiffIteratorLinear steps a multilinear table over a block of instance pairs. The table is linear in
+// Xⱼ, so its values at Xⱼ = 1, 2, 3, ... are those at 1 plus the multiples of its first difference
+// f(1) - f(0), which the iterator holds as scratch, with the current values from the second point on.
+type fwdDiffIteratorLinear struct {
+	step, cur fr.Vector // scratch of the block size
+	values    fr.Vector // the current values
+}
+
+// newFwdDiffIteratorLinear returns an iterator over blocks of up to len(step) instance pairs, with the scratch step
+// and cur.
+func newFwdDiffIteratorLinear(step, cur fr.Vector) fwdDiffIteratorLinear {
+	return fwdDiffIteratorLinear{step: step, cur: cur}
+}
+
+// start places the iterator at Xⱼ = 1, on the n pairs of table from the h-th, and returns the values
+// there, which are the subslice of the table itself. The table is of length 2S, S being the number
+// of pairs, its first S entries holding the values at Xⱼ = 0 and the others at Xⱼ = 1.
+func (s *fwdDiffIteratorLinear) start(table fr.Vector, h, n int) fr.Vector {
+	sumSize := len(table) / 2
+	s.values = table[sumSize+h : sumSize+h+n]
+	step := s.step[:n]
+	step.Sub(s.values, table[h:h+n])
+	return s.values
+}
+
+// next steps to the next point and returns the values there. The values of the previous point are
+// overwritten from the second call on.
+func (s *fwdDiffIteratorLinear) next() fr.Vector {
+	n := len(s.values)
+	cur := s.cur[:n]
+	cur.Add(s.values, s.step[:n])
+	s.values = cur
+	return cur
+}
+
 // zeroCheckBase holds the fields and initialization logic common to both
 // zeroCheckClaims and singleSourceZeroCheckClaims.
 type zeroCheckBase struct {

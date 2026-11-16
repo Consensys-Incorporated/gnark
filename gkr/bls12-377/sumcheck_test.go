@@ -8,14 +8,13 @@ package gkrbls12377
 import (
 	"fmt"
 
+	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr/polynomial"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
 
 	"math/bits"
-
-	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
 
 	"strings"
 	"testing"
@@ -142,4 +141,40 @@ func (c singleMultilinLazyClaim) degree(int) int {
 
 func (c singleMultilinLazyClaim) varsNum() int {
 	return bits.TrailingZeros(uint(len(c.g)))
+}
+
+// TestFwdDiffIteratorLinear checks, on a random table, that the values of an iterator at Xⱼ = 1, ..., 4 over a
+// block are the table's evaluations there, and that its values at Xⱼ = 1 are the table's subslice.
+func TestFwdDiffIteratorLinear(t *testing.T) {
+	const (
+		sumSize = 64
+		h       = 20
+		n       = 37
+	)
+	table := make(fr.Vector, 2*sumSize)
+	for i := range table {
+		_, err := table[i].SetRandom()
+		assert.NoError(t, err)
+	}
+
+	s := newFwdDiffIteratorLinear(make(fr.Vector, n), make(fr.Vector, n))
+	values := s.start(table, h, n)
+	assert.Len(t, values, n)
+	assert.Same(t, &table[sumSize+h], &values[0])
+
+	for point := 1; point <= 4; point++ {
+		if point > 1 {
+			values = s.next()
+			assert.Len(t, values, n)
+		}
+		for i := range n {
+			// f(X) = f(0) + X·(f(1) - f(0))
+			var x, multiple, expected fr.Element
+			x.SetUint64(uint64(point))
+			multiple.Sub(&table[sumSize+h+i], &table[h+i])
+			multiple.Mul(&multiple, &x)
+			expected.Add(&table[h+i], &multiple)
+			assert.True(t, expected.Equal(&values[i]), "point %d, pair %d", point, i)
+		}
+	}
 }

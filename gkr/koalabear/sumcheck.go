@@ -436,6 +436,76 @@ func (r *resources) eqAcc(e, m polynomial.MultiLinE6, q []extensions.E6) {
 	}, 512).Wait()
 }
 
+// fwdDiffIteratorLinear steps a multilinear table over a block of instance pairs. The table is linear in
+// Xⱼ, so its values at Xⱼ = 1, 2, 3, ... are those at 1 plus the multiples of its first difference
+// f(1) - f(0), which the iterator holds as scratch, with the current values from the second point on.
+type fwdDiffIteratorLinear struct {
+	step, cur koalabear.Vector // scratch of the block size
+	values    koalabear.Vector // the current values
+}
+
+// newFwdDiffIteratorLinear returns an iterator over blocks of up to len(step) instance pairs, with the scratch step
+// and cur.
+func newFwdDiffIteratorLinear(step, cur koalabear.Vector) fwdDiffIteratorLinear {
+	return fwdDiffIteratorLinear{step: step, cur: cur}
+}
+
+// start places the iterator at Xⱼ = 1, on the n pairs of table from the h-th, and returns the values
+// there, which are the subslice of the table itself. The table is of length 2S, S being the number
+// of pairs, its first S entries holding the values at Xⱼ = 0 and the others at Xⱼ = 1.
+func (s *fwdDiffIteratorLinear) start(table koalabear.Vector, h, n int) koalabear.Vector {
+	sumSize := len(table) / 2
+	s.values = table[sumSize+h : sumSize+h+n]
+	step := s.step[:n]
+	step.Sub(s.values, table[h:h+n])
+	return s.values
+}
+
+// next steps to the next point and returns the values there. The values of the previous point are
+// overwritten from the second call on.
+func (s *fwdDiffIteratorLinear) next() koalabear.Vector {
+	n := len(s.values)
+	cur := s.cur[:n]
+	cur.Add(s.values, s.step[:n])
+	s.values = cur
+	return cur
+}
+
+// fwdDiffIteratorLinearE6 steps a multilinear table over a block of instance pairs. The table is linear in
+// Xⱼ, so its values at Xⱼ = 1, 2, 3, ... are those at 1 plus the multiples of its first difference
+// f(1) - f(0), which the iterator holds as scratch, with the current values from the second point on.
+type fwdDiffIteratorLinearE6 struct {
+	step, cur extensions.VectorE6 // scratch of the block size
+	values    extensions.VectorE6 // the current values
+}
+
+// newFwdDiffIteratorLinearE6 returns an iterator over blocks of up to len(step) instance pairs, with the scratch step
+// and cur.
+func newFwdDiffIteratorLinearE6(step, cur extensions.VectorE6) fwdDiffIteratorLinearE6 {
+	return fwdDiffIteratorLinearE6{step: step, cur: cur}
+}
+
+// start places the iterator at Xⱼ = 1, on the n pairs of table from the h-th, and returns the values
+// there, which are the subslice of the table itself. The table is of length 2S, S being the number
+// of pairs, its first S entries holding the values at Xⱼ = 0 and the others at Xⱼ = 1.
+func (s *fwdDiffIteratorLinearE6) start(table extensions.VectorE6, h, n int) extensions.VectorE6 {
+	sumSize := len(table) / 2
+	s.values = table[sumSize+h : sumSize+h+n]
+	step := s.step[:n]
+	step.Sub(s.values, table[h:h+n])
+	return s.values
+}
+
+// next steps to the next point and returns the values there. The values of the previous point are
+// overwritten from the second call on.
+func (s *fwdDiffIteratorLinearE6) next() extensions.VectorE6 {
+	n := len(s.values)
+	cur := s.cur[:n]
+	cur.Add(s.values, s.step[:n])
+	s.values = cur
+	return cur
+}
+
 // zeroCheckBase holds the fields and initialization logic common to both
 // zeroCheckClaims and singleSourceZeroCheckClaims.
 type zeroCheckBase struct {

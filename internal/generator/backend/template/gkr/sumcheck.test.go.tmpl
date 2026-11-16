@@ -1,11 +1,14 @@
 import (
 	"fmt"
+	"{{ .FieldPackagePath }}"
 	"{{ .FieldPackagePath }}/polynomial"
+	{{- if .Mixed }}
+	"{{ .BaseFieldPackagePath }}"
+	{{- end }}
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
 	{{ if not .GenerateTestVectors}}
-	"{{ .FieldPackagePath }}"
 	"math/bits"
 	{{ end }}
 	"strings"
@@ -82,4 +85,58 @@ func TestSumcheckDeterministicHashSingleClaimMultilin(t *testing.T) {
 
 {{ if not .GenerateTestVectors }}
 {{ template "sumcheckTestDefs" .}}
+{{ end }}
+
+{{ template "fwdDiffIteratorLinearTest" dict "Config" . "Ext" false }}
+{{- if .Mixed }}
+
+{{ template "fwdDiffIteratorLinearTest" dict "Config" . "Ext" true }}
+{{- end }}
+
+{{ define "fwdDiffIteratorLinearTest" -}}
+{{- $vec := printf "%s.Vector" .Config.BaseFieldPackageName }}
+{{- $name := "fwdDiffIteratorLinear" }}
+{{- $test := "TestFwdDiffIteratorLinear" }}
+{{- $new := "newFwdDiffIteratorLinear" }}
+{{- if .Ext }}
+{{- $vec = printf "%s.Vector%s" .Config.FieldPackageName .Config.ExtensionSuffix }}
+{{- $name = printf "fwdDiffIteratorLinear%s" .Config.ExtensionSuffix }}
+{{- $test = printf "TestFwdDiffIteratorLinear%s" .Config.ExtensionSuffix }}
+{{- $new = printf "newFwdDiffIteratorLinear%s" .Config.ExtensionSuffix }}
+{{- end }}
+// {{ $test }} checks, on a random table, that the values of an iterator at Xⱼ = 1, ..., 4 over a
+// block are the table's evaluations there, and that its values at Xⱼ = 1 are the table's subslice.
+func {{ $test }}(t *testing.T) {
+	const (
+		sumSize = 64
+		h       = 20
+		n       = 37
+	)
+	table := make({{ $vec }}, 2*sumSize)
+	for i := range table {
+		_, err := table[i].SetRandom()
+		assert.NoError(t, err)
+	}
+
+	s := {{ $new }}(make({{ $vec }}, n), make({{ $vec }}, n))
+	values := s.start(table, h, n)
+	assert.Len(t, values, n)
+	assert.Same(t, &table[sumSize+h], &values[0])
+
+	for point := 1; point <= 4; point++ {
+		if point > 1 {
+			values = s.next()
+			assert.Len(t, values, n)
+		}
+		for i := range n {
+			// f(X) = f(0) + X·(f(1) - f(0))
+			var x, multiple, expected {{ if .Ext }}{{ .Config.ElementType }}{{ else }}{{ .Config.BaseElementType }}{{ end }}
+			x.SetUint64(uint64(point))
+			multiple.Sub(&table[sumSize+h+i], &table[h+i])
+			multiple.Mul(&multiple, &x)
+			expected.Add(&table[h+i], &multiple)
+			assert.True(t, expected.Equal(&values[i]), "point %d, pair %d", point, i)
+		}
+	}
+}
 {{ end }}
