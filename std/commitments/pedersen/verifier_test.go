@@ -5,15 +5,18 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377"
+	fp_bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/fp"
 	fr_bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
 	ped_bls12377 "github.com/consensys/gnark-crypto/ecc/bls12-377/fr/pedersen"
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
+	fp_bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 	fr_bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 	ped_bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381/fr/pedersen"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
 	fr_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	ped_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr/pedersen"
 	bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761"
+	fp_bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/fp"
 	fr_bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/fr"
 	ped_bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/fr/pedersen"
 	"github.com/consensys/gnark/frontend"
@@ -325,4 +328,188 @@ func TestPedersenHonestBLS12377(t *testing.T) {
 		Commitment: c, Pok: p, Vk: circuitVk,
 	}
 	assert.NoError(test.IsSolved(circuit, assignment, ecc.BW6_761.ScalarField()))
+}
+
+// ---------------------------------------------------------------------------
+// On-curve, out-of-subgroup forgeries
+//
+// The (x, 0) forgeries above are off the curve, so an on-curve check alone
+// would reject them. The tests below pin the *subgroup* half of AssertIsOnG1:
+// the forged commitment is a genuine point of E(Fp) outside the prime-order
+// subgroup G1. It is cmt + T with T = [r]P' for a curve point P'; T lies in the
+// cofactor part, which pairs to 1, so the forgery pairs exactly like cmt and
+// the honest proof of knowledge still goes through.
+//
+// There is no BN254 counterpart: BN254 has G1 cofactor 1, so every curve point
+// is in G1 and no such forgery exists.
+// ---------------------------------------------------------------------------
+
+// cofactorPointBLS12377 returns a nonzero point of the BLS12-377 G1 cofactor
+// part: [r]P' for the first small-x curve point P'. It is on the curve, outside
+// G1, and pairs to 1.
+func cofactorPointBLS12377(t *testing.T) bls12377.G1Affine {
+	t.Helper()
+	a, b := bls12377.CurveCoefficients()
+	var p, tt bls12377.G1Affine
+	var x, ysq, ax, y fp_bls12377.Element
+	for i := uint64(1); i < 1000; i++ {
+		x.SetUint64(i)
+		ysq.Square(&x)
+		ysq.Mul(&ysq, &x)
+		ax.Mul(&a, &x)
+		ysq.Add(&ysq, &ax)
+		ysq.Add(&ysq, &b)
+		if y.Sqrt(&ysq) == nil {
+			continue
+		}
+		p.X, p.Y = x, y
+		if !p.IsOnCurve() {
+			continue
+		}
+		tt.ScalarMultiplication(&p, fr_bls12377.Modulus())
+		if !tt.IsInfinity() {
+			return tt
+		}
+	}
+	t.Fatal("no cofactor point found")
+	return tt
+}
+
+// cofactorPointBLS12381 is cofactorPointBLS12377 for BLS12-381.
+func cofactorPointBLS12381(t *testing.T) bls12381.G1Affine {
+	t.Helper()
+	a, b := bls12381.CurveCoefficients()
+	var p, tt bls12381.G1Affine
+	var x, ysq, ax, y fp_bls12381.Element
+	for i := uint64(1); i < 1000; i++ {
+		x.SetUint64(i)
+		ysq.Square(&x)
+		ysq.Mul(&ysq, &x)
+		ax.Mul(&a, &x)
+		ysq.Add(&ysq, &ax)
+		ysq.Add(&ysq, &b)
+		if y.Sqrt(&ysq) == nil {
+			continue
+		}
+		p.X, p.Y = x, y
+		if !p.IsOnCurve() {
+			continue
+		}
+		tt.ScalarMultiplication(&p, fr_bls12381.Modulus())
+		if !tt.IsInfinity() {
+			return tt
+		}
+	}
+	t.Fatal("no cofactor point found")
+	return tt
+}
+
+// cofactorPointBW6761 is cofactorPointBLS12377 for BW6-761.
+func cofactorPointBW6761(t *testing.T) bw6761.G1Affine {
+	t.Helper()
+	a, b := bw6761.CurveCoefficients()
+	var p, tt bw6761.G1Affine
+	var x, ysq, ax, y fp_bw6761.Element
+	for i := uint64(1); i < 1000; i++ {
+		x.SetUint64(i)
+		ysq.Square(&x)
+		ysq.Mul(&ysq, &x)
+		ax.Mul(&a, &x)
+		ysq.Add(&ysq, &ax)
+		ysq.Add(&ysq, &b)
+		if y.Sqrt(&ysq) == nil {
+			continue
+		}
+		p.X, p.Y = x, y
+		if !p.IsOnCurve() {
+			continue
+		}
+		tt.ScalarMultiplication(&p, fr_bw6761.Modulus())
+		if !tt.IsInfinity() {
+			return tt
+		}
+	}
+	t.Fatal("no cofactor point found")
+	return tt
+}
+
+func TestPedersenForgeryOutOfSubgroupBLS12377(t *testing.T) {
+	assert := test.NewAssert(t)
+	cmt, pok, vk := bls12377PedersenInstance(t)
+	circuitVk, err := ValueOfVerifyingKey[sw_bls12377.G2Affine](vk)
+	assert.NoError(err)
+
+	tt := cofactorPointBLS12377(t)
+	var forged bls12377.G1Affine
+	forged.Add(&cmt, &tt)
+	assert.True(forged.IsOnCurve(), "forgery must be on the curve")
+	assert.False(forged.IsInSubGroup(), "forgery must be outside G1")
+	// oracle: the native gnark-crypto verifier rejects it (subgroup check).
+	assert.Error(vk.Verify(forged, pok), "native verifier must reject the forgery")
+
+	c, err := ValueOfCommitment[sw_bls12377.G1Affine](forged)
+	assert.NoError(err)
+	p, err := ValueOfKnowledgeProof[sw_bls12377.G1Affine](pok)
+	assert.NoError(err)
+
+	circuit := &assertCommitmentCircuit[emparams.BLS12377Fr, sw_bls12377.G1Affine, sw_bls12377.G2Affine, sw_bls12377.GT]{Vk: circuitVk}
+	assignment := &assertCommitmentCircuit[emparams.BLS12377Fr, sw_bls12377.G1Affine, sw_bls12377.G2Affine, sw_bls12377.GT]{
+		Commitment: c, Pok: p, Vk: circuitVk,
+	}
+	err = test.IsSolved(circuit, assignment, ecc.BW6_761.ScalarField())
+	assert.Error(err, "on-curve out-of-subgroup commitment must be rejected")
+}
+
+func TestPedersenForgeryOutOfSubgroupBLS12381(t *testing.T) {
+	assert := test.NewAssert(t)
+	cmt, pok, vk := bls12381PedersenInstance(t)
+	circuitVk, err := ValueOfVerifyingKey[sw_bls12381.G2Affine](vk)
+	assert.NoError(err)
+
+	tt := cofactorPointBLS12381(t)
+	var forged bls12381.G1Affine
+	forged.Add(&cmt, &tt)
+	assert.True(forged.IsOnCurve(), "forgery must be on the curve")
+	assert.False(forged.IsInSubGroup(), "forgery must be outside G1")
+	// oracle: the native gnark-crypto verifier rejects it (subgroup check).
+	assert.Error(vk.Verify(forged, pok), "native verifier must reject the forgery")
+
+	c, err := ValueOfCommitment[sw_bls12381.G1Affine](forged)
+	assert.NoError(err)
+	p, err := ValueOfKnowledgeProof[sw_bls12381.G1Affine](pok)
+	assert.NoError(err)
+
+	circuit := &assertCommitmentCircuit[emparams.BLS12381Fr, sw_bls12381.G1Affine, sw_bls12381.G2Affine, sw_bls12381.GTEl]{Vk: circuitVk}
+	assignment := &assertCommitmentCircuit[emparams.BLS12381Fr, sw_bls12381.G1Affine, sw_bls12381.G2Affine, sw_bls12381.GTEl]{
+		Commitment: c, Pok: p, Vk: circuitVk,
+	}
+	err = test.IsSolved(circuit, assignment, ecc.BN254.ScalarField())
+	assert.Error(err, "on-curve out-of-subgroup commitment must be rejected")
+}
+
+func TestPedersenForgeryOutOfSubgroupBW6761(t *testing.T) {
+	assert := test.NewAssert(t)
+	cmt, pok, vk := bw6761PedersenInstance(t)
+	circuitVk, err := ValueOfVerifyingKey[sw_bw6761.G2Affine](vk)
+	assert.NoError(err)
+
+	tt := cofactorPointBW6761(t)
+	var forged bw6761.G1Affine
+	forged.Add(&cmt, &tt)
+	assert.True(forged.IsOnCurve(), "forgery must be on the curve")
+	assert.False(forged.IsInSubGroup(), "forgery must be outside G1")
+	// oracle: the native gnark-crypto verifier rejects it (subgroup check).
+	assert.Error(vk.Verify(forged, pok), "native verifier must reject the forgery")
+
+	c, err := ValueOfCommitment[sw_bw6761.G1Affine](forged)
+	assert.NoError(err)
+	p, err := ValueOfKnowledgeProof[sw_bw6761.G1Affine](pok)
+	assert.NoError(err)
+
+	circuit := &assertCommitmentCircuit[emparams.BW6761Fr, sw_bw6761.G1Affine, sw_bw6761.G2Affine, sw_bw6761.GTEl]{Vk: circuitVk}
+	assignment := &assertCommitmentCircuit[emparams.BW6761Fr, sw_bw6761.G1Affine, sw_bw6761.G2Affine, sw_bw6761.GTEl]{
+		Commitment: c, Pok: p, Vk: circuitVk,
+	}
+	err = test.IsSolved(circuit, assignment, ecc.BN254.ScalarField())
+	assert.Error(err, "on-curve out-of-subgroup commitment must be rejected")
 }
