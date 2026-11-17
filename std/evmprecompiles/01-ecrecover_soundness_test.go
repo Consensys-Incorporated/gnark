@@ -296,16 +296,84 @@ func TestECRecoverFailurePinsBothCoordinates(t *testing.T) {
 	}
 }
 
-// TestECRecoverHonestStillSolvesR1CS is the completeness counterpart of the
-// tests above: the same compiled R1CS, honest hints, honest witnesses.
-func TestECRecoverHonestStillSolvesR1CS(t *testing.T) {
+// recoverKey computes, out of circuit, the key the gadget must return for the
+// given inputs: C = [-msg*r^{-1}]G + [s*r^{-1}]R, with R the lift of r to the
+// requested y parity.
+func recoverKey(t *testing.T, msg, r, s *big.Int, R secp256k1.G1Affine) secp256k1.G1Affine {
+	t.Helper()
+	n := fr.Modulus()
+	rInv := new(big.Int).ModInverse(r, n)
+	if rInv == nil {
+		t.Fatalf("r = %s is not invertible mod n", r)
+	}
+	u1 := new(big.Int).Mul(msg, rInv)
+	u1.Neg(u1).Mod(u1, n)
+	u2 := new(big.Int).Mul(s, rInv)
+	u2.Mod(u2, n)
+	var a, b, C secp256k1.G1Affine
+	a.ScalarMultiplicationBase(u1)
+	b.ScalarMultiplication(&R, u2)
+	C.Add(&a, &b)
+	return C
+}
+
+// TestECRecoverAcceptsRangeBoundaries is the completeness counterpart of the
+// soundness tests above, aimed at exactly what this change touched: the new
+// bounds on r and s. An off-by-one in either direction shows up here.
+//
+//   - r = 1 and r = n-2 are the extremal on-curve values of the admitted range
+//     [1, n-1], and exercise the success path. r = n-1 is admitted by the range
+//     check too, but (n-1)^3+7 is a quadratic non-residue mod p, so it lands in
+//     the QNR failure branch -- it must be accepted there, not rejected by the
+//     bound.
+//   - s = 1 is the new lower bound. s = n-1 is the lax upper bound, and
+//     s = (n-1)/2 is the strict one (Yellow Paper Appendix F); both must solve
+//     in their respective modes.
+//
+// r != 0 is now enforced structurally by the Inverse used for u1 and u2 rather
+// than by an explicit IsZero assertion, so these rows also pin that the honest
+// path is unaffected by that change.
+func TestECRecoverAcceptsRangeBoundaries(t *testing.T) {
 	assert := test.NewAssert(t)
+	n := fr.Modulus()
+	nMinusOne := new(big.Int).Sub(n, big.NewInt(1))
+	nMinusTwo := new(big.Int).Sub(n, big.NewInt(2))
+	halfN := new(big.Int).Rsh(nMinusOne, 1)
+	msg := new(big.Int).SetBytes([]byte("boundary"))
+
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &ecrecoverCircuit{})
 	assert.NoError(err)
-	for _, largeS := range []bool{false, true} {
-		_, w := testRoutineECRecover(t, largeS)
+
+	for _, tc := range []struct {
+		name   string
+		r, s   *big.Int
+		strict int
+	}{
+		{name: "r=1,s=1", r: big.NewInt(1), s: big.NewInt(1), strict: 0},
+		{name: "r=1,s=(n-1)/2,strict", r: big.NewInt(1), s: halfN, strict: 1},
+		{name: "r=1,s=n-1", r: big.NewInt(1), s: nMinusOne, strict: 0},
+		{name: "r=n-2,s=1", r: nMinusTwo, s: big.NewInt(1), strict: 0},
+		{name: "r=n-2,s=n-1", r: nMinusTwo, s: nMinusOne, strict: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert := test.NewAssert(t)
+			R, v := liftX(t, tc.r)
+			Q := recoverKey(t, msg, tc.r, tc.s, R)
+			w := mkECRecoverWitness(msg, tc.r, tc.s, v, tc.strict, 0, Q)
+			witness, err := frontend.NewWitness(w, ecc.BN254.ScalarField())
+			assert.NoError(err)
+			assert.NoError(ccs.IsSolved(witness), "honest boundary input must solve")
+		})
+	}
+
+	// r = n-1 is inside the admitted range but off the curve, so the gadget
+	// must report a QNR failure and return (0,0) rather than reject the input.
+	t.Run("r=n-1,QNR-failure", func(t *testing.T) {
+		assert := test.NewAssert(t)
+		var origin secp256k1.G1Affine
+		w := mkECRecoverWitness(msg, nMinusOne, big.NewInt(1), 0, 0, 1, origin)
 		witness, err := frontend.NewWitness(w, ecc.BN254.ScalarField())
 		assert.NoError(err)
-		assert.NoError(ccs.IsSolved(witness), "honest witness must still solve (largeS=%v)", largeS)
-	}
+		assert.NoError(ccs.IsSolved(witness), "r = n-1 must be admitted and land in the QNR branch")
+	})
 }

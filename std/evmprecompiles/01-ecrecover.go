@@ -65,14 +65,15 @@ func ECRecover(api frontend.API, msg emulated.Element[emulated.Secp256k1Fr],
 	// with the encoding we may have that r,s < 2*Fr (i.e. not r,s < Fr). Apply more thorough checks.
 	//
 	// The EVM requires 0 < r, s < Fr. [Field.AssertIsLessOrEqual] is inclusive,
-	// so we compare against Fr-1 and exclude zero separately. Both halves
-	// matter for soundness: Div(a, b) only constrains div*b == a, so an
-	// admitted r == 0 mod Fr (either r = 0 or r = Fr) together with
-	// msg == s == 0 mod Fr makes the constraints for u1 and u2 vacuous and lets
-	// the prover choose the recovered public key freely.
+	// so we compare against Fr-1. Excluding zero matters for soundness:
+	// Div(a, b) only constrains div*b == a, so an admitted r == 0 mod Fr
+	// (either r = 0 or r = Fr) together with msg == s == 0 mod Fr would make
+	// the constraints for u1 and u2 vacuous and let the prover choose the
+	// recovered public key freely. For r we get r != 0 mod Fr structurally
+	// from the inverse computed below (r*r^{-1} == 1 is unsatisfiable when
+	// r == 0 mod Fr); for s we assert it explicitly.
 	nMinusOne := new(big.Int).Sub(emfr.Modulus(), big.NewInt(1))
 	frField.AssertIsLessOrEqual(&r, frField.NewElement(nMinusOne))
-	api.AssertIsEqual(frField.IsZero(&r), 0)
 	// Ethereum Yellow Paper defines that the check for s should be more strict
 	// when checking transaction signatures (Appendix F). There we should check
 	// that s <= (Fr-1)/2
@@ -134,11 +135,13 @@ func ECRecover(api frontend.API, msg emulated.Element[emulated.Secp256k1Fr],
 	// compute the public key C also in-circuit. We need to compute u1 and u2
 	// and use these to compute the public key.
 	//
+	// r^{-1} is shared by u1 and u2. It also constrains r*rInv == 1, which is
+	// unsatisfiable when r == 0 mod Fr, so it doubles as the r != 0 check.
+	rInv := frField.Inverse(&r)
 	// compute u1 = -msg * r^{-1} mod fr
-	u1 := frField.Div(&msg, &r)
-	u1 = frField.Neg(u1)
+	u1 := frField.Neg(frField.Mul(&msg, rInv))
 	// compute u2 = s * r^{-1} mod fr
-	u2 := frField.Div(&s, &r)
+	u2 := frField.Mul(&s, rInv)
 	// compute public key in circuit C = u1 * G + u2 R
 	//
 	// Use complete arithmetic so degenerate but valid inputs such as R=±G stay
