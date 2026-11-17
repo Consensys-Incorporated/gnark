@@ -376,14 +376,15 @@ func (gep *GateEvaluatorMixedPool) DumpAll() {
 
 // GateBlockEvaluator evaluates a compiled gate over blocks of instances: each instruction is a sequence of
 // vector method calls over a block. Its registers are slices of at most the block size. The first NbIn are the
-// slices that the caller passes to Evaluate, which the gate may overwrite; the evaluator owns the others.
+// slices that the caller pushes or passes to Evaluate, which the gate only reads; the evaluator owns the others.
 // The constants are scalars, never registers: a constant operand feeds the scalar form of its operation.
 type GateBlockEvaluator struct {
-	gate   gkr.GateBytecode
-	regs   []koalabear.Vector
-	tmp    koalabear.Vector // the scratch of SumExp17, if the gate has one
-	consts []koalabear.Element
-	pool   *basePolynomial.Pool // pool the owned registers were allocated from, if any
+	gate     gkr.GateBytecode
+	regs     []koalabear.Vector
+	tmp      koalabear.Vector // the scratch of SumExp17, if the gate has one
+	consts   []koalabear.Element
+	nbPushed int                  // number of inputs pushed since the last evaluation
+	pool     *basePolynomial.Pool // pool the owned registers were allocated from, if any
 }
 
 // NewGateBlockEvaluator creates a block evaluator for the given compiled gate, for blocks of up to blockSize
@@ -445,18 +446,30 @@ func (e *GateBlockEvaluator) n() int {
 	return len(e.regs[0])
 }
 
-// Evaluate executes the gate on the inputs, one slice for each of the gate's inputs, all of the same
-// length, at most the block size, which must not overlap, and returns the result, which has that
-// length. The gate may overwrite the inputs.
+// PushInput adds an input to the evaluator's input buffer, the first registers. The input is a slice
+// of the block, which the gate only reads.
+// Inputs must be added in order, and the number of inputs must match the gate's NbIn. They must all
+// have the same length, at most the block size.
+func (e *GateBlockEvaluator) PushInput(input koalabear.Vector) {
+	if e.nbPushed == e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got more", e.gate.NbIn))
+	}
+	e.regs[e.nbPushed] = input
+	e.nbPushed++
+}
+
+// Evaluate adds top to the inputs in the first registers, executes the gate on them and returns the
+// result, which has the length of the inputs. The inputs are automatically cleared after evaluation,
+// making the evaluator ready for the next evaluation. The gate only reads the inputs, which may overlap.
 // NB! The result is short-lived. It is an input or a register of the evaluator, which the next call
 // may overwrite.
-func (e *GateBlockEvaluator) Evaluate(inputs []koalabear.Vector) koalabear.Vector {
-	if len(inputs) != e.gate.NbIn {
-		panic(fmt.Sprintf("expected %d inputs, got %d", e.gate.NbIn, len(inputs)))
+func (e *GateBlockEvaluator) Evaluate(top ...koalabear.Vector) koalabear.Vector {
+	if e.nbPushed+len(top) != e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got %d", e.gate.NbIn, e.nbPushed+len(top)))
 	}
-	copy(e.regs, inputs)
+	copy(e.regs[e.nbPushed:], top)
 	n := e.n()
-	for i, input := range inputs {
+	for i, input := range e.regs[:e.gate.NbIn] {
 		if len(input) != n {
 			panic(fmt.Sprintf("input %d has %d entries, input 0 has %d", i, len(input), n))
 		}
@@ -510,6 +523,7 @@ func (e *GateBlockEvaluator) Evaluate(inputs []koalabear.Vector) koalabear.Vecto
 
 	res := e.regs[e.gate.ResultRegister()]
 	clear(e.regs[:e.gate.NbIn])
+	e.nbPushed = 0
 	return res
 }
 
@@ -569,14 +583,15 @@ func (e *GateBlockEvaluator) sub2(dst koalabear.Vector, in0, in1 uint16) {
 
 // GateBlockEvaluatorMixed evaluates a compiled gate over blocks of instances: each instruction is a sequence of
 // vector method calls over a block. Its registers are slices of at most the block size. The first NbIn are the
-// slices that the caller passes to Evaluate, which the gate may overwrite; the evaluator owns the others.
+// slices that the caller pushes or passes to Evaluate, which the gate only reads; the evaluator owns the others.
 // The constants are scalars, never registers: a constant operand feeds the scalar form of its operation.
 type GateBlockEvaluatorMixed struct {
-	gate   gkr.GateBytecode
-	regs   []extensions.VectorE6
-	tmp    extensions.VectorE6 // the scratch of SumExp17, if the gate has one
-	consts []koalabear.Element
-	pool   *polynomial.PoolE6 // pool the owned registers were allocated from, if any
+	gate     gkr.GateBytecode
+	regs     []extensions.VectorE6
+	tmp      extensions.VectorE6 // the scratch of SumExp17, if the gate has one
+	consts   []koalabear.Element
+	nbPushed int                // number of inputs pushed since the last evaluation
+	pool     *polynomial.PoolE6 // pool the owned registers were allocated from, if any
 }
 
 // NewGateBlockEvaluatorMixed creates a block evaluator for the given compiled gate, for blocks of up to blockSize
@@ -638,18 +653,30 @@ func (e *GateBlockEvaluatorMixed) n() int {
 	return len(e.regs[0])
 }
 
-// Evaluate executes the gate on the inputs, one slice for each of the gate's inputs, all of the same
-// length, at most the block size, which must not overlap, and returns the result, which has that
-// length. The gate may overwrite the inputs.
+// PushInput adds an input to the evaluator's input buffer, the first registers. The input is a slice
+// of the block, which the gate only reads.
+// Inputs must be added in order, and the number of inputs must match the gate's NbIn. They must all
+// have the same length, at most the block size.
+func (e *GateBlockEvaluatorMixed) PushInput(input extensions.VectorE6) {
+	if e.nbPushed == e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got more", e.gate.NbIn))
+	}
+	e.regs[e.nbPushed] = input
+	e.nbPushed++
+}
+
+// Evaluate adds top to the inputs in the first registers, executes the gate on them and returns the
+// result, which has the length of the inputs. The inputs are automatically cleared after evaluation,
+// making the evaluator ready for the next evaluation. The gate only reads the inputs, which may overlap.
 // NB! The result is short-lived. It is an input or a register of the evaluator, which the next call
 // may overwrite.
-func (e *GateBlockEvaluatorMixed) Evaluate(inputs []extensions.VectorE6) extensions.VectorE6 {
-	if len(inputs) != e.gate.NbIn {
-		panic(fmt.Sprintf("expected %d inputs, got %d", e.gate.NbIn, len(inputs)))
+func (e *GateBlockEvaluatorMixed) Evaluate(top ...extensions.VectorE6) extensions.VectorE6 {
+	if e.nbPushed+len(top) != e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got %d", e.gate.NbIn, e.nbPushed+len(top)))
 	}
-	copy(e.regs, inputs)
+	copy(e.regs[e.nbPushed:], top)
 	n := e.n()
-	for i, input := range inputs {
+	for i, input := range e.regs[:e.gate.NbIn] {
 		if len(input) != n {
 			panic(fmt.Sprintf("input %d has %d entries, input 0 has %d", i, len(input), n))
 		}
@@ -703,6 +730,7 @@ func (e *GateBlockEvaluatorMixed) Evaluate(inputs []extensions.VectorE6) extensi
 
 	res := e.regs[e.gate.ResultRegister()]
 	clear(e.regs[:e.gate.NbIn])
+	e.nbPushed = 0
 	return res
 }
 

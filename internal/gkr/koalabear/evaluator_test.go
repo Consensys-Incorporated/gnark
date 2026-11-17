@@ -73,11 +73,8 @@ func TestGateBlockEvaluator(t *testing.T) {
 
 				single := NewGateEvaluator(gate)
 				block := NewGateBlockEvaluator(gate, testBlockSize, &pool)
-				blockInputs := make([]koalabear.Vector, gate.NbIn)
-				for i := range blockInputs {
-					blockInputs[i] = append(koalabear.Vector(nil), inputs[i]...)
-				}
-				res := block.Evaluate(blockInputs)
+				block.PushInput(inputs[0])
+				res := block.Evaluate(inputs[1:]...)
 				require.Len(t, res, n)
 
 				in := make([]koalabear.Element, gate.NbIn)
@@ -113,11 +110,8 @@ func TestGateBlockEvaluatorMixed(t *testing.T) {
 
 				single := NewGateEvaluatorMixed(gate)
 				block := NewGateBlockEvaluatorMixed(gate, testBlockSize, &pool)
-				blockInputs := make([]extensions.VectorE6, gate.NbIn)
-				for i := range blockInputs {
-					blockInputs[i] = append(extensions.VectorE6(nil), inputs[i]...)
-				}
-				res := block.Evaluate(blockInputs)
+				block.PushInput(inputs[0])
+				res := block.Evaluate(inputs[1:]...)
 				require.Len(t, res, n)
 
 				in := make([]extensions.E6, gate.NbIn)

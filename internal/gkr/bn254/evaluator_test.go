@@ -72,11 +72,8 @@ func TestGateBlockEvaluator(t *testing.T) {
 
 				single := NewGateEvaluator(gate)
 				block := NewGateBlockEvaluator(gate, testBlockSize, &pool)
-				blockInputs := make([]fr.Vector, gate.NbIn)
-				for i := range blockInputs {
-					blockInputs[i] = append(fr.Vector(nil), inputs[i]...)
-				}
-				res := block.Evaluate(blockInputs)
+				block.PushInput(inputs[0])
+				res := block.Evaluate(inputs[1:]...)
 				require.Len(t, res, n)
 
 				in := make([]fr.Element, gate.NbIn)

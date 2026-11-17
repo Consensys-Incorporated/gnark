@@ -73,11 +73,8 @@ func TestGateBlockEvaluator(t *testing.T) {
 
 				single := NewGateEvaluator(gate)
 				block := NewGateBlockEvaluator(gate, testBlockSize, &pool)
-				blockInputs := make([]mamabear.Vector, gate.NbIn)
-				for i := range blockInputs {
-					blockInputs[i] = append(mamabear.Vector(nil), inputs[i]...)
-				}
-				res := block.Evaluate(blockInputs)
+				block.PushInput(inputs[0])
+				res := block.Evaluate(inputs[1:]...)
 				require.Len(t, res, n)
 
 				in := make([]mamabear.Element, gate.NbIn)
@@ -113,11 +110,8 @@ func TestGateBlockEvaluatorMixed(t *testing.T) {
 
 				single := NewGateEvaluatorMixed(gate)
 				block := NewGateBlockEvaluatorMixed(gate, testBlockSize, &pool)
-				blockInputs := make([]extensions.VectorE3, gate.NbIn)
-				for i := range blockInputs {
-					blockInputs[i] = append(extensions.VectorE3(nil), inputs[i]...)
-				}
-				res := block.Evaluate(blockInputs)
+				block.PushInput(inputs[0])
+				res := block.Evaluate(inputs[1:]...)
 				require.Len(t, res, n)
 
 				in := make([]extensions.E3, gate.NbIn)
