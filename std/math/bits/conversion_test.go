@@ -4,10 +4,13 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/std/math/bits"
@@ -251,5 +254,224 @@ func TestToBinaryUpperBoundWithNbDigits(t *testing.T) {
 	assert.CheckCircuit(&toBinaryUpperBoundFewDigitsCircuit{},
 		test.WithValidAssignment(&toBinaryUpperBoundFewDigitsCircuit{A: 100}),
 		test.WithInvalidAssignment(&toBinaryUpperBoundFewDigitsCircuit{A: 101}),
+	)
+}
+
+// --- canonicity of the decomposition against a malicious prover ---------------
+//
+// A malicious prover controls the hint output, so the circuit must reject any
+// digit vector that is not the canonical decomposition of v. For a full-width
+// decomposition the digit range exceeds the native modulus, so the digits of
+// v+p (and, on BN254, v+2p) also satisfy Σ base**i · d_i == v in the field.
+// Only an explicit canonicity bound rejects them. See PR #836 for the binary
+// precedent.
+
+type fullWidthDecompCircuit struct {
+	V       frontend.Variable `gnark:",public"`
+	ternary bool
+}
+
+func (c *fullWidthDecompCircuit) Define(api frontend.API) error {
+	if c.ternary {
+		bits.ToTernary(api, c.V)
+	} else {
+		bits.ToBinary(api, c.V)
+	}
+	// dummy constraints to avoid degenerate single-constraint systems
+	api.AssertIsEqual(c.V, c.V)
+	api.AssertIsEqual(c.V, c.V)
+	return nil
+}
+
+// hintIDByName looks up a registered hint by the suffix of its qualified name.
+// The hints we want to override are unexported, so we cannot pass the function
+// value to solver.GetHintID directly from this (external) test package.
+func hintIDByName(t *testing.T, suffix string) solver.HintID {
+	t.Helper()
+	for _, h := range solver.GetRegisteredHints() {
+		if strings.HasSuffix(solver.GetHintName(h), suffix) {
+			return solver.GetHintID(h)
+		}
+	}
+	t.Fatalf("hint %q not registered", suffix)
+	return 0
+}
+
+// shiftedDigitsHint returns a malicious hint emitting the base-`base` digits of
+// inputs[0] + shift instead of those of inputs[0].
+func shiftedDigitsHint(base int, shift *big.Int) solver.Hint {
+	return func(_ *big.Int, inputs []*big.Int, results []*big.Int) error {
+		n := new(big.Int).Add(inputs[0], shift)
+		digits := n.Text(base)
+		i := 0
+		for j := len(digits) - 1; j >= 0 && i < len(results); j-- {
+			results[i].SetUint64(uint64(digits[j] - '0'))
+			i++
+		}
+		for ; i < len(results); i++ {
+			results[i].SetUint64(0)
+		}
+		return nil
+	}
+}
+
+func solveWithHint(t *testing.T, field *big.Int, ternary bool, v *big.Int, override solver.Option) error {
+	t.Helper()
+	ccs, err := frontend.Compile(field, r1cs.NewBuilder, &fullWidthDecompCircuit{ternary: ternary})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	w, err := frontend.NewWitness(&fullWidthDecompCircuit{V: v}, field)
+	if err != nil {
+		t.Fatalf("witness: %v", err)
+	}
+	opts := []solver.Option{}
+	if override != nil {
+		opts = append(opts, override)
+	}
+	_, err = ccs.Solve(w, opts...)
+	return err
+}
+
+var canonicityCurves = []ecc.ID{ecc.BN254, ecc.BLS12_381, ecc.BW6_761, ecc.BLS12_377}
+
+// TestToTernaryNonCanonical asserts that the full-width ternary decomposition
+// rejects the digits of v+k·p for every k >= 1 that still fits in the digit
+// range.
+func TestToTernaryNonCanonical(t *testing.T) {
+	v := big.NewInt(12345)
+	nTritsID := hintIDByName(t, "nTrits")
+	for _, cid := range canonicityCurves {
+		field := cid.ScalarField()
+		// how many extra representations does this field admit?
+		nbBits := field.BitLen()
+		nbTrits := int(float64(nbBits)/math.Log2(3.0)) + 1
+		capacity := new(big.Int).Exp(big.NewInt(3), big.NewInt(int64(nbTrits)), nil)
+		for k := int64(1); ; k++ {
+			shift := new(big.Int).Mul(big.NewInt(k), field)
+			if new(big.Int).Add(v, shift).Cmp(capacity) >= 0 {
+				break
+			}
+			t.Run(fmt.Sprintf("%s/v+%dp", cid, k), func(t *testing.T) {
+				err := solveWithHint(t, field, true, v, solver.OverrideHint(nTritsID, shiftedDigitsHint(3, shift)))
+				if err == nil {
+					t.Fatalf("TERNARY EXPLOIT: solver ACCEPTED digits of v+%dp as digits of v=%s", k, v)
+				}
+				t.Logf("rejected as expected: %v", err)
+			})
+		}
+	}
+}
+
+// TestToBinaryNonCanonical is the control: the binary path already rejects this
+// attack (PR #836), which shows the harness itself is sound.
+func TestToBinaryNonCanonical(t *testing.T) {
+	v := big.NewInt(12345)
+	nBitsID := hintIDByName(t, "nBits")
+	for _, cid := range canonicityCurves {
+		field := cid.ScalarField()
+		shift := new(big.Int).Set(field)
+		if new(big.Int).Add(v, shift).BitLen() > field.BitLen() {
+			continue
+		}
+		t.Run(cid.String(), func(t *testing.T) {
+			err := solveWithHint(t, field, false, v, solver.OverrideHint(nBitsID, shiftedDigitsHint(2, shift)))
+			if err == nil {
+				t.Fatal("BINARY EXPLOIT: solver accepted digits of v+p")
+			}
+			t.Logf("rejected as expected: %v", err)
+		})
+	}
+}
+
+// TestToTernaryCanonicalHonest is the completeness counterpart: the honest
+// full-width decomposition must still solve on every supported curve.
+func TestToTernaryCanonicalHonest(t *testing.T) {
+	for _, cid := range canonicityCurves {
+		field := cid.ScalarField()
+		t.Run(cid.String(), func(t *testing.T) {
+			vals := []*big.Int{
+				big.NewInt(0),
+				big.NewInt(1),
+				big.NewInt(12345),
+				new(big.Int).Sub(field, big.NewInt(1)), // the bound itself
+				new(big.Int).Sub(field, big.NewInt(2)),
+				new(big.Int).Rsh(field, 1),
+			}
+			for i := 0; i < 20; i++ {
+				r, err := rand.Int(rand.Reader, field)
+				if err != nil {
+					t.Fatal(err)
+				}
+				vals = append(vals, r)
+			}
+			for _, v := range vals {
+				if err := solveWithHint(t, field, true, v, nil); err != nil {
+					t.Fatalf("honest decomposition of %s failed: %v", v, err)
+				}
+			}
+		})
+	}
+}
+
+type toTernaryUpperBoundCircuit struct {
+	A     frontend.Variable
+	bound *big.Int
+}
+
+func (c *toTernaryUpperBoundCircuit) Define(api frontend.API) error {
+	bits.ToTernary(api, c.A, bits.WithUpperBound(c.bound))
+	return nil
+}
+
+func TestToTernaryUpperBound(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	assert.CheckCircuit(&toTernaryUpperBoundCircuit{bound: big.NewInt(100)},
+		test.WithValidAssignment(&toTernaryUpperBoundCircuit{A: 0}),
+		test.WithValidAssignment(&toTernaryUpperBoundCircuit{A: 99}),
+		test.WithValidAssignment(&toTernaryUpperBoundCircuit{A: 100}),
+		test.WithInvalidAssignment(&toTernaryUpperBoundCircuit{A: 101}),
+		test.WithInvalidAssignment(&toTernaryUpperBoundCircuit{A: 255}),
+	)
+}
+
+type toTernaryNbDigitsCircuit struct {
+	A        frontend.Variable
+	nbDigits int
+}
+
+func (c *toTernaryNbDigitsCircuit) Define(api frontend.API) error {
+	bits.ToTernary(api, c.A, bits.WithNbDigits(c.nbDigits))
+	api.AssertIsEqual(c.A, c.A)
+	return nil
+}
+
+// TestToTernaryNbDigits checks that a narrow decomposition still binds (its
+// digit range is below the modulus, so no extra canonicity check is needed and
+// none is emitted) and that padding beyond the full width returns zeros.
+func TestToTernaryNbDigits(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	assert.CheckCircuit(&toTernaryNbDigitsCircuit{nbDigits: 3},
+		test.WithValidAssignment(&toTernaryNbDigitsCircuit{A: 26}),
+		test.WithInvalidAssignment(&toTernaryNbDigitsCircuit{A: 27}),
+	)
+
+	// the narrow case must not emit the comparison at all
+	nbBits := ecc.BN254.ScalarField().BitLen()
+	nbTrits := int(float64(nbBits)/math.Log2(3.0)) + 1
+	narrow, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &toTernaryNbDigitsCircuit{nbDigits: nbTrits - 1})
+	assert.NoError(err)
+	full, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &toTernaryNbDigitsCircuit{nbDigits: nbTrits})
+	assert.NoError(err)
+	// narrow has one digit less (3 constraints) and no comparison at all
+	assert.True(full.GetNbConstraints() > narrow.GetNbConstraints()+3,
+		"full width must pay for the canonicity check, narrow must not: %d vs %d", full.GetNbConstraints(), narrow.GetNbConstraints())
+
+	// over-wide decomposition pads with zeros and still solves
+	assert.CheckCircuit(&toTernaryNbDigitsCircuit{nbDigits: nbTrits + 5},
+		test.WithValidAssignment(&toTernaryNbDigitsCircuit{A: 12345}),
+		test.WithCurves(ecc.BN254),
 	)
 }

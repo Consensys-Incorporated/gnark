@@ -120,7 +120,7 @@ func WithUnconstrainedInputs() BaseConversionOption {
 // Setting this option always enforces the comparison, including when
 // [WithNbDigits] is lower than the bitlength of the modulus, since the caller
 // is asking for a bound the digit count alone does not imply. It cannot be
-// combined with [OmitModulusCheck], and it only applies to binary conversion.
+// combined with [OmitModulusCheck].
 func WithUpperBound(bound *big.Int) BaseConversionOption {
 	return func(opt *baseConversionConfig) error {
 		if bound == nil {
@@ -138,7 +138,7 @@ func WithUpperBound(bound *big.Int) BaseConversionOption {
 // case the bitlength of the decomposed value (if [WithNbDigits] not set or set
 // to bitlength of the native modulus) eqals bitlength of the modulus.
 //
-// The check is otherwise required as there are possibly multiple correct binary
+// The check is otherwise required as there are possibly multiple correct
 // decompositions. For example, when decomposing small a the decomposition could
 // return the slices for both a or a+r, where r is the native modulus and the
 // enforced constraints are correct due to implicit modular reduction by r.
