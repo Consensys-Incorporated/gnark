@@ -441,13 +441,8 @@ func (pr *Pairing) millerLoopLines(P []*G1Affine, lines []lineEvaluations, init 
 		// If we have point at infinity, we set yInv[k] to 0 manually to avoid
 		// undefined inversion of 0.
 		//
-		// SECURITY: this makes y == 0 the in-circuit encoding of the point at
-		// infinity. With yInv = 0 and xNegOverY = 0 every line evaluates to 1,
-		// so ANY (x, 0) — on the curve or not — is a free identity element for
-		// this Miller loop. Callers MUST assert that each Pᵢ is on the curve
-		// (and in G1) before relying on the result; see [Pairing.AssertIsOnG1].
-		// Pᵢ is prover-supplied in every recursion verifier, so omitting that
-		// check is a total soundness break, not a hardening nicety.
+		// SECURITY: y == 0 encodes infinity, so any (x, 0), on the curve or
+		// not, contributes 1. Callers must AssertIsOnG1 prover-supplied points.
 		isYZero := pr.curveF.IsZero(&P[k].Y)
 		y := pr.curveF.Select(isYZero, pr.curveF.One(), &P[k].Y)
 		yInv[k] = pr.curveF.Select(isYZero, pr.curveF.Zero(), pr.curveF.Inverse(y))
