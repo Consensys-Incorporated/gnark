@@ -9,7 +9,9 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/consensys/gnark/debug"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/internal/debugstack"
 	"github.com/consensys/gnark/internal/utils"
 	"github.com/consensys/gnark/profile"
 	"github.com/consensys/gnark/std/internal/fieldextension"
@@ -278,7 +280,7 @@ func (f *Field[T]) mulMod(a, b *Element[T], _ uint, p *Element[T]) *Element[T] {
 		r: r,
 		p: p,
 	}
-	f.deferredChecks = append(f.deferredChecks, &mc)
+	f.addDeferredCheck(&mc)
 	// Record operation for profiling - this tracks the operation at call site
 	// independently of when the actual constraints are created in deferred callbacks.
 	// Include limb count in the name for visibility in pprof flamegraphs.
@@ -319,7 +321,7 @@ func (f *Field[T]) checkZero(a *Element[T], p *Element[T]) {
 		r: r, // expected to be zero on zero limbs.
 		p: p,
 	}
-	f.deferredChecks = append(f.deferredChecks, &mc)
+	f.addDeferredCheck(&mc)
 
 	// Record operation for profiling - this tracks the operation at call site
 	// independently of when the actual constraints are created in deferred callbacks.
@@ -378,6 +380,39 @@ func (f *Field[T]) evalWithChallengeExtension(a *Element[T], at []frontend.Varia
 	return sum
 }
 
+// addDeferredCheck stores the check to be performed in the deferred callback.
+//
+// With the debug build tag, it also records the call stack of the operation
+// which created the check. The constraints of the check are then attributed to
+// this call stack, so that a failing check points to the place in the circuit
+// where the operation was called instead of the deferred callback.
+func (f *Field[T]) addDeferredCheck(dc deferredChecker) {
+	f.deferredChecks = append(f.deferredChecks, dc)
+	if debug.Debug {
+		if f.debugStacks == nil {
+			f.debugStacks = make(map[deferredChecker][]uintptr)
+		}
+		// skip addDeferredCheck and the method creating the check (mulMod,
+		// checkZero, Eval, ...) to start at the method called by the user.
+		f.debugStacks[dc] = debug.Callers(2)
+	}
+}
+
+// checkDeferred creates the constraints of the deferred check dc. With the
+// debug build tag, the constraints are attributed to the call stack recorded in
+// [Field.addDeferredCheck].
+func (f *Field[T]) checkDeferred(api frontend.API, dc deferredChecker, peval, coef frontend.Variable) {
+	if debug.Debug {
+		if pcs, ok := f.debugStacks[dc]; ok {
+			debugstack.Run(api, pcs, func() {
+				dc.check(api, peval, coef)
+			})
+			return
+		}
+	}
+	dc.check(api, peval, coef)
+}
+
 // performDeferredChecks should be deferred to actually perform all the
 // multiplication checks.
 func (f *Field[T]) performDeferredChecks(api frontend.API) error {
@@ -429,7 +464,7 @@ func (f *Field[T]) performDeferredChecks(api frontend.API) error {
 			ccoef := api.Sub(coef, commitment)
 			// verify all mulchecks
 			for i := range f.deferredChecks {
-				f.deferredChecks[i].check(api, pval.evaluation, ccoef)
+				f.checkDeferred(api, f.deferredChecks[i], pval.evaluation, ccoef)
 			}
 			// clean cached evaluation. Helps in case we compile the same circuit
 			// multiple times.
@@ -475,7 +510,7 @@ func (f *Field[T]) performDeferredChecks(api frontend.API) error {
 			ccoef := f.extensionApi.Sub(coefext, commitment)
 			// verify all mulchecks
 			for i := range f.deferredChecks {
-				f.deferredChecks[i].check(api, pval.evaluation, ccoef)
+				f.checkDeferred(api, f.deferredChecks[i], pval.evaluation, ccoef)
 			}
 			// clean cached evaluation. Helps in case we compile the same circuit
 			// multiple times.
@@ -1168,7 +1203,7 @@ func (f *Field[T]) Eval(at [][]*Element[T], coefs []int) *Element[T] {
 		kNeg: kNeg,
 	}
 
-	f.deferredChecks = append(f.deferredChecks, &mvc)
+	f.addDeferredCheck(&mvc)
 
 	// Record operation for profiling
 	nbLimbs := 0
@@ -1226,7 +1261,7 @@ func (f *Field[T]) AssertEvalIsZero(at [][]*Element[T], coefs []int) {
 		kNeg: kNeg,
 	}
 
-	f.deferredChecks = append(f.deferredChecks, &mvc)
+	f.addDeferredCheck(&mvc)
 
 	// Record operation for profiling
 	nbLimbs := 0
