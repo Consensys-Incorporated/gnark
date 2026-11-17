@@ -1,6 +1,7 @@
 package solidity_test
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"hash"
@@ -191,6 +192,57 @@ func TestTwoCommitments(t *testing.T) {
 	circuit := &twoCommitCircuit{}
 	assignment := &twoCommitCircuit{A: 2, B: 3, Out: 6}
 	assert.CheckCircuit(circuit, test.WithCurves(ecc.BN254, ecc.BLS12_381), test.WithValidAssignment(assignment), test.WithBackends(backend.PLONK))
+}
+
+// TestExportSolidityCommitmentCount checks that the Groth16 solidity exporter
+// refuses to emit a contract for verifying keys with more than one commitment.
+//
+// The generated contract only embeds CommitmentKeys[0] and only pairs
+// commitments[0], while still folding all the commitments into the public input
+// MSM. That makes it both unsound (commitments 1..n-1 are attacker-chosen free
+// offsets) and incomplete (the prover produces a challenge-folded PoK across all
+// keys). See https://github.com/Consensys/gnark/issues/1095.
+func TestExportSolidityCommitmentCount(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	setupVK := func(assert *test.Assert, id ecc.ID, circuit frontend.Circuit) groth16.VerifyingKey {
+		ccs, err := frontend.Compile(id.ScalarField(), r1cs.NewBuilder, circuit)
+		assert.NoError(err)
+		_, vk, err := groth16.Setup(ccs)
+		assert.NoError(err)
+		return vk
+	}
+
+	for _, curve := range []ecc.ID{ecc.BN254, ecc.BLS12_381} {
+		curve := curve
+		assert.Run(func(assert *test.Assert) {
+			// zero commitments: must export fine
+			assert.Run(func(assert *test.Assert) {
+				vk := setupVK(assert, curve, &noCommitCircuit{})
+				var b bytes.Buffer
+				err := vk.ExportSolidity(&b)
+				assert.NoError(err)
+				assert.True(b.Len() > 0, "expected a contract to be written")
+			}, "zero-commitments")
+			// single commitment: must export fine
+			assert.Run(func(assert *test.Assert) {
+				vk := setupVK(assert, curve, &commitCircuit{})
+				var b bytes.Buffer
+				err := vk.ExportSolidity(&b, solidity.WithHashToFieldFunction(sha256.New()))
+				assert.NoError(err)
+				assert.True(b.Len() > 0, "expected a contract to be written")
+			}, "single-commitment")
+			// two commitments: must error, and must not write anything
+			assert.Run(func(assert *test.Assert) {
+				vk := setupVK(assert, curve, &twoCommitCircuit{})
+				var b bytes.Buffer
+				err := vk.ExportSolidity(&b, solidity.WithHashToFieldFunction(sha256.New()))
+				assert.Error(err, "export with 2 commitments must fail")
+				assert.Contains(err.Error(), "2 commitments", "error should report the commitment count")
+				assert.Equal(0, b.Len(), "nothing must be written to the writer on error")
+			}, "two-commitments")
+		}, curveShortName(curve))
+	}
 }
 
 // loadOrSetupGroth16VK loads an existing VK from vkPath, or if the file doesn't
