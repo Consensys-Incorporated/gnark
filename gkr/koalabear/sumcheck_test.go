@@ -11,6 +11,7 @@ import (
 	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions/polynomial"
+	basePolynomial "github.com/consensys/gnark-crypto/field/koalabear/polynomial"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
@@ -144,74 +145,74 @@ func (c singleMultilinLazyClaim) varsNum() int {
 	return bits.TrailingZeros(uint(len(c.g)))
 }
 
-// TestFwdDiffIteratorLinear checks, on a random table, that the values of an iterator at Xⱼ = 1, ..., 4 over a
-// block are the table's evaluations there, and that its values at Xⱼ = 1 are the table's subslice.
+// TestFwdDiffIteratorLinear checks, on a random table, that the values of an iterator at X₁ = 1, ..., 4 over a
+// block are the table's evaluations there, and that its values at X₁ = 1 are the table's subslice.
 func TestFwdDiffIteratorLinear(t *testing.T) {
 	const (
-		sumSize = 64
-		h       = 20
-		n       = 37
+		atOne    = 64
+		offset   = 20
+		blockLen = 37
 	)
-	table := make(koalabear.Vector, 2*sumSize)
+	table := make(basePolynomial.MultiLin, 2*atOne)
 	for i := range table {
 		_, err := table[i].SetRandom()
 		assert.NoError(t, err)
 	}
 
-	s := newFwdDiffIteratorLinear(make(koalabear.Vector, n), make(koalabear.Vector, n))
-	values := s.start(table, h, n)
-	assert.Len(t, values, n)
-	assert.Same(t, &table[sumSize+h], &values[0])
+	s := newFwdDiffIteratorLinear(make(koalabear.Vector, blockLen), make(koalabear.Vector, blockLen))
+	s.start(table, offset, blockLen)
+	assert.Len(t, s.values, blockLen)
+	assert.Same(t, &table[atOne+offset], &s.values[0])
 
 	for point := 1; point <= 4; point++ {
 		if point > 1 {
-			values = s.next()
-			assert.Len(t, values, n)
+			s.next()
+			assert.Len(t, s.values, blockLen)
 		}
-		for i := range n {
+		for i := range blockLen {
 			// f(X) = f(0) + X·(f(1) - f(0))
 			var x, multiple, expected koalabear.Element
 			x.SetUint64(uint64(point))
-			multiple.Sub(&table[sumSize+h+i], &table[h+i])
+			multiple.Sub(&table[atOne+offset+i], &table[offset+i])
 			multiple.Mul(&multiple, &x)
-			expected.Add(&table[h+i], &multiple)
-			assert.True(t, expected.Equal(&values[i]), "point %d, pair %d", point, i)
+			expected.Add(&table[offset+i], &multiple)
+			assert.True(t, expected.Equal(&s.values[i]), "point %d, entry %d", point, i)
 		}
 	}
 }
 
-// TestFwdDiffIteratorLinearE6 checks, on a random table, that the values of an iterator at Xⱼ = 1, ..., 4 over a
-// block are the table's evaluations there, and that its values at Xⱼ = 1 are the table's subslice.
+// TestFwdDiffIteratorLinearE6 checks, on a random table, that the values of an iterator at X₁ = 1, ..., 4 over a
+// block are the table's evaluations there, and that its values at X₁ = 1 are the table's subslice.
 func TestFwdDiffIteratorLinearE6(t *testing.T) {
 	const (
-		sumSize = 64
-		h       = 20
-		n       = 37
+		atOne    = 64
+		offset   = 20
+		blockLen = 37
 	)
-	table := make(extensions.VectorE6, 2*sumSize)
+	table := make(polynomial.MultiLinE6, 2*atOne)
 	for i := range table {
 		_, err := table[i].SetRandom()
 		assert.NoError(t, err)
 	}
 
-	s := newFwdDiffIteratorLinearE6(make(extensions.VectorE6, n), make(extensions.VectorE6, n))
-	values := s.start(table, h, n)
-	assert.Len(t, values, n)
-	assert.Same(t, &table[sumSize+h], &values[0])
+	s := newFwdDiffIteratorLinearE6(make(extensions.VectorE6, blockLen), make(extensions.VectorE6, blockLen))
+	s.start(table, offset, blockLen)
+	assert.Len(t, s.values, blockLen)
+	assert.Same(t, &table[atOne+offset], &s.values[0])
 
 	for point := 1; point <= 4; point++ {
 		if point > 1 {
-			values = s.next()
-			assert.Len(t, values, n)
+			s.next()
+			assert.Len(t, s.values, blockLen)
 		}
-		for i := range n {
+		for i := range blockLen {
 			// f(X) = f(0) + X·(f(1) - f(0))
 			var x, multiple, expected extensions.E6
 			x.SetUint64(uint64(point))
-			multiple.Sub(&table[sumSize+h+i], &table[h+i])
+			multiple.Sub(&table[atOne+offset+i], &table[offset+i])
 			multiple.Mul(&multiple, &x)
-			expected.Add(&table[h+i], &multiple)
-			assert.True(t, expected.Equal(&values[i]), "point %d, pair %d", point, i)
+			expected.Add(&table[offset+i], &multiple)
+			assert.True(t, expected.Equal(&s.values[i]), "point %d, entry %d", point, i)
 		}
 	}
 }
