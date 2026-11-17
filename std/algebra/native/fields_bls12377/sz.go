@@ -1,6 +1,8 @@
 package fields_bls12377
 
 import (
+	"fmt"
+
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/std/multicommit"
@@ -16,6 +18,10 @@ type szMulCheck struct {
 
 type szChecker struct {
 	checks []szMulCheck
+	// closed is set once resolve has snapshotted the checks into the list of
+	// committed variables. After that point no new check can be bound to the
+	// Fiat-Shamir challenge, so adding one would be unsound and we refuse it.
+	closed bool
 }
 
 func getSZChecker(api frontend.API) *szChecker {
@@ -46,6 +52,15 @@ func addSZSquareCheck(api frontend.API, a, c, q []frontend.Variable) {
 }
 
 func (ch *szChecker) addCheck(a, b, c, q []frontend.Variable, square bool) {
+	if ch.closed {
+		// The Fiat-Shamir challenge has already been derived from a fixed list
+		// of committed variables. A check registered now would be verified at a
+		// challenge that does not commit to its own operands, which the prover
+		// could then predict and forge against. Refuse instead.
+		panic("Schwartz-Zippel checker already closed: an Fp6/Fp12 operation was performed after the " +
+			"challenge was fixed, most likely inside a multicommit.WithCommitment callback. " +
+			"Perform the field extension arithmetic outside of the commitment callback.")
+	}
 	ch.checks = append(ch.checks, szMulCheck{
 		a:      append([]frontend.Variable(nil), a...),
 		b:      append([]frontend.Variable(nil), b...),
@@ -56,6 +71,11 @@ func (ch *szChecker) addCheck(a, b, c, q []frontend.Variable, square bool) {
 }
 
 func (ch *szChecker) resolve(api frontend.API) error {
+	// From here on the set of checks covered by the commitment is frozen: the
+	// list of committed variables below is built eagerly, while the callback
+	// handed to multicommit.WithCommitment reads ch.checks lazily. Closing the
+	// checker keeps the two in sync.
+	ch.closed = true
 	if len(ch.checks) == 0 {
 		return nil
 	}
@@ -84,7 +104,18 @@ func (ch *szChecker) resolve(api frontend.API) error {
 		toCommit = append(toCommit, chk.q...)
 	}
 
+	// nbCommitted is the number of checks the commitment above binds. The
+	// callback below iterates over ch.checks, so if that slice ever grew
+	// between here and the callback we would be verifying an unbound check.
+	// addCheck already refuses to grow it (see ch.closed), this is a second
+	// line of defence in case a future caller bypasses addCheck.
+	nbCommitted := len(ch.checks)
+
 	multicommit.WithCommitment(api, func(api frontend.API, commitment frontend.Variable) error {
+		if len(ch.checks) != nbCommitted {
+			return fmt.Errorf("schwartz-zippel checker: %d checks were registered after the challenge was fixed; "+
+				"their operands are not bound by the commitment", len(ch.checks)-nbCommitted)
+		}
 		r := commitment
 
 		rPow := make([]frontend.Variable, maxDegree+1)
