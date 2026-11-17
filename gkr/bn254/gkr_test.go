@@ -76,9 +76,9 @@ func TestPoseidon2(t *testing.T) {
 
 // TestEndToEndPoseidon2 compiles a circuit with gkrapi, then proves and verifies it with Poseidon2,
 // the proof being rebuilt by DeserializeProof from the elements of its Flatten, and checks that
-// tampering with the proof is rejected.
+// tampering with the proof is rejected, and that blocks of the smallest size give the same proof.
 func TestEndToEndPoseidon2(t *testing.T) {
-	const nbInstances = 16
+	const nbInstances = 1 << 9
 
 	api := gkrapi.New()
 	x := api.NewInput()
@@ -101,6 +101,14 @@ func TestEndToEndPoseidon2(t *testing.T) {
 	for _, element := range proof.Flatten() {
 		flattened = append(flattened, *element)
 	}
+
+	smallBlocksProof, _, err := Prove(circuit, schedule, assignment, poseidon2.NewHasher(), WithCacheBudget(1))
+	require.NoError(t, err)
+	var smallBlocksFlattened []fr.Element
+	for _, element := range smallBlocksProof.Flatten() {
+		smallBlocksFlattened = append(smallBlocksFlattened, *element)
+	}
+	assert.Equal(t, flattened, smallBlocksFlattened)
 
 	verify := func(serialized []fr.Element) (Claims, error) {
 		deserialized, err := DeserializeProof(circuit, schedule, serialized)
