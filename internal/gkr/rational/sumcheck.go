@@ -228,37 +228,36 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 
 	p := make([]rational.Element, degree)
 	var mu sync.Mutex
-	computeAll := func(start, end int) {
+	computeBlock := func(offset, end int) {
+		blockLen := end - offset
 		s := c.workerScratch.Get().(*workerScratch)
 		defer c.workerScratch.Put(s)
 		res := make([]rational.Element, degree)
 
-		for h := start; h < end; h += blockSize {
-			blockLen := min(blockSize, end-h)
-			for k := range s.inputIts {
-				s.inputIts[k].start(c.input[k], h, blockLen)
-			}
-			for w := range s.eqIts {
-				s.eqIts[w].start(c.eqs[w], h, blockLen)
-			}
-			for d := range degree {
-				if d > 0 {
-					for k := range s.inputIts {
-						s.inputIts[k].next()
-					}
-					for w := range s.eqIts {
-						s.eqIts[w].next()
-					}
+		for k := range s.inputIts {
+			s.inputIts[k].start(c.input[k], offset, blockLen)
+		}
+		for w := range s.eqIts {
+			s.eqIts[w].start(c.eqs[w], offset, blockLen)
+		}
+		for d := range degree {
+			if d > 0 {
+				for k := range s.inputIts {
+					s.inputIts[k].next()
 				}
 				for w := range s.eqIts {
-					for _, k := range c.inputIndices[w] {
-						s.evaluators[w].PushInput(s.inputIts[k].values)
-					}
-					term := new(s.eqIts[w].values.InnerProduct(s.evaluators[w].Evaluate()))
-					res[d].Add(&res[d], term)
+					s.eqIts[w].next()
 				}
 			}
+			for w := range s.eqIts {
+				for _, k := range c.inputIndices[w] {
+					s.evaluators[w].PushInput(s.inputIts[k].values)
+				}
+				term := new(s.eqIts[w].values.InnerProduct(s.evaluators[w].Evaluate()))
+				res[d].Add(&res[d], term)
+			}
 		}
+
 		mu.Lock()
 		for i := range p {
 			p[i].Add(&p[i], &res[i]) // collect into the complete sum
@@ -266,7 +265,7 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 		mu.Unlock()
 	}
 
-	c.resources.workers.Submit(sumSize, computeAll, blockSize).Wait()
+	c.resources.workers.Submit(sumSize, computeBlock, blockSize).Wait()
 
 	return p
 }
