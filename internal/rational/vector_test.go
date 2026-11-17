@@ -39,4 +39,14 @@ func TestVectorOperations(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("InnerProduct", func(t *testing.T) {
+		var want, term Element
+		for i := range a {
+			term.Mul(&a[i], &b[i])
+			want.Add(&want, &term)
+		}
+		got := a.InnerProduct(b)
+		require.True(t, want.Equal(&got))
+	})
 }

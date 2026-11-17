@@ -71,3 +71,13 @@ func (v *Vector) ScalarSubFrom(c *Element, a Vector) {
 		(*v)[i].Sub(c, &a[i])
 	}
 }
+
+// InnerProduct returns the sum of the entrywise products of v and other.
+func (v *Vector) InnerProduct(other Vector) (res Element) {
+	for i := range *v {
+		var term Element
+		term.Mul(&(*v)[i], &other[i])
+		res.Add(&res, &term)
+	}
+	return res
+}
