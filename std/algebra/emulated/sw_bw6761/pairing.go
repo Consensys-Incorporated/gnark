@@ -519,7 +519,16 @@ func (pr *Pairing) MillerLoop(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 //
 // To pair a prover-supplied G2 point, assign it with [NewG2Affine] (no
 // lines) so that the lines are computed in-circuit from the constrained
-// coordinates, which also asserts the point is on the twist and in G2.
+// coordinates. Unlike sw_bn254 and sw_bls12381, computing the lines here does
+// not assert the point is on the twist or in G2 -- call [Pairing.AssertIsOnG2]
+// for that.
+//
+// Constant lines remain the circuit author's responsibility: nothing checks
+// that they belong to the Qᵢ.P they are attached to. If they do not -- say a
+// [NewG2AffineFixed] built for one point is paired against the P of another --
+// Qᵢ.P is silently ignored and the pairing is computed for whichever point the
+// lines came from. That is not a prover attack (both are fixed at compile
+// time), but it is the one trust assumption that is left.
 var ErrNonConstantLines = errors.New("precomputed G2 line evaluations are not compile-time constants; use NewG2Affine so that the lines are computed in-circuit")
 
 // tracksConstants reports whether the builder can identify compile-time
@@ -588,9 +597,11 @@ func (pr *Pairing) assertConstantLines(lines *lineEvaluations) error {
 }
 
 // prepareLines returns the line evaluations to feed to the Miller loop for
-// every Qi. When Qi carries no lines they are computed in-circuit (which also
-// asserts Qi.P is on the twist and in G2); when it does, they must be
-// compile-time constants, see [ErrNonConstantLines].
+// every Qi. When Qi carries no lines they are computed in-circuit; when it
+// does, they must be compile-time constants, see [ErrNonConstantLines].
+//
+// Computing the lines here does not assert Qi.P is on the twist or in G2 --
+// see the NB! on [Pairing.Pair] and use [Pairing.AssertIsOnG2].
 func (pr *Pairing) prepareLines(Q []*G2Affine) ([]lineEvaluations, error) {
 	tracksConstants := pr.tracksConstants()
 	lines := make([]lineEvaluations, len(Q))

@@ -237,18 +237,47 @@ func TestPairTestSolve(t *testing.T) {
 	assert.NoError(err)
 }
 
+// PairFixedCircuit pairs a witness G1 point against a G2 point that the
+// circuit author fixes at compile time. The `gnark:"-"` tag keeps InG2 out of
+// the witness, so its precomputed lines stay compile-time constants -- the
+// only form the pairing methods accept.
+type PairFixedCircuit struct {
+	InG1 G1Affine
+	Res  GTEl
+
+	InG2 G2Affine `gnark:"-"`
+}
+
+func (c *PairFixedCircuit) Define(api frontend.API) error {
+	pairing, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	res, err := pairing.Pair([]*G1Affine{&c.InG1}, []*G2Affine{&c.InG2})
+	if err != nil {
+		return fmt.Errorf("pair: %w", err)
+	}
+	pairing.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+// TestPairFixedTestSolve exercises the precomputed-lines path with a real
+// builder. The test engine reports every value as non-constant and therefore
+// falls back to computing the lines in-circuit, so test.IsSolved would not
+// cover this path at all.
 func TestPairFixedTestSolve(t *testing.T) {
 	assert := test.NewAssert(t)
 	p, q := randomG1G2Affines()
 	res, err := bw6761.Pair([]bw6761.G1Affine{p}, []bw6761.G2Affine{q})
 	assert.NoError(err)
-	witness := PairCircuit{
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &PairFixedCircuit{InG2: NewG2AffineFixed(q)})
+	assert.NoError(err, "compile-time constant lines must be accepted")
+	w, err := frontend.NewWitness(&PairFixedCircuit{
 		InG1: NewG1Affine(p),
-		InG2: NewG2AffineFixed(q),
 		Res:  NewGTEl(res),
-	}
-	err = test.IsSolved(&PairCircuit{InG2: NewG2AffineFixedPlaceholder()}, &witness, ecc.BN254.ScalarField())
+	}, ecc.BN254.ScalarField())
 	assert.NoError(err)
+	assert.NoError(ccs.IsSolved(w))
 }
 
 type MultiPairCircuit struct {
