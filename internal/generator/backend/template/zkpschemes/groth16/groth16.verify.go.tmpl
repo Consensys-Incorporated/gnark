@@ -150,6 +150,17 @@ func (vk *VerifyingKey) ExportSolidity(w io.Writer, exportOpts ...solidity.Expor
 	if err != nil {
 		return err
 	}
+	// The generated contract only embeds CommitmentKeys[0] and only pairs
+	// commitments[0], while the decompression loop and the public input MSM
+	// consume all the commitments. For more than one commitment the contract is
+	// therefore both unsound and incomplete, so we refuse to generate it rather
+	// than emitting a broken verifier. Bail out before writing anything to w.
+	if len(vk.PublicAndCommitmentCommitted) > 1 {
+		return fmt.Errorf("exporting a solidity verifier with %d commitments is not supported (max 1); see https://github.com/Consensys/gnark/issues/1095", len(vk.PublicAndCommitmentCommitted))
+	}
+	if len(vk.CommitmentKeys) != len(vk.PublicAndCommitmentCommitted) {
+		return fmt.Errorf("invalid verifying key: %d commitment keys for %d commitments", len(vk.CommitmentKeys), len(vk.PublicAndCommitmentCommitted))
+	}
 	if cfg.HashToFieldFn == nil {
 		// set the target hash function to legacy keccak256 as it is the default for `solidity.WithTargetSolidityVerifier``
 		cfg.HashToFieldFn = sha3.NewLegacyKeccak256()
@@ -218,9 +229,7 @@ func (vk *VerifyingKey) ExportSolidity(w io.Writer, exportOpts ...solidity.Expor
 		},
 	}
 
-	if len(vk.PublicAndCommitmentCommitted) > 1 {
-		log.Warn().Msg("exporting solidity verifier with more than one commitment is not supported")
-	} else if len(vk.PublicAndCommitmentCommitted) == 1 {
+	if len(vk.PublicAndCommitmentCommitted) == 1 {
 		log.Warn().Msg("exporting solidity verifier only supports `sha256` as `HashToField`. The generated contract may not work for proofs generated with other hash functions.")
 	}
 

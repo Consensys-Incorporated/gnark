@@ -81,7 +81,7 @@ type resources struct {
 // identityGate is the identity gate LevelCircuit and consolidationView use to build level 0's view
 // of the circuit.
 func identityGate() gkr.GadgetGate {
-	return gkr.GadgetGate{Evaluate: gkrcore.Identity, NbIn: 1, Degree: 1}
+	return gkr.GadgetGate{Evaluate: gkrcore.Identity, Degree: 1}
 }
 
 // zeroCheckLazyClaims is a lazy claim for sumcheck (verifier side).

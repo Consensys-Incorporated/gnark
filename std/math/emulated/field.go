@@ -62,8 +62,12 @@ type Field[T FieldParams] struct {
 	// constrainedLimbs keeps track of already range checked limbs. The map
 	// value indicates the range check width.
 	constrainedLimbs map[[16]byte]int
-	checker          frontend.Rangechecker
-	nbRangeChecks    int
+	// checkedModuli keeps track of the variable moduli for which the non-zero
+	// assertion of [Field.checkModulus] has already been emitted. The key is the
+	// concatenation of the hash codes of the limbs.
+	checkedModuli map[string]struct{}
+	checker       frontend.Rangechecker
+	nbRangeChecks int
 
 	deferredChecks []deferredChecker
 
@@ -93,6 +97,7 @@ func NewField[T FieldParams](native frontend.API) (*Field[T], error) {
 		api:              native,
 		log:              logger.Logger(),
 		constrainedLimbs: make(map[[16]byte]int),
+		checkedModuli:    make(map[string]struct{}),
 		checker:          rangecheck.New(native),
 		fParams:          newStaticFieldParams[T](native.Compiler().Field()),
 	}
