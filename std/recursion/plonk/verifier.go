@@ -229,7 +229,11 @@ func PlaceholderProof[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El alg
 // BaseVerifyingKey is the common part of the verification key for the circuits
 // with same size, same number of public inputs and same number of commitments.
 // Use [PlaceholderBaseVerifyingKey] for creating a placeholder for compiling
-// and [ValueOfBaseVerifyingKey] for witness assignment.
+// and [ValueOfBaseVerifyingKey] for witness assignment. When the key is fixed
+// by the circuit author instead of coming from the witness, embed it as a
+// compile-time constant (a field tagged `gnark:"-"`) assigned with
+// [ValueOfBaseVerifyingKeyFixed] -- the KZG G2 line precomputations are only
+// accepted on that path.
 type BaseVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.G2ElementT] struct {
 	NbPublicVariables uint64
 
@@ -262,7 +266,9 @@ type CircuitVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT] struc
 }
 
 // VerifyingKey is a typed PLONK verification key. Use [ValueOfVerifyingKey] or
-// [PlaceholderVerifyingKey] for initializing.
+// [PlaceholderVerifyingKey] for initializing it from the witness, or
+// [ValueOfVerifyingKeyFixed] for a key the circuit author fixes at compile
+// time in a field tagged `gnark:"-"`.
 type VerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.G2ElementT] struct {
 	BaseVerifyingKey[FR, G1El, G2El]
 	CircuitVerifyingKey[FR, G1El]
@@ -274,9 +280,32 @@ type VerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra
 // The KZG verifying key is assigned without precomputed Miller loop lines:
 // witness-supplied lines are not constrained to correspond to the G2 points
 // and are rejected by the pairing backends. The lines are computed in-circuit
-// instead. To keep the precomputation, embed the whole verifying key as a
-// compile-time constant (a field tagged `gnark:"-"`).
+// instead, which is sound but costs more constraints.
+//
+// If the base verifying key is fixed by the circuit author rather than coming
+// from the witness, embed it as a compile-time constant (a struct field tagged
+// `gnark:"-"`) assigned with [ValueOfBaseVerifyingKeyFixed] instead, to keep
+// the precomputation.
 func ValueOfBaseVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.G2ElementT](vk backend_plonk.VerifyingKey) (BaseVerifyingKey[FR, G1El, G2El], error) {
+	return valueOfBaseVerifyingKey[FR, G1El, G2El](vk, false)
+}
+
+// ValueOfBaseVerifyingKeyFixed assigns the base verification key with the
+// Miller loop precomputations for the KZG G2 elements. Use one of the
+// verification keys for the same-sized circuits.
+//
+// The returned value MUST be embedded in the circuit as a compile-time
+// constant: a struct field tagged `gnark:"-"`, or a value built inside Define.
+// It cannot be used as a witness assignment, because the precomputed lines are
+// not constrained to correspond to the G2 coordinates and the pairing backends
+// reject lines reaching them through the witness. For a witness-assigned base
+// verifying key use [ValueOfBaseVerifyingKey] together with
+// [PlaceholderBaseVerifyingKey].
+func ValueOfBaseVerifyingKeyFixed[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.G2ElementT](vk backend_plonk.VerifyingKey) (BaseVerifyingKey[FR, G1El, G2El], error) {
+	return valueOfBaseVerifyingKey[FR, G1El, G2El](vk, true)
+}
+
+func valueOfBaseVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.G2ElementT](vk backend_plonk.VerifyingKey, fixed bool) (BaseVerifyingKey[FR, G1El, G2El], error) {
 	var ret BaseVerifyingKey[FR, G1El, G2El]
 	var err error
 	switch r := any(&ret).(type) {
@@ -286,7 +315,11 @@ func ValueOfBaseVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G
 			return ret, fmt.Errorf("expected bls12377.VerifyingKey, got %T", vk)
 		}
 		r.NbPublicVariables = tVk.NbPublicVariables
-		r.Kzg, err = kzg.ValueOfVerifyingKey[sw_bls12377.G1Affine, sw_bls12377.G2Affine](tVk.Kzg)
+		if fixed {
+			r.Kzg, err = kzg.ValueOfVerifyingKeyFixed[sw_bls12377.G1Affine, sw_bls12377.G2Affine](tVk.Kzg)
+		} else {
+			r.Kzg, err = kzg.ValueOfVerifyingKey[sw_bls12377.G1Affine, sw_bls12377.G2Affine](tVk.Kzg)
+		}
 		if err != nil {
 			return ret, fmt.Errorf("verifying key witness assignment: %w", err)
 		}
@@ -297,7 +330,11 @@ func ValueOfBaseVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G
 			return ret, fmt.Errorf("expected bls12381.VerifyingKey, got %T", vk)
 		}
 		r.NbPublicVariables = tVk.NbPublicVariables
-		r.Kzg, err = kzg.ValueOfVerifyingKey[sw_bls12381.G1Affine, sw_bls12381.G2Affine](tVk.Kzg)
+		if fixed {
+			r.Kzg, err = kzg.ValueOfVerifyingKeyFixed[sw_bls12381.G1Affine, sw_bls12381.G2Affine](tVk.Kzg)
+		} else {
+			r.Kzg, err = kzg.ValueOfVerifyingKey[sw_bls12381.G1Affine, sw_bls12381.G2Affine](tVk.Kzg)
+		}
 		if err != nil {
 			return ret, fmt.Errorf("verifying key witness assignment: %w", err)
 		}
@@ -308,7 +345,11 @@ func ValueOfBaseVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G
 			return ret, fmt.Errorf("expected bw6761.VerifyingKey, got %T", vk)
 		}
 		r.NbPublicVariables = tVk.NbPublicVariables
-		r.Kzg, err = kzg.ValueOfVerifyingKey[sw_bw6761.G1Affine, sw_bw6761.G2Affine](tVk.Kzg)
+		if fixed {
+			r.Kzg, err = kzg.ValueOfVerifyingKeyFixed[sw_bw6761.G1Affine, sw_bw6761.G2Affine](tVk.Kzg)
+		} else {
+			r.Kzg, err = kzg.ValueOfVerifyingKey[sw_bw6761.G1Affine, sw_bw6761.G2Affine](tVk.Kzg)
+		}
 		if err != nil {
 			return ret, fmt.Errorf("verifying key witness assignment: %w", err)
 		}
@@ -319,7 +360,11 @@ func ValueOfBaseVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G
 			return ret, fmt.Errorf("expected bn254.VerifyingKey, got %T", vk)
 		}
 		r.NbPublicVariables = tVk.NbPublicVariables
-		r.Kzg, err = kzg.ValueOfVerifyingKey[sw_bn254.G1Affine, sw_bn254.G2Affine](tVk.Kzg)
+		if fixed {
+			r.Kzg, err = kzg.ValueOfVerifyingKeyFixed[sw_bn254.G1Affine, sw_bn254.G2Affine](tVk.Kzg)
+		} else {
+			r.Kzg, err = kzg.ValueOfVerifyingKey[sw_bn254.G1Affine, sw_bn254.G2Affine](tVk.Kzg)
+		}
 		if err != nil {
 			return ret, fmt.Errorf("verifying key witness assignment: %w", err)
 		}
@@ -526,9 +571,27 @@ func ValueOfCircuitVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT
 // ValueOfVerifyingKey initializes witness from the given PLONK verifying key.
 // It returns an error if there is a mismatch between the type parameters and
 // the provided native verifying key.
+//
+// The KZG verifying key is assigned without precomputed Miller loop lines; see
+// [ValueOfBaseVerifyingKey]. For a verifying key the circuit author fixes at
+// compile time, use [ValueOfVerifyingKeyFixed] instead.
 func ValueOfVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.G2ElementT](vk backend_plonk.VerifyingKey) (VerifyingKey[FR, G1El, G2El], error) {
+	return valueOfVerifyingKey[FR, G1El, G2El](vk, false)
+}
+
+// ValueOfVerifyingKeyFixed initializes a verifying key with the Miller loop
+// precomputations for the KZG G2 elements. It returns an error if there is a
+// mismatch between the type parameters and the provided native verifying key.
+//
+// The returned value MUST be embedded in the circuit as a compile-time
+// constant; see [ValueOfBaseVerifyingKeyFixed].
+func ValueOfVerifyingKeyFixed[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.G2ElementT](vk backend_plonk.VerifyingKey) (VerifyingKey[FR, G1El, G2El], error) {
+	return valueOfVerifyingKey[FR, G1El, G2El](vk, true)
+}
+
+func valueOfVerifyingKey[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.G2ElementT](vk backend_plonk.VerifyingKey, fixed bool) (VerifyingKey[FR, G1El, G2El], error) {
 	var ret VerifyingKey[FR, G1El, G2El]
-	bvk, err := ValueOfBaseVerifyingKey[FR, G1El, G2El](vk)
+	bvk, err := valueOfBaseVerifyingKey[FR, G1El, G2El](vk, fixed)
 	if err != nil {
 		return ret, fmt.Errorf("value of base verifying key: %w", err)
 	}

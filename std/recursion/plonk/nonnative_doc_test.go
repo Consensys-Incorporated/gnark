@@ -102,7 +102,7 @@ func Example_emulated() {
 	innerCcs, innerVK, innerWitness, innerProof := computeInnerProof(ecc.BW6_761.ScalarField(), ecc.BN254.ScalarField())
 
 	// initialize the witness elements
-	circuitVk, err := plonk.ValueOfVerifyingKey[sw_bw6761.ScalarField, sw_bw6761.G1Affine, sw_bw6761.G2Affine](innerVK)
+	circuitVk, err := plonk.ValueOfVerifyingKeyFixed[sw_bw6761.ScalarField, sw_bw6761.G1Affine, sw_bw6761.G2Affine](innerVK)
 	if err != nil {
 		panic(err)
 	}
