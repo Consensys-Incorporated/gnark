@@ -2,6 +2,7 @@ package bls
 
 import (
 	"encoding/hex"
+	"fmt"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -63,12 +64,129 @@ var testCasesG2Sig = []testCaseG2{
 	{"97f1d3a73197d7942695638c4fa9ac0fc3688c4f9774b905a14e3a3f171bac586c55e83ff97a1aeffb3af00adb22c6bb", "1212121212121212121212121212121212121212121212121212121212121212", "a42ae16f1c2a5fa69c04cb5998d2add790764ce8dd45bf25b29b4700829232052b52352dcff1cf255b3a7810ad7269601810f03b2bc8b68cf289cf295b206770605a190b6842583e47c3d1c0f73c54907bfb2a602157d46a4353a20283018763", true},
 }
 
+// blsG2PrehashedCircuit exercises the exported [PublicKeyG1.VerifyG2] directly,
+// with the hashed message supplied by the caller instead of being derived from
+// the message inside the circuit.
+type blsG2PrehashedCircuit struct {
+	Pub       PublicKeyG1
+	Sig       SignatureG2
+	Prehashed sw_bls12381.G2Affine
+}
+
+func (c *blsG2PrehashedCircuit) Define(api frontend.API) error {
+	return c.Pub.VerifyG2(api, &c.Sig, &c.Prehashed)
+}
+
+// TestVerifyG2RejectsInfinityMessage is a regression test for the degenerate
+// case where both the caller-supplied hashed message and the signature are the
+// point at infinity. In that case the pairing check reduces to e(-G₁, O)·e(pk,
+// O) = 1·1 = 1 which holds for *any* public key, i.e. a universal forgery for
+// callers of the exported VerifyG2 that do not themselves constrain the
+// prehashed point.
+func TestVerifyG2RejectsInfinityMessage(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	// a valid, non-infinity public key from the test vectors above
+	pubB, err := hex.DecodeString("a491d1b0ecd9bb917989f0e74f0dea0422eac4a873e5e2644f368dffb9a6e20fd6e10c1b77654d067c0618f6e5a7f79a")
+	assert.NoError(err)
+	var pub bls12381.G1Affine
+	_, err = pub.SetBytes(pubB)
+	assert.NoError(err)
+
+	// the point at infinity in affine coordinates is represented as (0, 0)
+	var inf bls12381.G2Affine
+
+	err = test.IsSolved(&blsG2PrehashedCircuit{}, &blsG2PrehashedCircuit{
+		Pub:       PublicKeyG1(sw_bls12381.NewG1Affine(pub)),
+		Sig:       SignatureG2(sw_bls12381.NewG2Affine(inf)),
+		Prehashed: sw_bls12381.NewG2Affine(inf),
+	}, ecc.BN254.ScalarField())
+	assert.Error(err, "VerifyG2 must reject the point at infinity as the hashed message")
+}
+
+// TestVerifyG2PrehashedCompleteness checks that the infinity check added for
+// the test above does not break the honest path through VerifyG2.
+func TestVerifyG2PrehashedCompleteness(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	tc := testCasesG2Sig[len(testCasesG2Sig)-1]
+	assert.True(tc.output, "expected a positive test vector")
+
+	pubB, err := hex.DecodeString(tc.pubkey)
+	assert.NoError(err)
+	msgB, err := hex.DecodeString(tc.msg)
+	assert.NoError(err)
+	sigB, err := hex.DecodeString(tc.sig)
+	assert.NoError(err)
+
+	var pub bls12381.G1Affine
+	_, err = pub.SetBytes(pubB)
+	assert.NoError(err)
+	var sig bls12381.G2Affine
+	_, err = sig.SetBytes(sigB)
+	assert.NoError(err)
+
+	h, err := bls12381.HashToG2(msgB, []byte(g2_dst))
+	assert.NoError(err)
+
+	err = test.IsSolved(&blsG2PrehashedCircuit{}, &blsG2PrehashedCircuit{
+		Pub:       PublicKeyG1(sw_bls12381.NewG1Affine(pub)),
+		Sig:       SignatureG2(sw_bls12381.NewG2Affine(sig)),
+		Prehashed: sw_bls12381.NewG2Affine(h),
+	}, ecc.BN254.ScalarField())
+	assert.NoError(err, "VerifyG2 must accept a valid (pk, H(m), sig) triple")
+}
+
+// TestMinimalPublicKeyNegativeSolve asserts that the negative vectors of
+// [testCasesG2Sig] are rejected: either the encoded point is malformed /
+// not in the subgroup (so the witness cannot even be built), or the circuit is
+// unsatisfiable.
+func TestMinimalPublicKeyNegativeSolve(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	for i, tc := range testCasesG2Sig {
+		if tc.output {
+			continue
+		}
+		assert.Run(func(assert *test.Assert) {
+			pubB, err := hex.DecodeString(tc.pubkey)
+			assert.NoError(err, "failed to decode pubkey hex")
+			msgB, err := hex.DecodeString(tc.msg)
+			assert.NoError(err, "failed to decode msg hex")
+			sigB, err := hex.DecodeString(tc.sig)
+			assert.NoError(err, "failed to decode sig hex")
+
+			var pub bls12381.G1Affine
+			if _, err := pub.SetBytes(pubB); err != nil {
+				// malformed or infinity public key: rejected out of circuit at
+				// deserialization time.
+				t.Logf("case %d: rejected at pubkey deserialization: %v", i, err)
+				return
+			}
+			var sig bls12381.G2Affine
+			if _, err := sig.SetBytes(sigB); err != nil {
+				// malformed signature: rejected out of circuit at
+				// deserialization time.
+				t.Logf("case %d: rejected at signature deserialization: %v", i, err)
+				return
+			}
+
+			err = test.IsSolved(&blsG2SigCircuit{Msg: make([]uints.U8, len(msgB))}, &blsG2SigCircuit{
+				Pub: PublicKeyG1(sw_bls12381.NewG1Affine(pub)),
+				Msg: uints.NewU8Array(msgB),
+				Sig: SignatureG2(sw_bls12381.NewG2Affine(sig)),
+			}, ecc.BN254.ScalarField())
+			assert.Error(err, "circuit must be unsatisfiable for negative vector %d", i)
+		}, fmt.Sprintf("case=%d", i))
+	}
+}
+
 func TestMinimalPublicKeyTestSolve(t *testing.T) {
 	assert := test.NewAssert(t)
 
 	for _, tc := range testCasesG2Sig {
 		if !tc.output {
-			// we skip negative test cases as the current implementation only supports positive cases
+			// negative cases are covered by TestMinimalPublicKeyNegativeSolve
 			continue
 		}
 		pubB, err := hex.DecodeString(tc.pubkey)
