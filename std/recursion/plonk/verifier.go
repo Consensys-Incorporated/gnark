@@ -671,6 +671,12 @@ func NewVerifier[FR emulated.FieldParams, G1El algebra.G1ElementT, G2El algebra.
 
 // PrepareVerification returns a list of (openingProof, commitment, point), which are to be
 // verified using kzg's BatchVerifyMultiPoints.
+//
+// The returned values MUST be passed to [kzg.Verifier.BatchVerifyMultiPoints].
+// PrepareVerification validates the seven prover-supplied points it consumes
+// directly (LRO, H and the BSB22 commitments), but proof.Z and the two opening
+// quotients are only validated by BatchVerifyMultiPoints. Consuming the
+// returned values any other way leaves those three unchecked.
 func (v *Verifier[FR, G1El, G2El, GtEl]) PrepareVerification(vk VerifyingKey[FR, G1El, G2El], proof Proof[FR, G1El, G2El], witness Witness[FR], opts ...VerifierOption) ([]kzg.Commitment[G1El], []kzg.OpeningProof[FR, G1El], []emulated.Element[FR], error) {
 
 	var fr FR
@@ -983,7 +989,7 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) AssertSameProofs(vk VerifyingKey[FR, G1
 		return fmt.Errorf("no proofs to check")
 	}
 	if len(proofs) == 1 {
-		return v.AssertProof(vk, proofs[0], witnesses[0])
+		return v.AssertProof(vk, proofs[0], witnesses[0], opts...)
 	}
 	var foldedDigests []kzg.Commitment[G1El]
 	var foldedProofs []kzg.OpeningProof[FR, G1El]
