@@ -437,3 +437,86 @@ func TestPairingAcceptsConstantLines(t *testing.T) {
 	assert.NoError(err)
 	assert.NoError(ccs.IsSolved(w), "honest witness with constant lines must solve")
 }
+
+// repeatedPairingCheckBLS377 runs the package-level [PairingCheck] twice over
+// the same []G2Affine slice. The lines are computed in-circuit; prepareLines
+// must not write them back into the caller's Q, or the second call would see
+// the first call's wires and refuse them as non-constant.
+type repeatedPairingCheckBLS377 struct {
+	P1, P2 G1Affine
+	Q1, Q2 G2Affine
+}
+
+func (circuit *repeatedPairingCheckBLS377) Define(api frontend.API) error {
+	P := []G1Affine{circuit.P1, circuit.P2}
+	Q := []G2Affine{circuit.Q1, circuit.Q2}
+	if err := PairingCheck(api, P, Q); err != nil {
+		return fmt.Errorf("first pairing check: %w", err)
+	}
+	if err := PairingCheck(api, P, Q); err != nil {
+		return fmt.Errorf("second pairing check: %w", err)
+	}
+	return nil
+}
+
+// TestRepeatedPairingCheckOnSameQ is a regression test for prepareLines
+// caching computed lines inside the caller's G2Affine values.
+func TestRepeatedPairingCheckOnSameQ(t *testing.T) {
+	assert := test.NewAssert(t)
+	P, Q := pairingCheckData()
+	ccs, err := frontend.Compile(ecc.BW6_761.ScalarField(), r1cs.NewBuilder, &repeatedPairingCheckBLS377{})
+	assert.NoError(err, "two package-level PairingCheck calls on the same Q must compile")
+
+	w, err := frontend.NewWitness(&repeatedPairingCheckBLS377{
+		P1: NewG1Affine(P[0]), P2: NewG1Affine(P[1]),
+		Q1: NewG2Affine(Q[0]), Q2: NewG2Affine(Q[1]),
+	}, ecc.BW6_761.ScalarField())
+	assert.NoError(err)
+	assert.NoError(ccs.IsSolved(w))
+}
+
+// muxFixedG2PairingBLS377 pairs a witness G1 point against a G2 point picked
+// at proving time out of a set the circuit author fixed at compile time; see
+// the emulated counterpart for why muxing the precomputed lines is sound.
+type muxFixedG2PairingBLS377 struct {
+	P   G1Affine
+	Sel frontend.Variable
+	Res GT
+
+	Q [2]G2Affine `gnark:"-"`
+}
+
+func (c *muxFixedG2PairingBLS377) Define(api frontend.API) error {
+	pr := NewPairing(api)
+	q := pr.MuxG2(c.Sel, &c.Q[0], &c.Q[1])
+	res, err := pr.Pair([]*G1Affine{&c.P}, []*G2Affine{q})
+	if err != nil {
+		return fmt.Errorf("pair: %w", err)
+	}
+	pr.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+// TestMuxG2OverConstantLinesBLS377 pins that MuxG2 over compile-time-constant
+// G2 points keeps working with the precomputed lines.
+func TestMuxG2OverConstantLinesBLS377(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, _, p, q0 := bls12377.Generators()
+	var q1 bls12377.G2Affine
+	q1.Double(&q0)
+	circuit := &muxFixedG2PairingBLS377{Q: [2]G2Affine{NewG2AffineFixed(q0), NewG2AffineFixed(q1)}}
+	ccs, err := frontend.Compile(ecc.BW6_761.ScalarField(), r1cs.NewBuilder, circuit)
+	assert.NoError(err, "a mux over constant G2 points must compile")
+
+	for sel, q := range []bls12377.G2Affine{q0, q1} {
+		res, err := bls12377.Pair([]bls12377.G1Affine{p}, []bls12377.G2Affine{q})
+		assert.NoError(err)
+		w, err := frontend.NewWitness(&muxFixedG2PairingBLS377{
+			P:   NewG1Affine(p),
+			Sel: sel,
+			Res: NewGTEl(res),
+		}, ecc.BW6_761.ScalarField())
+		assert.NoError(err)
+		assert.NoError(ccs.IsSolved(w), "selector %d must solve", sel)
+	}
+}

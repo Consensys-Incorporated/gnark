@@ -7,6 +7,7 @@ import (
 
 	bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/internal/kvstore"
 	"github.com/consensys/gnark/std/algebra/emulated/fields_bw6761"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
 	"github.com/consensys/gnark/std/math/emulated"
@@ -41,7 +42,21 @@ func NewGTEl(v bw6761.GT) GTEl {
 	}
 }
 
+// pairingCtxKey is the [kvstore] key under which the per-builder [Pairing]
+// instance is memoised.
+type pairingCtxKey struct{}
+
+// NewPairing returns a [Pairing] instance for the given builder.
+//
+// The instance is cached per builder (like [emulated.NewField]), so that two
+// gadgets calling NewPairing share the in-circuit line-evaluation cache and a
+// G2 point paired by both of them has its lines computed only once.
 func NewPairing(api frontend.API) (*Pairing, error) {
+	if storer, ok := api.Compiler().(kvstore.Store); ok {
+		if pr, ok := storer.GetKeyValue(pairingCtxKey{}).(*Pairing); ok && pr != nil {
+			return pr, nil
+		}
+	}
 	ba, err := emulated.NewField[BaseField](api)
 	if err != nil {
 		return nil, fmt.Errorf("new base api: %w", err)
@@ -60,7 +75,7 @@ func NewPairing(api frontend.API) (*Pairing, error) {
 	}
 	// thirdRootOne² + thirdRootOne + 1 = 0 in BW6761Fp
 	thirdRootOne := ba.NewElement("1968985824090209297278610739700577151397666382303825728450741611566800370218827257750865013421937292370006175842381275743914023380727582819905021229583192207421122272650305267822868639090213645505120388400344940985710520836292650")
-	return &Pairing{
+	pr := &Pairing{
 		api:          api,
 		Ext6:         fields_bw6761.NewExt6(api),
 		curveF:       ba,
@@ -68,7 +83,11 @@ func NewPairing(api frontend.API) (*Pairing, error) {
 		g1:           g1,
 		g2:           g2,
 		thirdRootOne: thirdRootOne,
-	}, nil
+	}
+	if storer, ok := api.Compiler().(kvstore.Store); ok {
+		storer.SetKeyValue(pairingCtxKey{}, pr)
+	}
+	return pr, nil
 }
 
 // FinalExponentiation computes the exponentiation zᵈ where
@@ -186,6 +205,9 @@ func (pr *Pairing) AssertFinalExponentiationIsOne(x *GTEl) {
 // and Qᵢ.P is never read: nothing constrains the lines to correspond to the
 // point, so they must be compile-time constants and witness-supplied lines
 // are rejected with [ErrNonConstantLines].
+//
+// The in-circuit line computation is memoised per Pairing instance and keyed
+// by the Qᵢ pointer, so the Qᵢ must not be modified after the call.
 func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 	f, err := pr.MillerLoop(P, Q)
 	if err != nil {
@@ -203,6 +225,9 @@ func (pr *Pairing) Pair(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 // lines to Qᵢ.P.
 //
 // This function doesn't check that the inputs are in the correct subgroups.
+//
+// The in-circuit line computation is memoised per Pairing instance and keyed
+// by the Qᵢ pointer, so the Qᵢ must not be modified after the call.
 func (pr *Pairing) PairingCheck(P []*G1Affine, Q []*G2Affine) error {
 	// check input size match
 	nP := len(P)
@@ -264,6 +289,16 @@ func (pr *Pairing) AssertIsEqual(x, y *GTEl) {
 	pr.Ext6.AssertIsEqual(x, y)
 }
 
+// MuxG2 performs a lookup from the G2 inputs and returns inputs[sel]. It is
+// most efficient for power of two lengths of the inputs, but works for any
+// number of inputs.
+//
+// All the inputs must either carry precomputed lines (G2Affine.Lines) or none
+// of them. When they do, the lines are muxed alongside the coordinates and the
+// result remembers the candidates: the pairing methods accept it only when
+// every candidate's lines are compile-time constants, since the selector is
+// what binds the selected lines to the selected point. See
+// [ErrNonConstantLines].
 func (pr *Pairing) MuxG2(sel frontend.Variable, inputs ...*G2Affine) *G2Affine {
 	if len(inputs) == 0 {
 		return nil
@@ -289,6 +324,16 @@ func (pr *Pairing) MuxG2(sel frontend.Variable, inputs ...*G2Affine) *G2Affine {
 
 	if inputs[0].Lines == nil {
 		return &ret
+	}
+
+	// The muxed lines below are wires rather than constants. Record the
+	// candidate line sets so that prepareLines can require each of them to be
+	// a compile-time constant: the selector drives the coordinates and the
+	// lines together, so a mux over consistent constant pairs stays
+	// consistent.
+	ret.muxedFrom = make([]*lineEvaluations, len(inputs))
+	for i := range inputs {
+		ret.muxedFrom[i] = inputs[i].Lines
 	}
 
 	// switch precomputed lines
@@ -441,6 +486,9 @@ var loopCounter2 = [190]int8{
 //
 // Alg.2 in https://eprint.iacr.org/2021/1359.pdf Eq. (6') in
 // https://hackmd.io/@gnark/BW6-761-changes
+//
+// The in-circuit line computation is memoised per Pairing instance and keyed
+// by the Qᵢ pointer, so the Qᵢ must not be modified after the call.
 func (pr *Pairing) MillerLoop(P []*G1Affine, Q []*G2Affine) (*GTEl, error) {
 
 	// check input size match
@@ -482,6 +530,28 @@ var ErrNonConstantLines = errors.New("precomputed G2 line evaluations are not co
 func (pr *Pairing) tracksConstants() bool {
 	_, ok := pr.api.Compiler().ConstantValue(0)
 	return ok
+}
+
+// assertSuppliedLines returns [ErrNonConstantLines] unless the lines carried
+// by Q are trusted.
+//
+// Lines set directly on Q must be compile-time constants. Lines produced by
+// [Pairing.MuxG2] are wires, but the mux binds them to the muxed coordinates
+// through a single selector, so it is enough that every candidate the mux
+// chose between was itself a constant set.
+func (pr *Pairing) assertSuppliedLines(Q *G2Affine) error {
+	if Q.muxedFrom != nil {
+		for i, candidate := range Q.muxedFrom {
+			if candidate == nil {
+				return fmt.Errorf("mux candidate %d: %w", i, ErrNonConstantLines)
+			}
+			if err := pr.assertConstantLines(candidate); err != nil {
+				return fmt.Errorf("mux candidate %d: %w", i, err)
+			}
+		}
+		return nil
+	}
+	return pr.assertConstantLines(Q.Lines)
 }
 
 // assertConstantLines returns [ErrNonConstantLines] unless every coordinate
@@ -526,7 +596,7 @@ func (pr *Pairing) prepareLines(Q []*G2Affine) ([]lineEvaluations, error) {
 	lines := make([]lineEvaluations, len(Q))
 	for i := range Q {
 		if Q[i].Lines != nil && tracksConstants {
-			if err := pr.assertConstantLines(Q[i].Lines); err != nil {
+			if err := pr.assertSuppliedLines(Q[i]); err != nil {
 				return nil, fmt.Errorf("G2 input %d: %w", i, err)
 			}
 			lines[i] = *Q[i].Lines

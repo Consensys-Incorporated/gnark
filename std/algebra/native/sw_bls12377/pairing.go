@@ -71,6 +71,28 @@ func tracksConstants(api frontend.API) bool {
 	return ok
 }
 
+// assertSuppliedLines returns [ErrNonConstantLines] unless the lines carried
+// by Q are trusted.
+//
+// Lines set directly on Q must be compile-time constants. Lines produced by
+// [Pairing.MuxG2] are wires, but the mux binds them to the muxed coordinates
+// through a single selector, so it is enough that every candidate the mux
+// chose between was itself a constant set.
+func assertSuppliedLines(api frontend.API, Q *G2Affine) error {
+	if Q.muxedFrom != nil {
+		for i, candidate := range Q.muxedFrom {
+			if candidate == nil {
+				return fmt.Errorf("mux candidate %d: %w", i, ErrNonConstantLines)
+			}
+			if err := assertConstantLines(api, candidate); err != nil {
+				return fmt.Errorf("mux candidate %d: %w", i, err)
+			}
+		}
+		return nil
+	}
+	return assertConstantLines(api, Q.Lines)
+}
+
 // assertConstantLines returns [ErrNonConstantLines] unless every coordinate
 // of every supplied line evaluation is a compile-time constant. An all-zero
 // (i.e. unassigned) set of lines is rejected as well: real precomputations
@@ -105,14 +127,20 @@ func assertConstantLines(api frontend.API, lines *lineEvaluations) error {
 // prepareLines returns the line evaluations to feed to the Miller loop for
 // every Qi. When Qi carries no lines they are computed in-circuit; when it
 // does, they must be compile-time constants, see [ErrNonConstantLines].
+//
+// The computed lines are never written back into the caller's Q: they hold
+// wires of the current builder, and caching them on a value the caller may
+// reuse -- for a second pairing call, or for a second compilation of the same
+// circuit -- would leak those wires out of the call that created them.
 func prepareLines(api frontend.API, Q []G2Affine) ([]lineEvaluations, error) {
 	tracks := tracksConstants(api)
 	lines := make([]lineEvaluations, len(Q))
 	for i := range Q {
 		if Q[i].Lines == nil || !tracks {
-			Qlines := computeLines(api, Q[i].P)
-			Q[i].Lines = Qlines
-		} else if err := assertConstantLines(api, Q[i].Lines); err != nil {
+			lines[i] = *computeLines(api, Q[i].P)
+			continue
+		}
+		if err := assertSuppliedLines(api, &Q[i]); err != nil {
 			return nil, fmt.Errorf("G2 input %d: %w", i, err)
 		}
 		lines[i] = *Q[i].Lines

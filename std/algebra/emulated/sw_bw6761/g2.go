@@ -24,6 +24,16 @@ type g2AffP = sw_emulated.AffinePoint[BaseField]
 type G2Affine struct {
 	P     g2AffP
 	Lines *lineEvaluations
+
+	// muxedFrom records the line sets that MuxG2 selected between when this
+	// point is the result of a mux over points carrying precomputed lines.
+	// Lines then holds wires rather than constants, but the same selector
+	// drives the point coordinates and the lines, so the selected pair is
+	// consistent as long as every candidate pair was. prepareLines checks that
+	// by requiring every candidate's lines to be compile-time constants. The
+	// field is unexported and only ever set by MuxG2, so it cannot be supplied
+	// through the witness.
+	muxedFrom []*lineEvaluations
 }
 
 func newG2AffP(v bw6761.G2Affine) g2AffP {

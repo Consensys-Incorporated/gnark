@@ -1026,3 +1026,113 @@ func TestPairingCheckAcceptsConstantLines(t *testing.T) {
 	err = ccs.IsSolved(fw, solver.OverrideHint(solver.GetHintID(pairingCheckHint), replay))
 	assert.Error(err, "replayed hint outputs must not satisfy a false statement")
 }
+
+// sharedPairingInstancesCircuit runs two independent pairing checks over the
+// same witness G2 points. When twoInstances is set it obtains a second
+// [Pairing] through a second [NewPairing] call, mimicking two gadgets that
+// each call algebra.GetPairing.
+type sharedPairingInstancesCircuit struct {
+	In1G1, In2G1 G1Affine
+	In1G2, In2G2 G2Affine
+
+	twoInstances bool `gnark:"-"`
+}
+
+func (c *sharedPairingInstancesCircuit) Define(api frontend.API) error {
+	pr1, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	if err := pr1.PairingCheck([]*G1Affine{&c.In1G1, &c.In2G1}, []*G2Affine{&c.In1G2, &c.In2G2}); err != nil {
+		return fmt.Errorf("pairing check 1: %w", err)
+	}
+	pr2 := pr1
+	if c.twoInstances {
+		if pr2, err = NewPairing(api); err != nil {
+			return fmt.Errorf("new pairing 2: %w", err)
+		}
+	}
+	if err := pr2.PairingCheck([]*G1Affine{&c.In1G1, &c.In2G1}, []*G2Affine{&c.In1G2, &c.In2G2}); err != nil {
+		return fmt.Errorf("pairing check 2: %w", err)
+	}
+	return nil
+}
+
+// TestPairingInstanceIsCachedPerBuilder pins the line-evaluation cache to the
+// builder rather than to a single [Pairing] value: two gadgets that both call
+// [NewPairing] and pair the same G2 points must not pay for the in-circuit
+// line computation twice.
+func TestPairingInstanceIsCachedPerBuilder(t *testing.T) {
+	assert := test.NewAssert(t)
+	one, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &sharedPairingInstancesCircuit{})
+	assert.NoError(err)
+	two, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &sharedPairingInstancesCircuit{twoInstances: true})
+	assert.NoError(err)
+	assert.Equal(one.GetNbConstraints(), two.GetNbConstraints(),
+		"a second NewPairing must reuse the cached instance and not recompute the G2 lines")
+}
+
+// muxFixedG2PairingCircuit pairs a witness G1 point against a G2 point picked
+// at proving time out of a set the circuit author fixed at compile time. The
+// candidates carry precomputed lines, so MuxG2 muxes the lines alongside the
+// coordinates: the muxed lines are wires, but the selector binds them to the
+// muxed coordinates, so the pair stays consistent.
+type muxFixedG2PairingCircuit struct {
+	P   G1Affine
+	Sel frontend.Variable
+	Res GTEl
+
+	Q [2]G2Affine `gnark:"-"`
+}
+
+func (c *muxFixedG2PairingCircuit) Define(api frontend.API) error {
+	pr, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	q := pr.MuxG2(c.Sel, &c.Q[0], &c.Q[1])
+	res, err := pr.Pair([]*G1Affine{&c.P}, []*G2Affine{q})
+	if err != nil {
+		return fmt.Errorf("pair: %w", err)
+	}
+	pr.AssertIsEqual(res, &c.Res)
+	return nil
+}
+
+// TestMuxG2OverConstantLines pins that MuxG2 over compile-time-constant G2
+// points keeps working with the precomputed lines: the mux result is not a
+// constant, but every candidate it selected between is, and the selector is
+// what ties the selected lines to the selected point.
+func TestMuxG2OverConstantLines(t *testing.T) {
+	assert := test.NewAssert(t)
+	p, q0 := randomG1G2Affines()
+	_, q1 := randomG1G2Affines()
+	circuit := &muxFixedG2PairingCircuit{Q: [2]G2Affine{NewG2AffineFixed(q0), NewG2AffineFixed(q1)}}
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+	assert.NoError(err, "a mux over constant G2 points must compile")
+
+	for sel, q := range []bn254.G2Affine{q0, q1} {
+		res, err := bn254.Pair([]bn254.G1Affine{p}, []bn254.G2Affine{q})
+		assert.NoError(err)
+		w, err := frontend.NewWitness(&muxFixedG2PairingCircuit{
+			P:   NewG1Affine(p),
+			Sel: sel,
+			Res: NewGTEl(res),
+		}, ecc.BN254.ScalarField())
+		assert.NoError(err)
+		assert.NoError(ccs.IsSolved(w), "selector %d must solve", sel)
+	}
+}
+
+// TestMuxG2OverWitnessLinesIsRejected is the other half of
+// [TestMuxG2OverConstantLines]: the mux is only trustworthy because every
+// candidate was a compile-time constant, so a mux over witness-supplied lines
+// must still be refused.
+func TestMuxG2OverWitnessLinesIsRejected(t *testing.T) {
+	assert := test.NewAssert(t)
+	_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &muxFixedG2PairingCircuit{
+		Q: [2]G2Affine{NewG2AffineFixedPlaceholder(), NewG2AffineFixedPlaceholder()},
+	})
+	assert.Error(err, "a mux over witness-supplied G2 lines must be rejected")
+	assert.ErrorIs(err, ErrNonConstantLines)
+}

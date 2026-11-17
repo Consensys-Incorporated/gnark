@@ -138,6 +138,12 @@ type Pairing[G1El G1ElementT, G2El G2ElementT, GtEl GtElementT] interface {
 	// MuxG2 performs a lookup from the G2 inputs and returns inputs[sel]. It is
 	// most efficient for power of two lengths of the inputs, but works for any
 	// number of inputs.
+	//
+	// All the inputs must either carry precomputed line evaluations or none of
+	// them. When they do, the lines are muxed alongside the coordinates and
+	// the pairing methods accept the result only if every input was a
+	// compile-time constant, since the selector is all that binds the selected
+	// lines to the selected point.
 	MuxG2(sel frontend.Variable, inputs ...*G2El) *G2El
 
 	// MuxGt performs a lookup from the Gt inputs and returns inputs[sel]. It is

@@ -367,6 +367,16 @@ func (pr *Pairing) IsEqual(x, y *GT) frontend.Variable {
 	return x.IsEqual(pr.api, *y)
 }
 
+// MuxG2 performs a lookup from the G2 inputs and returns inputs[sel]. It is
+// most efficient for power of two lengths of the inputs, but works for any
+// number of inputs.
+//
+// All the inputs must either carry precomputed lines (G2Affine.Lines) or none
+// of them. When they do, the lines are muxed alongside the coordinates and the
+// result remembers the candidates: the pairing functions accept it only when
+// every candidate's lines are compile-time constants, since the selector is
+// what binds the selected lines to the selected point. See
+// [ErrNonConstantLines].
 func (pr *Pairing) MuxG2(sel frontend.Variable, inputs ...*G2Affine) *G2Affine {
 	if len(inputs) == 0 {
 		return nil
@@ -398,6 +408,16 @@ func (pr *Pairing) MuxG2(sel frontend.Variable, inputs ...*G2Affine) *G2Affine {
 
 	if inputs[0].Lines == nil {
 		return &ret
+	}
+
+	// The muxed lines below are wires rather than constants. Record the
+	// candidate line sets so that prepareLines can require each of them to be
+	// a compile-time constant: the selector drives the coordinates and the
+	// lines together, so a mux over consistent constant pairs stays
+	// consistent.
+	ret.muxedFrom = make([]*lineEvaluations, len(inputs))
+	for i := range inputs {
+		ret.muxedFrom[i] = inputs[i].Lines
 	}
 
 	// switch precomputed lines
