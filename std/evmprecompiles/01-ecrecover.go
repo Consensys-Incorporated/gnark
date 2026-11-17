@@ -22,7 +22,7 @@ import (
 // gadget, not a failure mode: an (r, s) outside that range makes the circuit
 // unsatisfiable rather than returning the zero point. Callers that have to
 // account for out-of-range precompile calldata must therefore filter it before
-// calling ECRecover, exactly as they already had to for r, s >= Fr.
+// calling ECRecover, as they already had to for r, s > Fr.
 //
 // The isFailure variable is set to 1 when the inputs are expected to be invalid
 // in the context of ECRecover. The failure cases are:
