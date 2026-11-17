@@ -153,6 +153,14 @@ func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption)
 		// either. Writing res[1] here would silently overwrite a bit of X.
 		return res
 	}
+	if spareBits[B]() < 3 {
+		// There is room for the flag bit, but this curve's uncompressed
+		// encoding carries no infinity flag, so marshalZeroG1 is the constant
+		// 0 (BN254). res[1] is a spare bit of a canonical X and is therefore
+		// already 0, so res[1] = isZero * 0 cannot change the output -- it
+		// would only emit two emulated IsZero calls for nothing.
+		return res
+	}
 	xZ := c.baseApi.IsZero(x)
 	yZ := c.baseApi.IsZero(y)
 	isZero := c.api.Mul(xZ, yZ)
