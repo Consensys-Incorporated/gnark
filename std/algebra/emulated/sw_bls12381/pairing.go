@@ -440,6 +440,9 @@ func (pr *Pairing) millerLoopLines(P []*G1Affine, lines []lineEvaluations, init 
 	for k := 0; k < n; k++ {
 		// If we have point at infinity, we set yInv[k] to 0 manually to avoid
 		// undefined inversion of 0.
+		//
+		// SECURITY: y == 0 encodes infinity, so any (x, 0), on the curve or
+		// not, contributes 1. Callers must AssertIsOnG1 prover-supplied points.
 		isYZero := pr.curveF.IsZero(&P[k].Y)
 		y := pr.curveF.Select(isYZero, pr.curveF.One(), &P[k].Y)
 		yInv[k] = pr.curveF.Select(isYZero, pr.curveF.Zero(), pr.curveF.Inverse(y))
