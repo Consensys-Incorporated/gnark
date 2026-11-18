@@ -6,13 +6,89 @@
 package gkrbls12377
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr"
+	"github.com/consensys/gnark-crypto/ecc/bls12-377/fr/polynomial"
 	"github.com/consensys/gnark/gkr"
+	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
+	"github.com/stretchr/testify/require"
 )
+
+const (
+	testBlockSize = 64
+	// a block of one instance, and one that is not a multiple of 16
+	testSingle  = 1
+	testPartial = 37
+)
+
+// testGates returns the compiled gates of the MiMC, Poseidon2 and MiMC cipher circuits, and the gate
+// with a constant in every position the compiler allows one.
+func testGates(t *testing.T) []gkr.GateBytecode {
+	t.Helper()
+	// the field only matters for the degree and the solvable variable of the gates
+	cache := gkrtesting.NewCache(gkr.PrimeField(ecc.BLS12_377.ScalarField()))
+
+	circuits := []gkrcore.RawCircuit{
+		gkrtesting.MiMCCircuit(5),
+		gkrtesting.Poseidon2Circuit(4, 3),
+		gkrtesting.SingleMimcCipherGateCircuit(),
+		{{}, {}, {Gate: gkrtesting.ConstantPositionsGate, Inputs: []int{0, 1}}},
+	}
+
+	var gates []gkr.GateBytecode
+	for _, raw := range circuits {
+		_, circuit := cache.Compile(t, raw)
+		for _, wire := range circuit {
+			if !wire.IsInput() {
+				gates = append(gates, wire.Gate.Evaluate)
+			}
+		}
+	}
+	return gates
+}
+
+// TestGateBlockEvaluator checks that the block evaluator of a gate returns what the single-instance
+// evaluator does, for blocks of one instance, of a full block and of a block that is not a multiple of
+// 16.
+func TestGateBlockEvaluator(t *testing.T) {
+	gates := testGates(t)
+	pool := polynomial.NewPool(testBlockSize)
+
+	for _, n := range []int{testSingle, testBlockSize, testPartial} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			for gateI, gate := range gates {
+				inputs := make([]fr.Vector, gate.NbIn)
+				for i := range inputs {
+					inputs[i] = make(fr.Vector, n)
+					for j := range inputs[i] {
+						_, err := inputs[i][j].SetRandom()
+						require.NoError(t, err)
+					}
+				}
+
+				single := NewGateEvaluator(gate)
+				block := NewGateBlockEvaluator(gate, testBlockSize, &pool)
+				block.PushInput(inputs[0])
+				res := block.Evaluate(inputs[1:]...)
+				require.Len(t, res, n)
+
+				in := make([]fr.Element, gate.NbIn)
+				for j := range n {
+					for i := range in {
+						in[i] = inputs[i][j]
+					}
+					want := single.Evaluate(in...)
+					require.True(t, want.Equal(&res[j]), "gate %d, instance %d", gateI, j)
+				}
+				block.Dump()
+			}
+		})
+	}
+}
 
 func TestEvaluatorsMatchGateFunctions(t *testing.T) {
 	field := gkr.PrimeField(ecc.BLS12_377.ScalarField())

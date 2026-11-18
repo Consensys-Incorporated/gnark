@@ -373,3 +373,417 @@ func (gep *GateEvaluatorMixedPool) DumpAll() {
 	}
 	gep.available = nil
 }
+
+// GateBlockEvaluator evaluates a compiled gate over blocks of instances: each instruction is a sequence of
+// vector method calls over a block. Its registers are slices of at most the block size. The first NbIn are the
+// slices that the caller pushes or passes to Evaluate, which the gate only reads; the evaluator owns the others.
+// The constants are scalars, never registers: a constant operand feeds the scalar form of its operation.
+type GateBlockEvaluator struct {
+	gate     gkr.GateBytecode
+	regs     []mamabear.Vector
+	tmp      mamabear.Vector // the scratch of SumExp17, if the gate has one
+	consts   []mamabear.Element
+	nbPushed int                  // number of inputs pushed since the last evaluation
+	pool     *basePolynomial.Pool // pool the owned registers were allocated from, if any
+}
+
+// NewGateBlockEvaluator creates a block evaluator for the given compiled gate, for blocks of up to blockSize
+// instances. It allocates the registers that it owns, from the element pool if it is given one. It
+// panics if the gate has no inputs, as a gate compiled before registers existed does, or if a constant
+// operand is not where the evaluators read it first.
+func NewGateBlockEvaluator(gate gkr.GateBytecode, blockSize int, elementPool ...*basePolynomial.Pool) GateBlockEvaluator {
+	if gate.NbIn == 0 {
+		panic("the gate has no inputs: it was compiled by an older gnark")
+	}
+	if err := gate.CheckEvaluatorAssumptions(); err != nil {
+		panic(err)
+	}
+	e := GateBlockEvaluator{
+		gate:   gate,
+		regs:   make([]mamabear.Vector, gate.NbRegisters()),
+		consts: make([]mamabear.Element, len(gate.Constants)),
+	}
+	if len(elementPool) > 0 {
+		e.pool = elementPool[0]
+	}
+	allocate := func() mamabear.Vector {
+		if e.pool != nil {
+			return e.pool.Make(blockSize)
+		}
+		return make(mamabear.Vector, blockSize)
+	}
+	for r := gate.NbIn; r < len(e.regs); r++ {
+		e.regs[r] = allocate()
+	}
+	for _, inst := range gate.Instructions {
+		if inst.Op == gkr.OpSumExp17 {
+			e.tmp = allocate()
+			break
+		}
+	}
+	for i, constVal := range gate.Constants {
+		e.consts[i].SetBigInt(constVal)
+	}
+	return e
+}
+
+// Dump returns the registers that the evaluator owns to the pool they were allocated from, if any,
+// and does nothing otherwise. The evaluator must not be used after this.
+func (e *GateBlockEvaluator) Dump() {
+	if e.pool == nil {
+		return
+	}
+	for _, r := range e.regs[e.gate.NbIn:] {
+		e.pool.Dump(r[:cap(r)])
+	}
+	if e.tmp != nil {
+		e.pool.Dump(e.tmp[:cap(e.tmp)])
+	}
+}
+
+// n is the number of instances that Evaluate runs on.
+func (e *GateBlockEvaluator) n() int {
+	return len(e.regs[0])
+}
+
+// PushInput adds an input to the evaluator's input buffer, the first registers. The input is a slice
+// of the block, which the gate only reads.
+// Inputs must be added in order, and the number of inputs must match the gate's NbIn. They must all
+// have the same length, at most the block size.
+func (e *GateBlockEvaluator) PushInput(input mamabear.Vector) {
+	if e.nbPushed == e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got more", e.gate.NbIn))
+	}
+	e.regs[e.nbPushed] = input
+	e.nbPushed++
+}
+
+// Evaluate adds top to the inputs in the first registers, executes the gate on them and returns the
+// result, which has the length of the inputs. The inputs are automatically cleared after evaluation,
+// making the evaluator ready for the next evaluation. The gate only reads the inputs, which may overlap.
+// NB! The result is short-lived. It is an input or a register of the evaluator, which the next call
+// may overwrite.
+func (e *GateBlockEvaluator) Evaluate(top ...mamabear.Vector) mamabear.Vector {
+	if e.nbPushed+len(top) != e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got %d", e.gate.NbIn, e.nbPushed+len(top)))
+	}
+	copy(e.regs[e.nbPushed:], top)
+	n := e.n()
+	for i, input := range e.regs[:e.gate.NbIn] {
+		if len(input) != n {
+			panic(fmt.Sprintf("input %d has %d entries, input 0 has %d", i, len(input), n))
+		}
+	}
+	for r := e.gate.NbIn; r < len(e.regs); r++ {
+		e.regs[r] = e.regs[r][:n]
+	}
+	if e.tmp != nil {
+		e.tmp = e.tmp[:n]
+	}
+
+	for i := range e.gate.Instructions {
+		inst := &e.gate.Instructions[i]
+		dst := e.regs[inst.Dst]
+
+		switch inst.Op {
+		case gkr.OpAdd:
+			e.add2(dst, inst.Inputs[0], inst.Inputs[1])
+			for _, in := range inst.Inputs[2:] {
+				dst.Add(dst, e.operand(in))
+			}
+		case gkr.OpMul:
+			e.mul2(dst, inst.Inputs[0], inst.Inputs[1])
+			for _, in := range inst.Inputs[2:] {
+				dst.Mul(dst, e.operand(in))
+			}
+		case gkr.OpSub:
+			e.sub2(dst, inst.Inputs[0], inst.Inputs[1])
+			for _, in := range inst.Inputs[2:] {
+				dst.Sub(dst, e.operand(in))
+			}
+		case gkr.OpNeg:
+			dst.Neg(e.operand(inst.Inputs[0]))
+		case gkr.OpMulAcc:
+			// result = x[0] * x[1] + x[2]
+			e.mul2(dst, inst.Inputs[0], inst.Inputs[1])
+			e.addTo(dst, inst.Inputs[2])
+		case gkr.OpSumExp17:
+			// result = (x[0] + x[1] + x[2])^17
+			e.add2(dst, inst.Inputs[0], inst.Inputs[1])
+			e.addTo(dst, inst.Inputs[2])
+			e.tmp.Mul(dst, dst)     // x²
+			e.tmp.Mul(e.tmp, e.tmp) // x⁴
+			e.tmp.Mul(e.tmp, e.tmp) // x⁸
+			e.tmp.Mul(e.tmp, e.tmp) // x¹⁶
+			dst.Mul(e.tmp, dst)     // x¹⁷
+		default:
+			panic(fmt.Sprintf("unknown operation: %d", inst.Op))
+		}
+	}
+
+	res := e.regs[e.gate.ResultRegister()]
+	clear(e.regs[:e.gate.NbIn])
+	e.nbPushed = 0
+	return res
+}
+
+// isConstant returns whether the operand index names a constant.
+func (e *GateBlockEvaluator) isConstant(index uint16) bool {
+	return int(index) >= len(e.regs)
+}
+
+// operand returns the register that the operand index names.
+func (e *GateBlockEvaluator) operand(index uint16) mamabear.Vector {
+	return e.regs[index]
+}
+
+// constant returns the constant that the operand index names.
+func (e *GateBlockEvaluator) constant(index uint16) *mamabear.Element {
+	return &e.consts[int(index)-len(e.regs)]
+}
+
+// addTo adds the operand in to dst.
+func (e *GateBlockEvaluator) addTo(dst mamabear.Vector, in uint16) {
+	if e.isConstant(in) {
+		dst.ScalarAdd(dst, e.constant(in))
+	} else {
+		dst.Add(dst, e.operand(in))
+	}
+}
+
+// add2 sets dst to the sum of the operands in0 and in1, of which in1 is a register.
+func (e *GateBlockEvaluator) add2(dst mamabear.Vector, in0, in1 uint16) {
+	if e.isConstant(in0) {
+		dst.ScalarAdd(e.operand(in1), e.constant(in0))
+	} else {
+		dst.Add(e.operand(in0), e.operand(in1))
+	}
+}
+
+// mul2 sets dst to the product of the operands in0 and in1, of which in1 is a register.
+func (e *GateBlockEvaluator) mul2(dst mamabear.Vector, in0, in1 uint16) {
+	if e.isConstant(in0) {
+		dst.ScalarMul(e.operand(in1), e.constant(in0))
+	} else {
+		dst.Mul(e.operand(in0), e.operand(in1))
+	}
+}
+
+// sub2 sets dst to the operand in0 minus the operand in1, of which at most one is a constant.
+func (e *GateBlockEvaluator) sub2(dst mamabear.Vector, in0, in1 uint16) {
+	switch {
+	case e.isConstant(in0):
+		dst.ScalarSubFrom(e.constant(in0), e.operand(in1))
+	case e.isConstant(in1):
+		dst.ScalarSub(e.operand(in0), e.constant(in1))
+	default:
+		dst.Sub(e.operand(in0), e.operand(in1))
+	}
+}
+
+// GateBlockEvaluatorMixed evaluates a compiled gate over blocks of instances: each instruction is a sequence of
+// vector method calls over a block. Its registers are slices of at most the block size. The first NbIn are the
+// slices that the caller pushes or passes to Evaluate, which the gate only reads; the evaluator owns the others.
+// The constants are scalars, never registers: a constant operand feeds the scalar form of its operation.
+type GateBlockEvaluatorMixed struct {
+	gate     gkr.GateBytecode
+	regs     []extensions.VectorE3
+	tmp      extensions.VectorE3 // the scratch of SumExp17, if the gate has one
+	consts   []mamabear.Element
+	nbPushed int                // number of inputs pushed since the last evaluation
+	pool     *polynomial.PoolE3 // pool the owned registers were allocated from, if any
+}
+
+// NewGateBlockEvaluatorMixed creates a block evaluator for the given compiled gate, for blocks of up to blockSize
+// instances. It allocates the registers that it owns, from the element pool if it is given one. It
+// panics if the gate has no inputs, as a gate compiled before registers existed does, or if a constant
+// operand is not where the evaluators read it first.
+func NewGateBlockEvaluatorMixed(gate gkr.GateBytecode, blockSize int, elementPool ...*polynomial.PoolE3) GateBlockEvaluatorMixed {
+	if gate.NbIn == 0 {
+		panic("the gate has no inputs: it was compiled by an older gnark")
+	}
+	if err := gate.CheckEvaluatorAssumptions(); err != nil {
+		panic(err)
+	}
+	e := GateBlockEvaluatorMixed{
+		gate:   gate,
+		regs:   make([]extensions.VectorE3, gate.NbRegisters()),
+		consts: make([]mamabear.Element, len(gate.Constants)),
+	}
+	if len(elementPool) > 0 {
+		e.pool = elementPool[0]
+	}
+	allocate := func() extensions.VectorE3 {
+		if e.pool != nil {
+			return e.pool.Make(blockSize)
+		}
+		return make(extensions.VectorE3, blockSize)
+	}
+	for r := gate.NbIn; r < len(e.regs); r++ {
+		e.regs[r] = allocate()
+	}
+	for _, inst := range gate.Instructions {
+		if inst.Op == gkr.OpSumExp17 {
+			e.tmp = allocate()
+			break
+		}
+	}
+	for i, constVal := range gate.Constants {
+		e.consts[i].SetBigInt(constVal)
+	}
+	return e
+}
+
+// Dump returns the registers that the evaluator owns to the pool they were allocated from, if any,
+// and does nothing otherwise. The evaluator must not be used after this.
+func (e *GateBlockEvaluatorMixed) Dump() {
+	if e.pool == nil {
+		return
+	}
+	for _, r := range e.regs[e.gate.NbIn:] {
+		e.pool.Dump(r[:cap(r)])
+	}
+	if e.tmp != nil {
+		e.pool.Dump(e.tmp[:cap(e.tmp)])
+	}
+}
+
+// n is the number of instances that Evaluate runs on.
+func (e *GateBlockEvaluatorMixed) n() int {
+	return len(e.regs[0])
+}
+
+// PushInput adds an input to the evaluator's input buffer, the first registers. The input is a slice
+// of the block, which the gate only reads.
+// Inputs must be added in order, and the number of inputs must match the gate's NbIn. They must all
+// have the same length, at most the block size.
+func (e *GateBlockEvaluatorMixed) PushInput(input extensions.VectorE3) {
+	if e.nbPushed == e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got more", e.gate.NbIn))
+	}
+	e.regs[e.nbPushed] = input
+	e.nbPushed++
+}
+
+// Evaluate adds top to the inputs in the first registers, executes the gate on them and returns the
+// result, which has the length of the inputs. The inputs are automatically cleared after evaluation,
+// making the evaluator ready for the next evaluation. The gate only reads the inputs, which may overlap.
+// NB! The result is short-lived. It is an input or a register of the evaluator, which the next call
+// may overwrite.
+func (e *GateBlockEvaluatorMixed) Evaluate(top ...extensions.VectorE3) extensions.VectorE3 {
+	if e.nbPushed+len(top) != e.gate.NbIn {
+		panic(fmt.Sprintf("expected %d inputs, got %d", e.gate.NbIn, e.nbPushed+len(top)))
+	}
+	copy(e.regs[e.nbPushed:], top)
+	n := e.n()
+	for i, input := range e.regs[:e.gate.NbIn] {
+		if len(input) != n {
+			panic(fmt.Sprintf("input %d has %d entries, input 0 has %d", i, len(input), n))
+		}
+	}
+	for r := e.gate.NbIn; r < len(e.regs); r++ {
+		e.regs[r] = e.regs[r][:n]
+	}
+	if e.tmp != nil {
+		e.tmp = e.tmp[:n]
+	}
+
+	for i := range e.gate.Instructions {
+		inst := &e.gate.Instructions[i]
+		dst := e.regs[inst.Dst]
+
+		switch inst.Op {
+		case gkr.OpAdd:
+			e.add2(dst, inst.Inputs[0], inst.Inputs[1])
+			for _, in := range inst.Inputs[2:] {
+				dst.Add(dst, e.operand(in))
+			}
+		case gkr.OpMul:
+			e.mul2(dst, inst.Inputs[0], inst.Inputs[1])
+			for _, in := range inst.Inputs[2:] {
+				dst.Mul(dst, e.operand(in))
+			}
+		case gkr.OpSub:
+			e.sub2(dst, inst.Inputs[0], inst.Inputs[1])
+			for _, in := range inst.Inputs[2:] {
+				dst.Sub(dst, e.operand(in))
+			}
+		case gkr.OpNeg:
+			dst.Neg(e.operand(inst.Inputs[0]))
+		case gkr.OpMulAcc:
+			// result = x[0] * x[1] + x[2]
+			e.mul2(dst, inst.Inputs[0], inst.Inputs[1])
+			e.addTo(dst, inst.Inputs[2])
+		case gkr.OpSumExp17:
+			// result = (x[0] + x[1] + x[2])^17
+			e.add2(dst, inst.Inputs[0], inst.Inputs[1])
+			e.addTo(dst, inst.Inputs[2])
+			e.tmp.Mul(dst, dst)     // x²
+			e.tmp.Mul(e.tmp, e.tmp) // x⁴
+			e.tmp.Mul(e.tmp, e.tmp) // x⁸
+			e.tmp.Mul(e.tmp, e.tmp) // x¹⁶
+			dst.Mul(e.tmp, dst)     // x¹⁷
+		default:
+			panic(fmt.Sprintf("unknown operation: %d", inst.Op))
+		}
+	}
+
+	res := e.regs[e.gate.ResultRegister()]
+	clear(e.regs[:e.gate.NbIn])
+	e.nbPushed = 0
+	return res
+}
+
+// isConstant returns whether the operand index names a constant.
+func (e *GateBlockEvaluatorMixed) isConstant(index uint16) bool {
+	return int(index) >= len(e.regs)
+}
+
+// operand returns the register that the operand index names.
+func (e *GateBlockEvaluatorMixed) operand(index uint16) extensions.VectorE3 {
+	return e.regs[index]
+}
+
+// constant returns the constant that the operand index names.
+func (e *GateBlockEvaluatorMixed) constant(index uint16) *mamabear.Element {
+	return &e.consts[int(index)-len(e.regs)]
+}
+
+// addTo adds the operand in to dst.
+func (e *GateBlockEvaluatorMixed) addTo(dst extensions.VectorE3, in uint16) {
+	if e.isConstant(in) {
+		dst.ScalarAddElement(dst, e.constant(in))
+	} else {
+		dst.Add(dst, e.operand(in))
+	}
+}
+
+// add2 sets dst to the sum of the operands in0 and in1, of which in1 is a register.
+func (e *GateBlockEvaluatorMixed) add2(dst extensions.VectorE3, in0, in1 uint16) {
+	if e.isConstant(in0) {
+		dst.ScalarAddElement(e.operand(in1), e.constant(in0))
+	} else {
+		dst.Add(e.operand(in0), e.operand(in1))
+	}
+}
+
+// mul2 sets dst to the product of the operands in0 and in1, of which in1 is a register.
+func (e *GateBlockEvaluatorMixed) mul2(dst extensions.VectorE3, in0, in1 uint16) {
+	if e.isConstant(in0) {
+		dst.ScalarMulByElement(e.operand(in1), e.constant(in0))
+	} else {
+		dst.Mul(e.operand(in0), e.operand(in1))
+	}
+}
+
+// sub2 sets dst to the operand in0 minus the operand in1, of which at most one is a constant.
+func (e *GateBlockEvaluatorMixed) sub2(dst extensions.VectorE3, in0, in1 uint16) {
+	switch {
+	case e.isConstant(in0):
+		dst.ScalarSubFromElement(e.constant(in0), e.operand(in1))
+	case e.isConstant(in1):
+		dst.ScalarSubElement(e.operand(in0), e.constant(in1))
+	default:
+		dst.Sub(e.operand(in0), e.operand(in1))
+	}
+}

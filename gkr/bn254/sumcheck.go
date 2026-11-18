@@ -12,6 +12,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr/polynomial"
 	"github.com/consensys/gnark/constraint"
+	"github.com/consensys/gnark/gkr"
 	evaluator "github.com/consensys/gnark/internal/gkr/bn254"
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 )
@@ -168,6 +169,53 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []fr.Element, purportedValue fr.
 type zeroCheckClaims struct {
 	zeroCheckBase
 	eqs []polynomial.MultiLin // per-wire interpolation bases for evaluating wire assignments at challenge points
+
+	workerScratch   sync.Pool // the scratch of the round kernel's workers
+	workerBlockSize int       // the block size of the round kernel
+}
+
+// newZeroCheckClaims returns the claims of level levelI, with the block sizes of the round kernels, and
+// the constructors of the scratch of their workers, set for blocks of the size of the level's first round.
+func newZeroCheckClaims(r *resources, levelI int, foldingCoeff fr.Element) *zeroCheckClaims {
+	c := new(zeroCheckClaims)
+	c.init(r, levelI, foldingCoeff)
+
+	gates := gkrcore.LevelGates(r.circuit, r.schedule[levelI])
+
+	firstRoundSize := 1 << (r.nbVars - 1)
+	c.workerBlockSize = c.blockSize(gates, fr.Bytes, fr.Bytes)
+	c.setWorkerScratchNew(gates, firstRoundSize)
+	return c
+}
+
+// workerScratch is the scratch of one worker in roundPolynomial: the block evaluator of each wire of the
+// level, and an iterator over each unique input and over each wire's eq table, which hold the values
+// at the current point.
+type workerScratch struct {
+	evaluators []evaluator.GateBlockEvaluator // per wire
+	inputIts   []fwdDiffIteratorLinear        // per unique input
+	eqIts      []fwdDiffIteratorLinear        // per wire
+}
+
+// setWorkerScratchNew sets the constructor of the scratch of the workers of roundPolynomial, for blocks of the
+// size of the first round, whose tables have firstRoundSize pairs of entries, and for the level's gates.
+func (c *zeroCheckClaims) setWorkerScratchNew(gates []gkr.GateBytecode, firstRoundSize int) {
+	blockSize := min(firstRoundSize, c.workerBlockSize)
+	c.workerScratch.New = func() any {
+		s := &workerScratch{
+			evaluators: make([]evaluator.GateBlockEvaluator, len(gates)),
+			inputIts:   make([]fwdDiffIteratorLinear, len(c.input)),
+			eqIts:      make([]fwdDiffIteratorLinear, len(gates)),
+		}
+		for k := range s.inputIts {
+			s.inputIts[k] = newFwdDiffIteratorLinear(make(fr.Vector, blockSize), make(fr.Vector, blockSize))
+		}
+		for w, gate := range gates {
+			s.evaluators[w] = evaluator.NewGateBlockEvaluator(gate, blockSize)
+			s.eqIts[w] = newFwdDiffIteratorLinear(make(fr.Vector, blockSize), make(fr.Vector, blockSize))
+		}
+		return s
+	}
 }
 
 // roundPolynomial computes gⱼ = ∑ₕ ∑ᵥ eqs[v](Xⱼ, h...) · gateᵥ(inputs(Xⱼ, h...)).
@@ -175,72 +223,42 @@ type zeroCheckClaims struct {
 // The value gⱼ(0) is inferred from the equation gⱼ(0) + gⱼ(1) = gⱼ₋₁(rⱼ₋₁).
 // By convention, g₀ is a constant polynomial equal to the claimed sum.
 func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
-	level := c.resources.schedule[c.levelI].(*constraint.GkrSumcheckLevel)
-	degree := c.resources.circuit.ZeroCheckDegree(level)
-	nbUniqueInputs := len(c.input)
-	nbWires := len(c.eqs)
-
-	// Both eqs and input are multilinear, thus linear in Xⱼ.
-	// For any such f, f(m) = m·(f(1) - f(0)) + f(0), and f(0), f(1) are read directly
-	// from the bookkeeping tables. This allows stepwise evaluation at Xⱼ = 1, 2, ..., degree.
-
+	degree := c.resources.circuit.ZeroCheckDegree(c.resources.schedule[c.levelI])
 	sumSize := len(c.eqs[0]) / 2
+	blockSize := min(sumSize, c.workerBlockSize)
 
 	p := make([]fr.Element, degree)
 	var mu sync.Mutex
-	computeAll := func(start, end int) {
-		var eqStep fr.Element
-		var step fr.Element
-
-		evaluators := make([]*evaluator.GateEvaluator, nbWires)
-		for w := range nbWires {
-			evaluators[w] = c.gateEvaluatorPools[w].Get()
-		}
-		defer func() {
-			for w := range nbWires {
-				c.gateEvaluatorPools[w].Put(evaluators[w])
-			}
-		}()
-
+	computeBlock := func(offset, end int) {
+		blockLen := end - offset
+		s := c.workerScratch.Get().(*workerScratch)
+		defer c.workerScratch.Put(s)
 		res := make([]fr.Element, degree)
-		var term fr.Element
 
-		// The evaluations are laid out row by row, row d being Xⱼ = d+1:
-		// eqEvals[d*nbWires+w] is eqs[w](d+1, h...) and inputEvals[d*nbUniqueInputs+k] is the
-		// k-th input table at (d+1, h...).
-		eqEvals := make([]fr.Element, degree*nbWires)
-		inputEvals := make([]fr.Element, degree*nbUniqueInputs)
-
-		for h := start; h < end; h++ {
-			evalAt1Index := sumSize + h
-			for k := range nbWires {
-				eqEvals[k].Set(&c.eqs[k][evalAt1Index]) // evaluation at Xⱼ = 1, taken directly from the table
-				eqStep.Sub(&eqEvals[k], &c.eqs[k][h])   // eqStep = eqs[k](1) - eqs[k](0)
-				for d := 1; d < degree; d++ {
-					eqEvals[d*nbWires+k].Add(&eqEvals[(d-1)*nbWires+k], &eqStep)
+		for k := range s.inputIts {
+			s.inputIts[k].start(c.input[k], offset, blockLen)
+		}
+		for w := range s.eqIts {
+			s.eqIts[w].start(c.eqs[w], offset, blockLen)
+		}
+		for d := range degree {
+			if d > 0 {
+				for k := range s.inputIts {
+					s.inputIts[k].next()
+				}
+				for w := range s.eqIts {
+					s.eqIts[w].next()
 				}
 			}
-			for k := range nbUniqueInputs {
-				inputEvals[k].Set(&c.input[k][evalAt1Index])
-				step.Sub(&inputEvals[k], &c.input[k][h])
-				for d := 1; d < degree; d++ {
-					inputEvals[d*nbUniqueInputs+k].Add(&inputEvals[(d-1)*nbUniqueInputs+k], &step)
+			for w := range s.eqIts {
+				for _, k := range c.inputIndices[w] {
+					s.evaluators[w].PushInput(s.inputIts[k].values)
 				}
-			}
-
-			eqIndex, inputIndex := 0, 0 // start of the current row in eqEvals and inputEvals
-			for d := range degree {
-				for w := range nbWires {
-					for _, inputI := range c.inputIndices[w] {
-						evaluators[w].PushInput(inputEvals[inputIndex+inputI])
-					}
-					term.Mul(&eqEvals[eqIndex+w], evaluators[w].Evaluate())
-					res[d].Add(&res[d], &term) // collect contributions into the sum from start to end
-				}
-				eqIndex += nbWires
-				inputIndex += nbUniqueInputs
+				term := new(s.eqIts[w].values.InnerProduct(s.evaluators[w].Evaluate()))
+				res[d].Add(&res[d], term)
 			}
 		}
+
 		mu.Lock()
 		for i := range p {
 			p[i].Add(&p[i], &res[i]) // collect into the complete sum
@@ -248,12 +266,7 @@ func (c *zeroCheckClaims) roundPolynomial() polynomial.Polynomial {
 		mu.Unlock()
 	}
 
-	const minBlockSize = 64
-	if sumSize < minBlockSize {
-		computeAll(0, sumSize)
-	} else {
-		c.resources.workers.Submit(sumSize, computeAll, minBlockSize).Wait()
-	}
+	c.resources.workers.Submit(sumSize, computeBlock, blockSize).Wait()
 
 	return p
 }
@@ -334,6 +347,39 @@ func (r *resources) eqAcc(e, m polynomial.MultiLin, q []fr.Element) {
 	}, 512).Wait()
 }
 
+// fwdDiffIteratorLinear steps the evaluations over the hypercube of a multilinear f(X₁, x') over a block. The
+// table holds the evaluations, those at X₁ = 0 first and those at X₁ = 1 after. As f is linear in X₁,
+// its evaluations at X₁ = 1, 2, 3, ... are those at 1 plus the multiples of the first difference
+// f(1, x') - f(0, x'), which the iterator holds as scratch, with the current evaluations from X₁ = 2 on.
+type fwdDiffIteratorLinear struct {
+	step, cur fr.Vector // scratch of the block length
+	values    fr.Vector // the evaluations at the current X₁
+}
+
+// newFwdDiffIteratorLinear returns an iterator over blocks of up to len(step) entries of each half of a table, with
+// the scratch step and cur.
+func newFwdDiffIteratorLinear(step, cur fr.Vector) fwdDiffIteratorLinear {
+	return fwdDiffIteratorLinear{step: step, cur: cur}
+}
+
+// start places the iterator at X₁ = 1, on the blockLen entries of each half of table from offset. The
+// evaluations at X₁ = 1 are then in s.values, as a subslice of the table itself.
+func (s *fwdDiffIteratorLinear) start(table polynomial.MultiLin, offset, blockLen int) {
+	atOne := len(table) / 2
+	s.values = fr.Vector(table[atOne+offset : atOne+offset+blockLen])
+	step := s.step[:blockLen]
+	step.Sub(s.values, fr.Vector(table[offset:offset+blockLen]))
+}
+
+// next steps to the next value of X₁. The evaluations at it are then in s.values, and those at the
+// previous value are overwritten from the second call on.
+func (s *fwdDiffIteratorLinear) next() {
+	n := len(s.values)
+	cur := s.cur[:n]
+	cur.Add(s.values, s.step[:n])
+	s.values = cur
+}
+
 // zeroCheckBase holds the fields and initialization logic common to both
 // zeroCheckClaims and singleSourceZeroCheckClaims.
 type zeroCheckBase struct {
@@ -343,6 +389,20 @@ type zeroCheckBase struct {
 	input              []polynomial.MultiLin // UniqueGateInputs order
 	inputIndices       [][]int               // [wireInLevel][gateInputJ] → index in input
 	gateEvaluatorPools []*evaluator.GateEvaluatorPool
+}
+
+// blockSize returns the largest multiple of 16, and at least 16, such that the working set of a block
+// of instances in a round kernel fits the cache budget: the inputs and their steps, the eq values
+// and their steps, the registers of the level's largest gate that are not its inputs, and one result
+// vector. gates are the level's gates. The inputs and the gates' registers are of inputSize bytes, and
+// the eq values of eqSize.
+func (c *zeroCheckBase) blockSize(gates []gkr.GateBytecode, inputSize, eqSize int) int {
+	maxOtherRegisters := 0
+	for _, gate := range gates {
+		maxOtherRegisters = max(maxOtherRegisters, gate.NbRegisters()-gate.NbIn)
+	}
+	perInstance := 2*len(c.input)*inputSize + 2*len(gates)*eqSize + (maxOtherRegisters+1)*inputSize
+	return max(16, c.resources.cacheBudget/perInstance/16*16)
 }
 
 func (c *zeroCheckBase) varsNum() int {
@@ -386,26 +446,17 @@ func (c *zeroCheckBase) init(r *resources, levelI int, foldingCoeff fr.Element) 
 	}
 	c.inputIndices = inputIndices
 
-	nbWires := 0
-	for _, group := range level.ClaimGroups() {
-		nbWires += len(group.Wires)
-	}
-	c.gateEvaluatorPools = make([]*evaluator.GateEvaluatorPool, nbWires)
-	levelWireI := 0
-	for _, group := range level.ClaimGroups() {
-		for _, wI := range group.Wires {
-			wire := r.circuit[wI]
-			c.gateEvaluatorPools[levelWireI] = evaluator.NewGateEvaluatorPool(wire.Gate.Evaluate, &r.memPool)
-			levelWireI++
-		}
+	gates := gkrcore.LevelGates(r.circuit, level)
+	c.gateEvaluatorPools = make([]*evaluator.GateEvaluatorPool, len(gates))
+	for levelWireI, gate := range gates {
+		c.gateEvaluatorPools[levelWireI] = evaluator.NewGateEvaluatorPool(gate, &r.memPool)
 	}
 }
 
 func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
 	foldingCoeff, claimedSum := r.foldClaims(levelI)
 
-	var claims zeroCheckClaims
-	claims.init(r, levelI, foldingCoeff)
+	claims := newZeroCheckClaims(r, levelI, foldingCoeff)
 
 	level := r.schedule[levelI]
 	eqLength := 1 << r.nbVars
@@ -453,7 +504,7 @@ func (r *resources) proveSumcheckLevel(levelI int) sumcheckProof {
 		}
 	}
 
-	return sumcheckProve(&claims, claimedSum, r.transcript)
+	return sumcheckProve(claims, claimedSum, r.transcript)
 }
 
 // foldClaims squeezes the folding coefficient of level levelI if it has at least two claims, and

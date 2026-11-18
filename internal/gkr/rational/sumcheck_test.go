@@ -85,3 +85,39 @@ func TestSumcheckDeterministicHashSingleClaimMultilin(t *testing.T) {
 		}
 	}
 }
+
+// TestFwdDiffIteratorLinear checks, on a random table, that the values of an iterator at X₁ = 1, ..., 4 over a
+// block are the table's evaluations there, and that its values at X₁ = 1 are the table's subslice.
+func TestFwdDiffIteratorLinear(t *testing.T) {
+	const (
+		atOne    = 64
+		offset   = 20
+		blockLen = 37
+	)
+	table := make(polynomial.MultiLin, 2*atOne)
+	for i := range table {
+		_, err := table[i].SetRandom()
+		assert.NoError(t, err)
+	}
+
+	s := newFwdDiffIteratorLinear(make(rational.Vector, blockLen), make(rational.Vector, blockLen))
+	s.start(table, offset, blockLen)
+	assert.Len(t, s.values, blockLen)
+	assert.Same(t, &table[atOne+offset], &s.values[0])
+
+	for point := 1; point <= 4; point++ {
+		if point > 1 {
+			s.next()
+			assert.Len(t, s.values, blockLen)
+		}
+		for i := range blockLen {
+			// f(X) = f(0) + X·(f(1) - f(0))
+			var x, multiple, expected rational.Element
+			x.SetUint64(uint64(point))
+			multiple.Sub(&table[atOne+offset+i], &table[offset+i])
+			multiple.Mul(&multiple, &x)
+			expected.Add(&table[offset+i], &multiple)
+			assert.True(t, expected.Equal(&s.values[i]), "point %d, entry %d", point, i)
+		}
+	}
+}

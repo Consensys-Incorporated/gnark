@@ -374,6 +374,18 @@ func LevelWires[G any](c gkr.Circuit[G], level constraint.GkrProvingLevel) []boo
 	return wires
 }
 
+// LevelGates returns the Evaluate of the gate of each wire of level, in the order of the level's
+// claim groups and their wires.
+func LevelGates[G any](c gkr.Circuit[G], level constraint.GkrProvingLevel) []G {
+	var gates []G
+	for _, group := range level.ClaimGroups() {
+		for _, wI := range group.Wires {
+			gates = append(gates, c[wI].Gate.Evaluate)
+		}
+	}
+	return gates
+}
+
 // ProofSize returns the total number of field elements in a GKR proof. The identity's Evaluate is
 // never called, so its zero value does for G.
 func ProofSize[G any](c gkr.Circuit[G], schedule constraint.GkrProvingSchedule, logNbInstances int) int {

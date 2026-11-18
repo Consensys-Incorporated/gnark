@@ -1,11 +1,15 @@
 import (
 	"fmt"
+	"{{ .FieldPackagePath }}"
 	"{{ .FieldPackagePath }}/polynomial"
+	{{- if .Mixed }}
+	"{{ .BaseFieldPackagePath }}"
+	basePolynomial "{{ .BaseFieldPackagePath }}/polynomial"
+	{{- end }}
 	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
 	"github.com/stretchr/testify/assert"
 	{{ if not .GenerateTestVectors}}
-	"{{ .FieldPackagePath }}"
 	"math/bits"
 	{{ end }}
 	"strings"
@@ -82,4 +86,60 @@ func TestSumcheckDeterministicHashSingleClaimMultilin(t *testing.T) {
 
 {{ if not .GenerateTestVectors }}
 {{ template "sumcheckTestDefs" .}}
+{{ end }}
+
+{{ template "fwdDiffIteratorLinearTest" dict "Config" . "Ext" false }}
+{{- if .Mixed }}
+
+{{ template "fwdDiffIteratorLinearTest" dict "Config" . "Ext" true }}
+{{- end }}
+
+{{ define "fwdDiffIteratorLinearTest" -}}
+{{- $vec := printf "%s.Vector" .Config.BaseFieldPackageName }}
+{{- $multiLin := printf "%s.MultiLin" .Config.BasePolynomial }}
+{{- $name := "fwdDiffIteratorLinear" }}
+{{- $test := "TestFwdDiffIteratorLinear" }}
+{{- $new := "newFwdDiffIteratorLinear" }}
+{{- if .Ext }}
+{{- $vec = printf "%s.Vector%s" .Config.FieldPackageName .Config.ExtensionSuffix }}
+{{- $multiLin = printf "polynomial.MultiLin%s" .Config.ExtensionSuffix }}
+{{- $name = printf "fwdDiffIteratorLinear%s" .Config.ExtensionSuffix }}
+{{- $test = printf "TestFwdDiffIteratorLinear%s" .Config.ExtensionSuffix }}
+{{- $new = printf "newFwdDiffIteratorLinear%s" .Config.ExtensionSuffix }}
+{{- end }}
+// {{ $test }} checks, on a random table, that the values of an iterator at X₁ = 1, ..., 4 over a
+// block are the table's evaluations there, and that its values at X₁ = 1 are the table's subslice.
+func {{ $test }}(t *testing.T) {
+	const (
+		atOne    = 64
+		offset   = 20
+		blockLen = 37
+	)
+	table := make({{ $multiLin }}, 2*atOne)
+	for i := range table {
+		_, err := table[i].SetRandom()
+		assert.NoError(t, err)
+	}
+
+	s := {{ $new }}(make({{ $vec }}, blockLen), make({{ $vec }}, blockLen))
+	s.start(table, offset, blockLen)
+	assert.Len(t, s.values, blockLen)
+	assert.Same(t, &table[atOne+offset], &s.values[0])
+
+	for point := 1; point <= 4; point++ {
+		if point > 1 {
+			s.next()
+			assert.Len(t, s.values, blockLen)
+		}
+		for i := range blockLen {
+			// f(X) = f(0) + X·(f(1) - f(0))
+			var x, multiple, expected {{ if .Ext }}{{ .Config.ElementType }}{{ else }}{{ .Config.BaseElementType }}{{ end }}
+			x.SetUint64(uint64(point))
+			multiple.Sub(&table[atOne+offset+i], &table[offset+i])
+			multiple.Mul(&multiple, &x)
+			expected.Add(&table[offset+i], &multiple)
+			assert.True(t, expected.Equal(&s.values[i]), "point %d, entry %d", point, i)
+		}
+	}
+}
 {{ end }}

@@ -6,13 +6,127 @@
 package gkrkoalabear
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark-crypto/field/koalabear/extensions"
+	"github.com/consensys/gnark-crypto/field/koalabear/extensions/polynomial"
+	basePolynomial "github.com/consensys/gnark-crypto/field/koalabear/polynomial"
 	"github.com/consensys/gnark/gkr"
+	"github.com/consensys/gnark/internal/gkr/gkrcore"
 	"github.com/consensys/gnark/internal/gkr/gkrtesting"
+	"github.com/stretchr/testify/require"
 )
+
+const (
+	testBlockSize = 64
+	// a block of one instance, and one that is not a multiple of 16
+	testSingle  = 1
+	testPartial = 37
+)
+
+// testGates returns the compiled gates of the MiMC, Poseidon2 and MiMC cipher circuits, and the gate
+// with a constant in every position the compiler allows one.
+func testGates(t *testing.T) []gkr.GateBytecode {
+	t.Helper()
+	// the field only matters for the degree and the solvable variable of the gates
+	cache := gkrtesting.NewCache(gkr.KoalaBearE6())
+
+	circuits := []gkrcore.RawCircuit{
+		gkrtesting.MiMCCircuit(5),
+		gkrtesting.Poseidon2Circuit(4, 3),
+		gkrtesting.SingleMimcCipherGateCircuit(),
+		{{}, {}, {Gate: gkrtesting.ConstantPositionsGate, Inputs: []int{0, 1}}},
+	}
+
+	var gates []gkr.GateBytecode
+	for _, raw := range circuits {
+		_, circuit := cache.Compile(t, raw)
+		for _, wire := range circuit {
+			if !wire.IsInput() {
+				gates = append(gates, wire.Gate.Evaluate)
+			}
+		}
+	}
+	return gates
+}
+
+// TestGateBlockEvaluator checks that the block evaluator of a gate returns what the single-instance
+// evaluator does, for blocks of one instance, of a full block and of a block that is not a multiple of
+// 16.
+func TestGateBlockEvaluator(t *testing.T) {
+	gates := testGates(t)
+	pool := basePolynomial.NewPool(testBlockSize)
+
+	for _, n := range []int{testSingle, testBlockSize, testPartial} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			for gateI, gate := range gates {
+				inputs := make([]koalabear.Vector, gate.NbIn)
+				for i := range inputs {
+					inputs[i] = make(koalabear.Vector, n)
+					for j := range inputs[i] {
+						_, err := inputs[i][j].SetRandom()
+						require.NoError(t, err)
+					}
+				}
+
+				single := NewGateEvaluator(gate)
+				block := NewGateBlockEvaluator(gate, testBlockSize, &pool)
+				block.PushInput(inputs[0])
+				res := block.Evaluate(inputs[1:]...)
+				require.Len(t, res, n)
+
+				in := make([]koalabear.Element, gate.NbIn)
+				for j := range n {
+					for i := range in {
+						in[i] = inputs[i][j]
+					}
+					want := single.Evaluate(in...)
+					require.True(t, want.Equal(&res[j]), "gate %d, instance %d", gateI, j)
+				}
+				block.Dump()
+			}
+		})
+	}
+}
+
+// TestGateBlockEvaluatorMixed is TestGateBlockEvaluator for the evaluators over the extension.
+func TestGateBlockEvaluatorMixed(t *testing.T) {
+	gates := testGates(t)
+	pool := polynomial.NewPoolE6(testBlockSize)
+
+	for _, n := range []int{testSingle, testBlockSize, testPartial} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			for gateI, gate := range gates {
+				inputs := make([]extensions.VectorE6, gate.NbIn)
+				for i := range inputs {
+					inputs[i] = make(extensions.VectorE6, n)
+					for j := range inputs[i] {
+						_, err := inputs[i][j].SetRandom()
+						require.NoError(t, err)
+					}
+				}
+
+				single := NewGateEvaluatorMixed(gate)
+				block := NewGateBlockEvaluatorMixed(gate, testBlockSize, &pool)
+				block.PushInput(inputs[0])
+				res := block.Evaluate(inputs[1:]...)
+				require.Len(t, res, n)
+
+				in := make([]extensions.E6, gate.NbIn)
+				for j := range n {
+					for i := range in {
+						in[i] = inputs[i][j]
+					}
+					want := single.Evaluate(in...)
+					require.True(t, want.Equal(&res[j]), "gate %d, instance %d", gateI, j)
+				}
+				block.Dump()
+			}
+		})
+	}
+}
 
 func TestEvaluatorsMatchGateFunctions(t *testing.T) {
 	field := gkr.KoalaBearE6()

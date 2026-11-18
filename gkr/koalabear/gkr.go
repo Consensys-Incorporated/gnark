@@ -86,6 +86,20 @@ type resources struct {
 	claims             Claims
 	consolidated       []bool // the wires of schedule[0], indexed by wire
 	proof              Proof  // the proof being built by Prove or checked by Verify
+	cacheBudget        int    // the number of bytes that the working set of a block in a round kernel should fit in
+}
+
+// defaultCacheBudget is the default of WithCacheBudget.
+const defaultCacheBudget = 256 << 10
+
+// Option is an option of Prove.
+type Option func(*resources)
+
+// WithCacheBudget sets the number of bytes that the working set of a block of instances should fit
+// in, in the round kernels of the sumcheck levels. The block size is the largest multiple of 16 that
+// does so, and at least 16. The default is 256 KiB.
+func WithCacheBudget(bytes int) Option {
+	return func(r *resources) { r.cacheBudget = bytes }
 }
 
 // evaluateBase returns the evaluation of the multilinear extension of the base field column col at
@@ -199,7 +213,7 @@ func (r *resources) proveLevel(levelI int) {
 // inputs and outputs; the caller must check them. The claim values returned to the caller, the
 // output evaluations among them, are not bound into the transcript. hasher must be seeded as
 // Verify requires.
-func Prove[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.FieldHasher[koalabear.Element, D]) (Proof, Claims, error) {
+func Prove[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAssignment, hasher hash.FieldHasher[koalabear.Element, D], opts ...Option) (Proof, Claims, error) {
 	nbInstances := assignment.NumInstances()
 	nbVars := assignment.NumVars()
 	if nbVars == 0 {
@@ -211,6 +225,10 @@ func Prove[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.
 
 	r := newResources(c, schedule, nbVars, hasher)
 	r.assignment = assignment
+	r.cacheBudget = defaultCacheBudget
+	for _, opt := range opts {
+		opt(&r)
+	}
 	r.memPool = polynomial.NewPoolE6(gkrcore.MemoryRequirements(c, nbInstances)...)
 	r.workers = utils.NewWorkerPool()
 	defer r.workers.Stop()
