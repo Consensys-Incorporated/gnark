@@ -90,3 +90,51 @@ func TestEdgeCases(t *testing.T) {
 		}, fmt.Sprintf("edge-%d", i))
 	}
 }
+
+// expmodConstZeroBaseCircuit specialises [Expmod] with a compile-time constant
+// zero base (as an out-of-tree caller hardcoding base = 0 would). This takes
+// the constant-folding fast path inside [emulated.Field.ModExp], which a
+// witness base never reaches.
+type expmodConstZeroBaseCircuit struct {
+	Exp    emulated.Element[emparams.Mod1e4096]
+	Mod    emulated.Element[emparams.Mod1e4096]
+	Result emulated.Element[emparams.Mod1e4096]
+}
+
+func (c *expmodConstZeroBaseCircuit) Define(api frontend.API) error {
+	f, err := emulated.NewField[emparams.Mod1e4096](api)
+	if err != nil {
+		return fmt.Errorf("new field: %w", err)
+	}
+	res := Expmod(api, f.Zero(), &c.Exp, &c.Mod)
+	// results here are always 0 or 1, both canonical
+	f.AssertIsEqual(res, &c.Result)
+	return nil
+}
+
+// TestEdgeCasesConstZeroBase pins the interaction between the constant-zero
+// base fast path and the isOneOrZeroMod folding done by [Expmod]: 0^0 is 1,
+// except modulo 0 or 1 where everything is 0.
+func TestEdgeCasesConstZeroBase(t *testing.T) {
+	assert := test.NewAssert(t)
+	testCases := []struct {
+		exp, modulus, result *big.Int
+	}{
+		{big.NewInt(0), big.NewInt(7), big.NewInt(1)}, // 0^0 = 1 mod 7
+		{big.NewInt(1), big.NewInt(7), big.NewInt(0)}, // 0^1 = 0 mod 7
+		{big.NewInt(0), big.NewInt(1), big.NewInt(0)}, // 0^0 = 0 mod 1
+		{big.NewInt(0), big.NewInt(0), big.NewInt(0)}, // 0^0 = 0 mod 0
+	}
+	for i, tc := range testCases {
+		assert.Run(func(assert *test.Assert) {
+			circuit := &expmodConstZeroBaseCircuit{}
+			assignment := &expmodConstZeroBaseCircuit{
+				Exp:    emulated.ValueOf[emparams.Mod1e4096](tc.exp),
+				Mod:    emulated.ValueOf[emparams.Mod1e4096](tc.modulus),
+				Result: emulated.ValueOf[emparams.Mod1e4096](tc.result),
+			}
+			err := test.IsSolved(circuit, assignment, ecc.BLS12_377.ScalarField())
+			assert.NoError(err)
+		}, fmt.Sprintf("edge-constzero-%d", i))
+	}
+}
