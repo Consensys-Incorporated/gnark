@@ -15,6 +15,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
+	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/test"
 )
 
@@ -1101,4 +1102,185 @@ func TestPairingCheckAcceptsConstantLines(t *testing.T) {
 	assert.NoError(err)
 	err = ccs.IsSolved(fw, solver.OverrideHint(solver.GetHintID(pairingCheckHint), replay))
 	assert.Error(err, "replayed hint outputs must not satisfy a false statement")
+}
+
+// forgedMillerLoopAndCheckFinalExpHint is a malicious replacement for
+// [millerLoopAndCheckFinalExpHint]. It returns residueWitnessInv = 1 (which is
+// invertible, so it passes the only value constraint the circuit imposes on
+// it) and scalingFactor = 0 (which has the required 𝔽p⁶ shape, the only
+// constraint the circuit imposes on it). The resulting value is 0, hence != 1,
+// hence IsMillerLoopAndFinalExpOne returns 0 whatever the real pairing product
+// is.
+func forgedMillerLoopAndCheckFinalExpHint(_ *big.Int, nativeInputs, nativeOutputs []*big.Int) error {
+	return emulated.UnwrapHint(nativeInputs, nativeOutputs,
+		func(_ *big.Int, _, outputs []*big.Int) error {
+			for i := range outputs {
+				outputs[i].SetInt64(0)
+			}
+			// residueWitnessInv = 1 in tower coordinates
+			outputs[0].SetInt64(1)
+			return nil
+		})
+}
+
+type isMillerLoopAndFinalExpCircuit struct {
+	Prev     GTEl
+	P        G1Affine
+	Q        G2Affine
+	Expected frontend.Variable
+}
+
+func (c *isMillerLoopAndFinalExpCircuit) Define(api frontend.API) error {
+	pairing, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	res := pairing.IsMillerLoopAndFinalExpOne(&c.P, &c.Q, &c.Prev)
+	api.AssertIsEqual(res, c.Expected)
+	return nil
+}
+
+type isMillerLoopAndFinalExpSoundCircuit struct {
+	Prev     GTEl
+	P        G1Affine
+	Q        G2Affine
+	Expected frontend.Variable
+}
+
+func (c *isMillerLoopAndFinalExpSoundCircuit) Define(api frontend.API) error {
+	pairing, err := NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	res := pairing.IsMillerLoopAndFinalExpOneSound(&c.P, &c.Q, &c.Prev)
+	api.AssertIsEqual(res, c.Expected)
+	return nil
+}
+
+// millerLoopSuccessWitness returns (previous, P, Q) such that the multi-pairing
+// e(p,q)·e(-p,q) is 1, with previous the Miller loop of the first pair in the
+// accumulator convention used by [Pairing.MillerLoopAndMul] (which conjugates
+// the Miller loop output before multiplying it into the accumulator).
+func millerLoopSuccessWitness(t *testing.T) (bls12381.GT, bls12381.G1Affine, bls12381.G2Affine) {
+	t.Helper()
+	p, q := randomG1G2Affines()
+	var np bls12381.G1Affine
+	np.Neg(&p)
+	ok, err := bls12381.PairingCheck([]bls12381.G1Affine{p, np}, []bls12381.G2Affine{q, q})
+	if err != nil || !ok {
+		t.Fatalf("expected a valid pairing check: %v %v", ok, err)
+	}
+	lines := bls12381.PrecomputeLines(q)
+	mlres, err := bls12381.MillerLoopFixedQ(
+		[]bls12381.G1Affine{p},
+		[][2][len(bls12381.LoopCounter) - 1]bls12381.LineEvaluationAff{lines},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var prev bls12381.GT
+	prev.Conjugate(&mlres)
+	return prev, np, q
+}
+
+// TestIsMillerLoopAndFinalExpOneIsOneSided is a regression test for
+// GHSA-76v9-555f-fpfh. It pins down the documented limitation of
+// [Pairing.IsMillerLoopAndFinalExpOne]: a prover that replaces the
+// residue-witness hint can force the returned bit to 0 even though the
+// pairing product is in fact 1, and the constraint system stays satisfiable.
+//
+// The test engine always runs the honest hint, so the forgery is only visible
+// against a compiled constraint system.
+func TestIsMillerLoopAndFinalExpOneIsOneSided(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	prev, np, q := millerLoopSuccessWitness(t)
+
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &isMillerLoopAndFinalExpCircuit{})
+	assert.NoError(err)
+
+	honest, err := frontend.NewWitness(&isMillerLoopAndFinalExpCircuit{
+		Prev:     NewGTEl(prev),
+		P:        NewG1Affine(np),
+		Q:        NewG2Affine(q),
+		Expected: 1,
+	}, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	assert.NoError(ccs.IsSolved(honest), "honest witness must solve with Expected = 1")
+
+	malicious, err := frontend.NewWitness(&isMillerLoopAndFinalExpCircuit{
+		Prev:     NewGTEl(prev),
+		P:        NewG1Affine(np),
+		Q:        NewG2Affine(q),
+		Expected: 0,
+	}, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	assert.Error(ccs.IsSolved(malicious), "the honest hint cannot prove Expected = 0 here")
+
+	hintID := solver.GetHintID(millerLoopAndCheckFinalExpHint)
+	err = ccs.IsSolved(malicious, solver.OverrideHint(hintID, forgedMillerLoopAndCheckFinalExpHint))
+	assert.NoError(err, "IsMillerLoopAndFinalExpOne is one-sided: a forged residue witness forces the bit to 0")
+}
+
+// TestIsMillerLoopAndFinalExpOneSoundRejectsForgedWitness checks that the sound
+// variant is not vulnerable to the forgery of
+// TestIsMillerLoopAndFinalExpOneIsOneSided.
+func TestIsMillerLoopAndFinalExpOneSoundRejectsForgedWitness(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	prev, np, q := millerLoopSuccessWitness(t)
+
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &isMillerLoopAndFinalExpSoundCircuit{})
+	assert.NoError(err)
+
+	honest, err := frontend.NewWitness(&isMillerLoopAndFinalExpSoundCircuit{
+		Prev:     NewGTEl(prev),
+		P:        NewG1Affine(np),
+		Q:        NewG2Affine(q),
+		Expected: 1,
+	}, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	assert.NoError(ccs.IsSolved(honest), "honest witness must solve with Expected = 1")
+
+	malicious, err := frontend.NewWitness(&isMillerLoopAndFinalExpSoundCircuit{
+		Prev:     NewGTEl(prev),
+		P:        NewG1Affine(np),
+		Q:        NewG2Affine(q),
+		Expected: 0,
+	}, ecc.BN254.ScalarField())
+	assert.NoError(err)
+	assert.Error(ccs.IsSolved(malicious), "sound variant must reject a forged failure claim")
+
+	hintID := solver.GetHintID(millerLoopAndCheckFinalExpHint)
+	err = ccs.IsSolved(malicious, solver.OverrideHint(hintID, forgedMillerLoopAndCheckFinalExpHint))
+	assert.Error(err, "sound variant must reject a forged failure claim even with the forged hint")
+}
+
+// TestIsMillerLoopAndFinalExpOneSoundCompleteness checks both outcomes of the
+// sound variant: 1 for a multi-pairing equal to 1, 0 for one that is not.
+func TestIsMillerLoopAndFinalExpOneSoundCompleteness(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	prev, np, q := millerLoopSuccessWitness(t)
+
+	witness := isMillerLoopAndFinalExpSoundCircuit{
+		Prev:     NewGTEl(prev),
+		P:        NewG1Affine(np),
+		Q:        NewG2Affine(q),
+		Expected: 1,
+	}
+	err := test.IsSolved(&isMillerLoopAndFinalExpSoundCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.NoError(err)
+
+	var randPrev bls12381.GT
+	_, err = randPrev.SetRandom()
+	assert.NoError(err)
+	witness = isMillerLoopAndFinalExpSoundCircuit{
+		Prev:     NewGTEl(randPrev),
+		P:        NewG1Affine(np),
+		Q:        NewG2Affine(q),
+		Expected: 0,
+	}
+	err = test.IsSolved(&isMillerLoopAndFinalExpSoundCircuit{}, &witness, ecc.BN254.ScalarField())
+	assert.NoError(err)
 }

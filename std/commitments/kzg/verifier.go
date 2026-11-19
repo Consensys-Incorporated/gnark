@@ -428,6 +428,12 @@ func (v *Verifier[FR, G1El, G2El, GTEl]) BatchVerifySinglePoint(digests []Commit
 // FoldProofsMultiPoint folds multiple proofs with openings at multiple points.
 // Used for batch verification of different opening proofs. See also
 // [Verifier.BatchVerifyMultiPoints].
+//
+// SECURITY: unlike [Verifier.BatchVerifyMultiPoints], this method does NOT
+// assert that the digests and the proof quotients are on the curve and in G1.
+// The in-circuit Miller loop treats y == 0 as the point at infinity, so a
+// caller passing prover-supplied points must assert each of them is in G1
+// first (algebra.Pairing.AssertIsOnG1).
 func (v *Verifier[FR, G1El, G2El, GTEl]) FoldProofsMultiPoint(digests []Commitment[G1El], proofs []OpeningProof[FR, G1El], points []emulated.Element[FR], vk VerifyingKey[G1El, G2El]) (*G1El, *G1El, error) {
 
 	var fr FR

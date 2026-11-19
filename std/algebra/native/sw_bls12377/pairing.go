@@ -635,6 +635,9 @@ func divE2WithZeroGuard(api frontend.API, n, d fields_bls12377.E2) fields_bls123
 // invYWithInfinityGuard returns 1/y, or 0 when y is 0. The G1 point at infinity
 // is represented as (0,0) and setting yInv to 0 makes its line evaluations
 // equal to 1, so the point doesn't contribute to the Miller loop.
+//
+// SECURITY: y == 0 encodes infinity, so any (x, 0), on the curve or not,
+// contributes 1. Callers must AssertIsOnG1 prover-supplied points.
 func invYWithInfinityGuard(api frontend.API, y frontend.Variable) frontend.Variable {
 	isYZero := api.IsZero(y)
 	y = api.Select(isYZero, 1, y)
