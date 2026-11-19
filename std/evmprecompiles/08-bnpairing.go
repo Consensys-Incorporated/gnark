@@ -26,6 +26,13 @@ import (
 // See the methods [ECPairMillerLoopAndMul] and [ECPairMillerLoopAndFinalExpCheck] for the fixed circuits.
 // See the method [ECPairIsOnG2] for the check that Qᵢ are on G2.
 //
+// SECURITY: the bit returned by [ECPairMillerLoopAndFinalExpCheck] is
+// one-sided and must not be used to attest a pairing-check *failure*; see the
+// note on that method and the sound pair
+// [ECPairMillerLoopAndFinalExpCheckSuccess] /
+// [ECPairMillerLoopAndFinalExpCheckFailure]. [ECPair] itself is unaffected: it
+// asserts the product is 1 and never consumes the bit.
+//
 // [ALT_BN128_PAIRING_CHECK]: https://github.com/ethereum/execution-specs/blob/master/src/ethereum/cancun/vm/precompiled_contracts/alt_bn128.py
 // [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
 func ECPair(api frontend.API, P []*sw_bn254.G1Affine, Q []*sw_bn254.G2Affine) {
@@ -90,6 +97,23 @@ func ECPairMillerLoopAndMul(api frontend.API, accumulator *sw_bn254.GTEl, P *sw_
 // ECPairMillerLoopAndFinalExpCheck implements the fixed circuit for a Miller
 // loop of fixed size 1 followed by a multiplication with an accumulator in
 // 𝔽p¹², and a check that the result corresponds to the expected result.
+//
+// SECURITY: the returned bit is one-sided. A return value of 1 proves the
+// product is 1. A return value of 0 proves NOTHING: the residue witness is
+// only constrained to be invertible, so a prover can always force 0. Do not
+// use this result to attest a pairing-check failure.
+//
+// In other words, this circuit only binds expectedIsSuccess == 1 to the
+// pairing product being 1. With expectedIsSuccess == 0 a malicious prover can
+// satisfy the circuit for *any* input, including one whose pairing product is
+// 1. Since `ecPairing` returning false is an observable EVM outcome, a caller
+// that trusts this bit can be made to attest a failure for a check that in
+// fact succeeds.
+//
+// Deprecated: use the two sound fixed circuits
+// [ECPairMillerLoopAndFinalExpCheckSuccess] and
+// [ECPairMillerLoopAndFinalExpCheckFailure] instead, selecting between them on
+// the (public) precompile return value.
 func ECPairMillerLoopAndFinalExpCheck(api frontend.API, accumulator *sw_bn254.GTEl, P *sw_bn254.G1Affine, Q *sw_bn254.G2Affine, expectedIsSuccess frontend.Variable) error {
 	api.AssertIsBoolean(expectedIsSuccess)
 	pairing, err := sw_bn254.NewPairing(api)
@@ -99,5 +123,50 @@ func ECPairMillerLoopAndFinalExpCheck(api frontend.API, accumulator *sw_bn254.GT
 
 	isSuccess := pairing.IsMillerLoopAndFinalExpOne(P, Q, accumulator)
 	api.AssertIsEqual(expectedIsSuccess, isSuccess)
+	return nil
+}
+
+// ECPairMillerLoopAndFinalExpCheckSuccess implements the fixed circuit for the
+// *success* branch of the final step of [ECPair]: a Miller loop of fixed size
+// 1, a multiplication with the accumulator in 𝔽p¹², and an assertion that the
+// resulting multi-pairing is 1.
+//
+// It uses the residue-witness argument of Section 4 of [On Proving Pairings],
+// which is sound for the == 1 direction: the circuit is satisfiable if and
+// only if ∏ᵢ e(Pᵢ, Qᵢ) == 1.
+//
+// Together with [ECPairMillerLoopAndFinalExpCheckFailure] this replaces the
+// one-sided [ECPairMillerLoopAndFinalExpCheck]: the caller selects the circuit
+// matching the precompile's return value, which is public, and so pays the
+// cost of a real final exponentiation only on the (rarer) failure branch.
+//
+// [On Proving Pairings]: https://eprint.iacr.org/2024/640.pdf
+func ECPairMillerLoopAndFinalExpCheckSuccess(api frontend.API, accumulator *sw_bn254.GTEl, P *sw_bn254.G1Affine, Q *sw_bn254.G2Affine) error {
+	pairing, err := sw_bn254.NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	pairing.AssertMillerLoopAndFinalExpIsOne(P, Q, accumulator)
+	return nil
+}
+
+// ECPairMillerLoopAndFinalExpCheckFailure implements the fixed circuit for the
+// *failure* branch of the final step of [ECPair]: a Miller loop of fixed size
+// 1, a multiplication with the accumulator in 𝔽p¹², a real final
+// exponentiation, and an assertion that the resulting multi-pairing is *not*
+// 1.
+//
+// Unlike [ECPairMillerLoopAndFinalExpCheck] this is sound: the circuit is
+// satisfiable if and only if ∏ᵢ e(Pᵢ, Qᵢ) != 1. Proving the != 1 direction
+// requires the order-r component of the Miller loop output, so the cheap
+// residue-witness argument cannot be used here and a full final
+// exponentiation is unavoidable.
+func ECPairMillerLoopAndFinalExpCheckFailure(api frontend.API, accumulator *sw_bn254.GTEl, P *sw_bn254.G1Affine, Q *sw_bn254.G2Affine) error {
+	pairing, err := sw_bn254.NewPairing(api)
+	if err != nil {
+		return fmt.Errorf("new pairing: %w", err)
+	}
+	isSuccess := pairing.IsMillerLoopAndFinalExpOneSound(P, Q, accumulator)
+	api.AssertIsEqual(isSuccess, 0)
 	return nil
 }
