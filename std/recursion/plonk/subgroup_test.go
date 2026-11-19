@@ -68,7 +68,7 @@ func TestPlonkRecursionSubgroupChecksAreCompiledIn(t *testing.T) {
 	assert := test.NewAssert(t)
 	innerCcs, innerVK, _, _ := getInnerCommit(assert, ecc.BLS12_377.ScalarField(), ecc.BW6_761.ScalarField())
 
-	circuitVk, err := ValueOfVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
 	assert.NoError(err)
 
 	newCircuit := func(opts ...VerifierOption) frontend.Circuit {
@@ -120,7 +120,7 @@ func TestPlonkRecursionRejectsOffCurvePoints(t *testing.T) {
 	assert.True(ok, "expected *plonk_bls12377.Proof, got %T", innerProof)
 	assert.True(len(tInnerProof.Bsb22Commitments) > 0, "expected at least one BSB22 commitment")
 
-	circuitVk, err := ValueOfVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bls12377.ScalarField](innerWitness)
 	assert.NoError(err)
@@ -173,7 +173,7 @@ func TestPlonkRecursionHonestStillVerifies(t *testing.T) {
 	assert := test.NewAssert(t)
 	innerCcs, innerVK, innerWitness, innerProof := getInnerCommit(assert, ecc.BLS12_377.ScalarField(), ecc.BW6_761.ScalarField())
 
-	circuitVk, err := ValueOfVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bls12377.ScalarField](innerWitness)
 	assert.NoError(err)
