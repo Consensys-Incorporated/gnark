@@ -226,3 +226,16 @@ func TestVariableInitHook(t *testing.T) {
 	assert.True(ok)
 	assert.Len(fw2, 15, "invalid length")
 }
+
+// TestReadFromRejectsLengthMismatch checks that a header whose nbPublic+nbSecret
+// does not match the vector length is rejected instead of being zero-padded or truncated.
+func TestReadFromRejectsLengthMismatch(t *testing.T) {
+	assert := require.New(t)
+	w, err := witness.New(ecc.BN254.ScalarField())
+	assert.NoError(err)
+
+	// nbPublic=1, nbSecret=0, vector length=0
+	data := []byte{0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}
+	err = w.UnmarshalBinary(data)
+	assert.Error(err, "witness with nbPublic+nbSecret != len(vector) must be rejected")
+}

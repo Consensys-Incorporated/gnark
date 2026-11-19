@@ -212,6 +212,22 @@ func (w *witness) ReadFrom(r io.Reader) (n int64, err error) {
 
 	n = 8
 
+	// read the vector length prefix first so that the header counts are checked
+	// before the vector decoder allocates anything. The prefix is replayed to the
+	// vector decoder afterwards.
+	if read, err := io.ReadFull(r, buf[:]); err != nil {
+		return n + int64(read), err
+	}
+	total := uint64(w.nbPublic) + uint64(w.nbSecret)
+	if total != uint64(binary.BigEndian.Uint32(buf[:4])) {
+		return n + 4, errors.New("witness: nbPublic + nbSecret does not match vector length")
+	}
+	if lr, ok := r.(interface{ Len() int }); ok {
+		r = &lenPrefixedReader{prefixedReader{prefix: append([]byte(nil), buf[:]...), r: r}, lr}
+	} else {
+		r = &prefixedReader{prefix: append([]byte(nil), buf[:]...), r: r}
+	}
+
 	var m int64
 	switch t := w.vector.(type) {
 	case fr_bn254.Vector:
@@ -247,6 +263,32 @@ func (w *witness) ReadFrom(r io.Reader) (n int64, err error) {
 
 	n += m
 	return n, err
+}
+
+// prefixedReader replays prefix before reading from r.
+type prefixedReader struct {
+	prefix []byte
+	r      io.Reader
+}
+
+func (p *prefixedReader) Read(b []byte) (int, error) {
+	if len(p.prefix) > 0 {
+		k := copy(b, p.prefix)
+		p.prefix = p.prefix[k:]
+		return k, nil
+	}
+	return p.r.Read(b)
+}
+
+// lenPrefixedReader is a prefixedReader for readers that expose their remaining
+// length, so that the vector decoder keeps its early length check.
+type lenPrefixedReader struct {
+	prefixedReader
+	lr interface{ Len() int }
+}
+
+func (p *lenPrefixedReader) Len() int {
+	return len(p.prefix) + p.lr.Len()
 }
 
 // MarshalBinary encodes the number of public, number of secret and the fr.Vector.
