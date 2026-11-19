@@ -692,3 +692,162 @@ func BenchmarkVectorAsyncReadFrom(b *testing.B) {
 		})
 	}
 }
+
+func TestVectorFoldPairs(t *testing.T) {
+	for _, size := range []int{0, 1, 7, 8, 9, 15, 16, 17, 33, 65, 1 << 10} {
+		t.Run(fmt.Sprintf("size=%d", size), func(t *testing.T) {
+			// FRI identity: for p = e + x·o and q = e − x·o, folding with the
+			// twiddle (2x)⁻¹ gives e + alpha·o.
+			e, o := randVectorFold(size), randVectorFold(size)
+			layer := make(Vector, 2*size)
+			w := make(Vector, size)
+			want := make(Vector, size)
+			var alpha Element
+			alpha.MustSetRandom()
+			for j := range size {
+				var x, two Element
+				for x.IsZero() { // x = 0 has no twiddle (2x)⁻¹
+					x.MustSetRandom()
+				}
+				var xo Element
+				xo.Mul(&o[j], &x)
+				layer[2*j].Add(&e[j], &xo)
+				layer[2*j+1].Sub(&e[j], &xo)
+				two.SetUint64(2)
+				w[j].Mul(&x, &two).Inverse(&w[j])
+				want[j].Mul(&alpha, &o[j]).Add(&want[j], &e[j])
+			}
+
+			got := make(Vector, size)
+			got.FoldPairs(layer, w, &alpha)
+			require.Equal(t, want, got, "FoldPairs")
+
+			if size == 0 {
+				return
+			}
+			// in place, with alpha pointing into the layer being overwritten
+			in := append(make(Vector, 0, 2*size), layer...)
+			alpha0 := in[0]
+			for j := range size {
+				want[j].Mul(&alpha0, &o[j]).Add(&want[j], &e[j])
+			}
+			in[:size].FoldPairs(in, w, &in[0])
+			require.Equal(t, want, in[:size], "FoldPairs in place")
+		})
+	}
+
+	var alpha Element
+	require.Panics(t, func() { make(Vector, 2).FoldPairs(make(Vector, 3), make(Vector, 2), &alpha) })
+	require.Panics(t, func() { make(Vector, 2).FoldPairs(make(Vector, 4), make(Vector, 3), &alpha) })
+}
+
+func BenchmarkVectorFoldPairs(b *testing.B) {
+	for _, n := range []int{1 << 12, 1 << 16} {
+		layer := randVectorFold(2 * n)
+		w := make(Vector, n)
+		w.MustSetRandom()
+		res := make(Vector, n)
+		var alpha Element
+		alpha.MustSetRandom()
+		b.Run(fmt.Sprintf("N=%d", n), func(b *testing.B) {
+			for b.Loop() {
+				res.FoldPairs(layer, w, &alpha)
+			}
+		})
+	}
+}
+
+func randVectorFold(n int) Vector {
+	v := make(Vector, n)
+	v.MustSetRandom()
+	return v
+}
+
+func TestVectorMulAccHorner(t *testing.T) {
+	for _, size := range []int{0, 1, 3, 15, 16, 17, 33, 65} {
+		t.Run(fmt.Sprintf("size=%d", size), func(t *testing.T) {
+			a, b, v0 := make(Vector, size), make(Vector, size), make(Vector, size)
+			a.MustSetRandom()
+			b.MustSetRandom()
+			v0.MustSetRandom()
+			var c Element
+			c.MustSetRandom()
+
+			clone := func(x Vector) Vector { return append(make(Vector, 0, size), x...) }
+			check := func(name string, want Vector, run func(v Vector)) {
+				t.Helper()
+				v := clone(v0)
+				run(v)
+				require.Equal(t, want, v, name)
+			}
+			want := func(f func(i int, z *Element)) Vector {
+				w := clone(v0)
+				for i := range w {
+					f(i, &w[i])
+				}
+				return w
+			}
+			var tmp Element
+
+			check("MulAcc", want(func(i int, z *Element) { z.Add(z, tmp.Mul(&a[i], &b[i])) }),
+				func(v Vector) { v.MulAcc(a, b) })
+			check("ScalarMulAcc", want(func(i int, z *Element) { z.Add(z, tmp.Mul(&a[i], &c)) }),
+				func(v Vector) { v.ScalarMulAcc(a, &c) })
+			check("ScalarMulAdd", want(func(i int, z *Element) { z.Mul(z, &c).Add(z, &b[i]) }),
+				func(v Vector) { v.ScalarMulAdd(b, &c) })
+
+			// vector aliases the inputs
+			check("MulAcc alias", want(func(i int, z *Element) { z.Add(z, tmp.Mul(z, z)) }),
+				func(v Vector) { v.MulAcc(v, v) })
+			check("ScalarMulAcc alias", want(func(i int, z *Element) { z.Add(z, tmp.Mul(z, &c)) }),
+				func(v Vector) { v.ScalarMulAcc(v, &c) })
+			check("ScalarMulAdd alias", want(func(i int, z *Element) { tmp.Set(z); z.Mul(z, &c).Add(z, &tmp) }),
+				func(v Vector) { v.ScalarMulAdd(v, &c) })
+
+			if size == 0 {
+				// the scalar is not read when the vectors are empty
+				require.NotPanics(t, func() { v0.ScalarMulAcc(a, nil) }, "ScalarMulAcc on empty vectors")
+				require.NotPanics(t, func() { v0.ScalarMulAdd(b, nil) }, "ScalarMulAdd on empty vectors")
+				return
+			}
+			// the scalar points into the vector being overwritten
+			c0 := v0[0]
+			check("ScalarMulAcc scalar alias", want(func(i int, z *Element) { z.Add(z, tmp.Mul(&a[i], &c0)) }),
+				func(v Vector) { v.ScalarMulAcc(a, &v[0]) })
+			check("ScalarMulAdd scalar alias", want(func(i int, z *Element) { z.Mul(z, &c0).Add(z, &b[i]) }),
+				func(v Vector) { v.ScalarMulAdd(b, &v[0]) })
+		})
+	}
+
+	var c Element
+	v, a := make(Vector, 3), make(Vector, 4)
+	require.Panics(t, func() { v.MulAcc(a, v) })
+	require.Panics(t, func() { v.MulAcc(v, a) })
+	require.Panics(t, func() { v.ScalarMulAcc(a, &c) })
+	require.Panics(t, func() { v.ScalarMulAdd(a, &c) })
+}
+
+func BenchmarkVectorMulAccHorner(b *testing.B) {
+	const N = 1 << 12
+	x, y, v := make(Vector, N), make(Vector, N), make(Vector, N)
+	x.MustSetRandom()
+	y.MustSetRandom()
+	v.MustSetRandom()
+	var c Element
+	c.MustSetRandom()
+	b.Run("MulAcc", func(b *testing.B) {
+		for b.Loop() {
+			v.MulAcc(x, y)
+		}
+	})
+	b.Run("ScalarMulAcc", func(b *testing.B) {
+		for b.Loop() {
+			v.ScalarMulAcc(x, &c)
+		}
+	})
+	b.Run("ScalarMulAdd", func(b *testing.B) {
+		for b.Loop() {
+			v.ScalarMulAdd(x, &c)
+		}
+	})
+}

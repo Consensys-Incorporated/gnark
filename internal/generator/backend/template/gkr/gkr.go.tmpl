@@ -227,7 +227,7 @@ func Prove{{ $typeParams }}(c Circuit, schedule constraint.GkrProvingSchedule, a
 
 	r := newResources(c, schedule, nbVars, hasher)
 	r.assignment = assignment
-	r.memPool = polynomial.NewPool{{ .ExtensionSuffix }}(gkrcore.MemoryRequirements(c, nbInstances)...)
+	r.memPool = polynomial.NewPool{{ .ExtensionSuffix }}()
 	r.workers = utils.NewWorkerPool()
 	defer r.workers.Stop()
 

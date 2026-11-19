@@ -2,7 +2,6 @@ package gkrcore
 
 import (
 	"errors"
-	"slices"
 
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
@@ -28,22 +27,6 @@ type (
 	// It contains only the essential topology (inputs) and gate functions.
 	RawCircuit []RawWire
 )
-
-// MemoryRequirements returns the strictly increasing vector of memory
-// allocation sizes required for proving a GKR statement on this circuit.
-func MemoryRequirements(c gkr.SerializableCircuit, nbInstances int) []int {
-	identity := gkr.IdentityBytecode()
-	largest := identity.EvaluatorSize()
-	for i := range c {
-		if !c[i].IsInput() {
-			largest = max(largest, c[i].Gate.Evaluate.EvaluatorSize())
-		}
-	}
-
-	res := []int{nbInstances, largest}
-	slices.Sort(res)
-	return slices.Compact(res)
-}
 
 // some sample gates
 
