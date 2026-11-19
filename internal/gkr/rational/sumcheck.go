@@ -139,7 +139,7 @@ func (e *zeroCheckLazyClaims) verifyFinalEval(r []rational.Element, purportedVal
 		for _, wI := range group.Wires {
 			wire := e.resources.circuit[wI]
 
-			evaluator := NewGateEvaluator(wire.Gate.Evaluate, len(wire.Inputs))
+			evaluator := NewGateEvaluator(wire.Gate.Evaluate)
 			for _, v := range gateInputEvals[levelWireI] {
 				evaluator.PushInput(v)
 			}
@@ -394,7 +394,7 @@ func (c *zeroCheckBase) init(r *resources, levelI int, foldingCoeff rational.Ele
 	for _, group := range level.ClaimGroups() {
 		for _, wI := range group.Wires {
 			wire := r.circuit[wI]
-			c.gateEvaluatorPools[levelWireI] = NewGateEvaluatorPool(wire.Gate.Evaluate, len(inputIndices[levelWireI]), &r.memPool)
+			c.gateEvaluatorPools[levelWireI] = NewGateEvaluatorPool(wire.Gate.Evaluate, &r.memPool)
 			levelWireI++
 		}
 	}

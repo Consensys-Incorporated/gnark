@@ -3,6 +3,7 @@ package emulated
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/consensys/gnark/frontend"
 )
@@ -84,6 +85,13 @@ func (f *Field[T]) ModMulCanonical(a, b *Element[T], modulus *Element[T]) *Eleme
 // is intended, wrap it in [Field.ReduceStrict] explicitly.
 func (f *Field[T]) ModAdd(a, b *Element[T], modulus *Element[T]) *Element[T] {
 	f.checkModulus(modulus)
+	// [Field.reduceAndOp] is inlined below, but we must keep the limb-width
+	// enforcement it performs on its inputs: without it a witness element whose
+	// limbs are wider than [FieldParams.BitsPerLimb] (hand-built via
+	// [Element.Limbs]) represents a different integer in-circuit than the one a
+	// verifier recomposes from the same limbs.
+	f.enforceWidthConditional(a)
+	f.enforceWidthConditional(b)
 	// inlined version of [Field.reduceAndOp] which uses variable-modulus reduction
 	var nextOverflow uint
 	var err error
@@ -146,6 +154,15 @@ func (f *Field[T]) modSub(a, b *Element[T], modulus *Element[T]) *Element[T] {
 // is intended, wrap it in [Field.ReduceStrict] explicitly.
 func (f *Field[T]) ModAssertIsEqual(a, b *Element[T], modulus *Element[T]) {
 	f.checkModulus(modulus)
+	// as in the fixed-modulus [Field.AssertIsEqual], the inputs must be
+	// range-checked here. [Field.modSub] does not enforce the limb widths, and
+	// the [Field.enforceWidthConditional] inside [Field.checkZero] is a no-op on
+	// the internal element it receives. Without these two calls a hand-built
+	// witness with limbs wider than [FieldParams.BitsPerLimb] proves a statement
+	// about the signed lift of the limb rather than the value a verifier
+	// recomposes.
+	f.enforceWidthConditional(a)
+	f.enforceWidthConditional(b)
 	// like fixed modulus AssertIsEqual, but uses current Sub implementation for
 	// computing the diff
 	diff := f.modSub(b, a, modulus)
@@ -280,7 +297,19 @@ func (f *Field[T]) ModExp(base, exp, modulus *Element[T]) *Element[T] {
 // it for the caller: reducing would silently change the modulus whenever it does
 // not fit T. See the note on the exported variable-modulus methods.
 //
-// The method adds no constraints.
+// It also enforces the documented precondition modulus >= 1. With modulus = 0
+// the multiplication check a*b = k*modulus + r pins r = a*b over the integers
+// while the hint returns 0, so the system is unsatisfiable - but
+// [Field.assertLessThanModulus] computes modulus-1 as a constant-modulus
+// subtraction, which for modulus = 0 wraps to Modulus()-1 and makes the
+// canonicality assertion silently vacuous. Rejecting zero up front turns that
+// into a clear failure instead of an opaque unsatisfied constraint with a
+// documented postcondition that does not hold. This is not a soundness fix.
+//
+// The method adds no constraints for a constant modulus. For a variable modulus
+// it adds the non-zero assertion (a couple of constraints) plus the limb range
+// checks, which are memoized in [Field.constrainedLimbs] and therefore free for
+// any element already used elsewhere in the circuit.
 func (f *Field[T]) checkModulus(modulus *Element[T]) {
 	// populate the limbs in case the modulus was constructed in-circuit with
 	// [ValueOf]. No-op for a witness element, which is initialized at witness
@@ -289,9 +318,64 @@ func (f *Field[T]) checkModulus(modulus *Element[T]) {
 	if modulus.overflow != 0 {
 		panic(fmt.Sprintf("variable modulus has %d bits of overflow: the variable-modulus methods require a witness or constant modulus, see the method documentation", modulus.overflow))
 	}
-	if value, isConstant := f.constantValue(modulus); isConstant && value.Cmp(f.fParams.Modulus()) >= 0 {
-		panic(fmt.Sprintf("variable modulus must be smaller than emulation modulus %s", f.fParams.Modulus()))
+	if len(modulus.Limbs) == 0 {
+		// element on zero limbs is the constant zero.
+		panic("variable modulus must be non-zero")
 	}
+	if value, isConstant := f.constantValue(modulus); isConstant {
+		if value.Cmp(f.fParams.Modulus()) >= 0 {
+			panic(fmt.Sprintf("variable modulus must be smaller than emulation modulus %s", f.fParams.Modulus()))
+		}
+		if value.Sign() == 0 {
+			panic("variable modulus must be non-zero")
+		}
+		return
+	}
+	// enforce modulus >= 1 in-circuit. The limbs are range checked first so that
+	// summing them cannot wrap the native modulus: every limb is then bounded by
+	// 2^BitsPerLimb and the number of limbs is small. We mirror the overflow
+	// guard of [Field.IsZero] and fall back to a per-limb check in the (not
+	// currently reachable) case where the sum would not fit.
+	f.enforceWidthConditional(modulus)
+	// the assertion is idempotent, so emit it only once per distinct modulus.
+	// [Field.ModExp] in particular routes every intermediate multiplication
+	// through [Field.ModMul] with the same modulus element.
+	if key, ok := f.modulusKey(modulus); ok {
+		if _, done := f.checkedModuli[key]; done {
+			return
+		}
+		f.checkedModuli[key] = struct{}{}
+	}
+	if len(modulus.Limbs)-1 > int(f.maxOverflow()) {
+		isZero := f.api.IsZero(modulus.Limbs[0])
+		for i := 1; i < len(modulus.Limbs); i++ {
+			isZero = f.api.Mul(isZero, f.api.IsZero(modulus.Limbs[i]))
+		}
+		f.api.AssertIsEqual(isZero, 0)
+		return
+	}
+	limbSum := modulus.Limbs[0]
+	for i := 1; i < len(modulus.Limbs); i++ {
+		limbSum = f.api.Add(limbSum, modulus.Limbs[i])
+	}
+	f.api.AssertIsDifferent(limbSum, 0)
+}
+
+// modulusKey returns a key identifying the limbs of e, for memoizing the
+// non-zero assertion of [Field.checkModulus]. It returns false when some limb is
+// not a compiler variable with a hash code, in which case we cannot memoize and
+// the caller must emit the assertion.
+func (f *Field[T]) modulusKey(e *Element[T]) (string, bool) {
+	var sb strings.Builder
+	for i := range e.Limbs {
+		h, ok := e.Limbs[i].(interface{ HashCode() [16]byte })
+		if !ok {
+			return "", false
+		}
+		hc := h.HashCode()
+		sb.Write(hc[:])
+	}
+	return sb.String(), true
 }
 
 // assertLessThanModulus asserts that e < modulus as integers, where modulus is

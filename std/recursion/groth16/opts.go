@@ -11,9 +11,12 @@ import (
 )
 
 type verifierCfg struct {
-	algopt             []algopts.AlgebraOption
-	pedopt             []pedersen.VerifierOption
-	forceSubgroupCheck bool
+	algopt []algopts.AlgebraOption
+	pedopt []pedersen.VerifierOption
+	// noSubgroupCheck disables the membership checks on the prover-supplied
+	// proof points. It defaults to false: the checks are on unless a caller
+	// explicitly opts out with [WithNoSubgroupCheck].
+	noSubgroupCheck bool
 }
 
 // VerifierOption allows to modify the behaviour of Groth16 verifier.
@@ -30,10 +33,29 @@ func WithCompleteArithmetic() VerifierOption {
 }
 
 // WithSubgroupCheck returns a VerifierOption that forces subgroup checks.
+//
+// Deprecated: the proof points are now validated by default. This option is a
+// no-op and will be removed in a future version.
 func WithSubgroupCheck() VerifierOption {
 	return func(cfg *verifierCfg) error {
-		cfg.pedopt = append(cfg.pedopt, pedersen.WithSubgroupCheck())
-		cfg.forceSubgroupCheck = true
+		return nil
+	}
+}
+
+// WithNoSubgroupCheck returns a VerifierOption that skips the membership checks
+// on the prover-supplied proof points (Ar, Krs, Bs and the Pedersen commitment
+// and its knowledge proof).
+//
+// SECURITY: only use this when the caller has already asserted that every proof
+// point is on its curve and in the correct prime-order subgroup. Without that,
+// the verification is unsound: the in-circuit Miller loop treats y == 0 as the
+// point at infinity, so an arbitrary (x, 0) is a free identity element, and a
+// point outside the prime-order subgroup pairs to the same value as its
+// in-subgroup part.
+func WithNoSubgroupCheck() VerifierOption {
+	return func(cfg *verifierCfg) error {
+		cfg.pedopt = append(cfg.pedopt, pedersen.WithNoSubgroupCheck())
+		cfg.noSubgroupCheck = true
 		return nil
 	}
 }
