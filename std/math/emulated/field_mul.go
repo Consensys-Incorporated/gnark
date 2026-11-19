@@ -1020,9 +1020,15 @@ func (f *Field[T]) mulNoReduce(a, b *Element[T], nextoverflow uint) *Element[T] 
 // The implementation uses windowed exponentiation with window size 4, which
 // reduces the number of multiplications compared to binary square-and-multiply.
 func (f *Field[T]) Exp(base, exp *Element[T]) *Element[T] {
-	// fast path - if the base is zero, then the result is also zero
+	// Fast path when the base is the compile-time zero constant. The result is
+	// then zero for every nonzero exponent, but x^0 == 1 for every x including
+	// 0^0, which is what the general path below returns for a witness zero base
+	// (the windowed ladder selects table[0] = 1 for a zero exponent). The
+	// exponent is still a free variable here, so the case split has to happen
+	// in-circuit. Unlike [Field.ModExp] there is no modulus == 1 case to fold
+	// away: the modulus is the fixed emulation modulus, which is always > 1.
 	if base.isStrictZero() {
-		return f.Zero()
+		return f.Select(f.IsZero(exp), f.One(), f.Zero())
 	}
 
 	const windowSize = 4

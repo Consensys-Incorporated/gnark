@@ -194,22 +194,18 @@ func (f *Field[T]) ModAssertIsEqual(a, b *Element[T], modulus *Element[T]) {
 // without the canonicality assertion, keeping the per-call cost low.
 func (f *Field[T]) ModExp(base, exp, modulus *Element[T]) *Element[T] {
 	f.checkModulus(modulus)
-	// Fast path when the base is the compile-time zero constant (an element on
-	// no limbs at all - a witness element always carries NbLimbs() limbs). The
-	// result is then zero for every nonzero exponent, but x^0 == 1 for every x
-	// including 0^0, matching the EVM MODEXP specification and [big.Int.Exp].
-	// The exponent is still a free variable here, so the case split has to
-	// happen in-circuit; two emulated IsZero calls plus a Select are
-	// nevertheless three orders of magnitude cheaper than the windowed ladder
-	// below.
+	// Fast path when the base is the compile-time zero constant. The result is
+	// then zero for every nonzero exponent, but x^0 == 1 for every x including
+	// 0^0, matching the EVM MODEXP specification and [big.Int.Exp]. The
+	// exponent is still a free variable here, so the case split has to happen
+	// in-circuit; two emulated IsZero calls plus a Select are nevertheless
+	// three orders of magnitude cheaper than the windowed ladder below.
 	//
 	// The modulus == 1 case is special-cased so that the fast path agrees with
 	// the general path, which returns 0 there: 1 is not a canonical residue
-	// modulo 1, and this method documents a canonical result. A zero modulus is
-	// not representable here (the general path cannot handle it either, as the
-	// remainder is undefined); callers such as [evmprecompiles.Expmod]
-	// substitute a dummy modulus for it and discard the result.
-	if len(base.Limbs) == 0 {
+	// modulo 1, and this method documents a canonical result. A zero modulus
+	// needs no handling, as [Field.checkModulus] above already rejects it.
+	if base.isStrictZero() {
 		isZeroExp := f.IsZero(exp)
 		isOneMod := f.IsZero(f.Sub(modulus, f.One()))
 		return f.Select(f.api.And(isZeroExp, f.api.Sub(1, isOneMod)), f.One(), f.Zero())
