@@ -141,6 +141,12 @@ func (c *IssueDiv0Circuit) Define(api frontend.API) error {
 	api.AssertIsEqual(t6, c.Res6)
 	api.AssertIsEqual(t7, c.Res7)
 	api.AssertIsEqual(t8, c.Res8)
+	// the zero coefficients drop A1, B2, A3 and B4; bind them to the inputs
+	// holding the same value
+	api.AssertIsEqual(c.A1, c.A2)
+	api.AssertIsEqual(c.A3, c.A4)
+	api.AssertIsEqual(c.B2, c.B1)
+	api.AssertIsEqual(c.B4, c.B3)
 	return nil
 }
 
@@ -210,6 +216,8 @@ func (c *IssueDiv0Circuit3) Define(api frontend.API) error {
 
 	api.AssertIsEqual(t1, c.Res1)
 	api.AssertIsEqual(t2, c.Res2)
+	// B only ever cancels out above, so read it once to keep it constrained
+	api.AssertIsDifferent(c.B, 0)
 	return nil
 }
 
@@ -241,6 +249,8 @@ func (c *TestZeroMulNoConstraintCircuit) Define(api frontend.API) error {
 	// test solver
 	api.AssertIsEqual(t2, 0)
 	api.AssertIsEqual(t4, 0)
+	// the only constraint of the circuit, binding the inputs
+	api.AssertIsEqual(c.A, c.B)
 	return nil
 }
 
@@ -248,8 +258,9 @@ func TestZeroMulNoConstraint(t *testing.T) {
 	assert := test.NewAssert(t)
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &TestZeroMulNoConstraintCircuit{})
 	assert.NoError(err)
-	if ccs.GetNbConstraints() != 0 {
-		t.Fatal("expected 0 constraints")
+	// the multiplications by zero must not add a constraint on top of A == B
+	if ccs.GetNbConstraints() != 1 {
+		t.Fatalf("expected 1 constraint, got %d", ccs.GetNbConstraints())
 	}
 }
 
@@ -280,12 +291,14 @@ func TestMulAccFastTrack(t *testing.T) {
 }
 
 type subSameNoConstraintCircuit struct {
-	A frontend.Variable
+	A, B frontend.Variable
 }
 
 func (c *subSameNoConstraintCircuit) Define(api frontend.API) error {
 	r := api.Sub(c.A, c.A)
 	api.AssertIsEqual(r, 0)
+	// the only constraint of the circuit, binding the inputs
+	api.AssertIsEqual(c.A, c.B)
 	return nil
 }
 
@@ -293,8 +306,9 @@ func TestSubSameNoConstraint(t *testing.T) {
 	assert := test.NewAssert(t)
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &subSameNoConstraintCircuit{})
 	assert.NoError(err)
-	if ccs.GetNbConstraints() != 0 {
-		t.Fatal("expected 0 constraints")
+	// Sub(A, A) must not add a constraint on top of A == B
+	if ccs.GetNbConstraints() != 1 {
+		t.Fatalf("expected 1 constraint, got %d", ccs.GetNbConstraints())
 	}
 }
 
@@ -319,6 +333,10 @@ func (c *divUncheckedZeroCircuit) Define(api frontend.API) error {
 		panic("unknown case")
 	}
 	api.AssertIsEqual(res, 0)
+	// the test divides zero by zero; binding both inputs here also covers the
+	// cases where the division reads only one of them
+	api.AssertIsEqual(c.A, 0)
+	api.AssertIsEqual(c.B, 0)
 	return nil
 }
 
@@ -412,42 +430,33 @@ func TestRegressionXorZeroNoConstraint(t *testing.T) {
 }
 
 type regressionLookup2ConstantSelector struct {
-	B                    frontend.Variable
-	I0, I1, I2, I3, Want frontend.Variable
-	Mode                 int `gnark:"-"`
+	B              frontend.Variable
+	I0, I1, I2, I3 frontend.Variable
+	Want           [4]frontend.Variable
 }
 
 func (c *regressionLookup2ConstantSelector) Define(api frontend.API) error {
 	api.AssertIsBoolean(c.B)
-	var y frontend.Variable
-	switch c.Mode {
-	case 0:
-		y = api.Lookup2(0, c.B, c.I0, c.I1, c.I2, c.I3)
-	case 1:
-		y = api.Lookup2(1, c.B, c.I0, c.I1, c.I2, c.I3)
-	case 2:
-		y = api.Lookup2(c.B, 0, c.I0, c.I1, c.I2, c.I3)
-	case 3:
-		y = api.Lookup2(c.B, 1, c.I0, c.I1, c.I2, c.I3)
-	default:
-		panic("invalid mode")
-	}
-	api.AssertIsEqual(y, c.Want)
+	// one selector bit is constant and the other one is variable; the four
+	// combinations together read every table entry
+	api.AssertIsEqual(api.Lookup2(0, c.B, c.I0, c.I1, c.I2, c.I3), c.Want[0])
+	api.AssertIsEqual(api.Lookup2(1, c.B, c.I0, c.I1, c.I2, c.I3), c.Want[1])
+	api.AssertIsEqual(api.Lookup2(c.B, 0, c.I0, c.I1, c.I2, c.I3), c.Want[2])
+	api.AssertIsEqual(api.Lookup2(c.B, 1, c.I0, c.I1, c.I2, c.I3), c.Want[3])
 	return nil
 }
 
 func TestRegressionLookup2ConstantSelector(t *testing.T) {
 	assert := test.NewAssert(t)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &regressionLookup2ConstantSelector{})
+	assert.NoError(err)
 	for _, tc := range []struct {
-		mode, bit, want int
+		bit  int
+		want [4]frontend.Variable
 	}{
-		{0, 0, 10}, {0, 1, 30},
-		{1, 0, 20}, {1, 1, 40},
-		{2, 0, 10}, {2, 1, 20},
-		{3, 0, 30}, {3, 1, 40},
+		{0, [4]frontend.Variable{10, 20, 10, 30}},
+		{1, [4]frontend.Variable{30, 40, 20, 40}},
 	} {
-		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), scs.NewBuilder, &regressionLookup2ConstantSelector{Mode: tc.mode})
-		assert.NoError(err)
 		w, err := frontend.NewWitness(&regressionLookup2ConstantSelector{
 			B:    tc.bit,
 			I0:   10,

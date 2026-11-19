@@ -134,7 +134,9 @@ func TestPairingFixedBLS377(t *testing.T) {
 		Res: NewGTEl(pairingRes),
 	}
 	assert := test.NewAssert(t)
-	assert.CheckCircuit(&pairingFixedBLS377{Q: NewG2AffineFixedPlaceholder()}, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
+	// the scalar or the pairing argument is constant here, which leaves
+	// some declared inputs unreferenced by any constraint.
+	assert.CheckCircuit(&pairingFixedBLS377{Q: NewG2AffineFixedPlaceholder()}, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 
 }
 
@@ -167,7 +169,9 @@ func TestDoublePairingFixedBLS377(t *testing.T) {
 		Res: NewGTEl(pairingRes),
 	}
 	assert := test.NewAssert(t)
-	assert.CheckCircuit(&doublePairingFixedBLS377{Q0: NewG2AffineFixedPlaceholder(), Q1: NewG2AffineFixedPlaceholder()}, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761))
+	// the scalar or the pairing argument is constant here, which leaves
+	// some declared inputs unreferenced by any constraint.
+	assert.CheckCircuit(&doublePairingFixedBLS377{Q0: NewG2AffineFixedPlaceholder(), Q1: NewG2AffineFixedPlaceholder()}, test.WithValidAssignment(&witness), test.WithCurves(ecc.BW6_761), test.WithCompileOpts(frontend.IgnoreUnconstrainedInputs()))
 
 }
 
