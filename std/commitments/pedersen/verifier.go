@@ -53,12 +53,20 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) FoldCommitments(commitments []Commitmen
 }
 
 // AssertCommitment verifies the given commitment and knowledge proof against the given verifying key.
+//
+// The commitment and the knowledge proof are prover-supplied, so both are
+// asserted to be on the curve and in the prime-order subgroup G1 before the
+// pairing check. This is required for soundness and cannot be skipped unless the
+// caller has already done it ([WithNoSubgroupCheck]): the in-circuit Miller loop
+// takes y == 0 to mean the point at infinity, so without validation any (x, 0)
+// for an arbitrary x makes its Miller factor 1 and satisfies the pairing check
+// for free.
 func (v *Verifier[FR, G1El, G2El, GtEl]) AssertCommitment(commitment Commitment[G1El], knowledgeProof KnowledgeProof[G1El], vk VerifyingKey[G2El], opts ...VerifierOption) error {
 	cfg, err := newCfg(opts...)
 	if err != nil {
 		return fmt.Errorf("apply options: %w", err)
 	}
-	if cfg.subgroupCheck {
+	if !cfg.noSubgroupCheck {
 		v.pairing.AssertIsOnG1(&commitment.G1El)
 		v.pairing.AssertIsOnG1(&knowledgeProof.G1El)
 	}

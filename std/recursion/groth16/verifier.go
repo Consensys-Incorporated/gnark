@@ -538,6 +538,14 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) AssertProof(vk VerifyingKey[G1El, G2El,
 
 // IsValidProof returns a variable that is 1 if the proof is valid and 0 otherwise.
 //
+// The returned variable only distinguishes a correct pairing check from an
+// incorrect one. Prover-supplied points are validated by in-circuit
+// assertions, not by the returned variable: a proof whose Ar, Krs, Bs or
+// commitments are off-curve or outside the prime-order subgroup makes the
+// circuit unsatisfiable rather than yielding 0. Use [WithNoSubgroupCheck] to
+// opt out of those assertions, in which case the caller is responsible for
+// validating the points.
+//
 // The verifying key is trusted: its points are not checked to be in the
 // prime-order subgroups. A key given as a witness must be bound by the caller,
 // for example to a public hash.
@@ -617,10 +625,25 @@ func (v *Verifier[FR, G1El, G2El, GtEl]) IsValidProof(vk VerifyingKey[G1El, G2El
 	kSum = v.curve.AddUnified(kSum, &vk.G1.K[0])
 
 	for i := range proof.Commitments {
+		// proof.Commitments[i] is asserted to be in G1 by AssertCommitment
+		// above, so this is a chord between two genuine G1 points. It is still
+		// an incomplete addition: hitting kSum.X == Commitments[i].X leaves the
+		// slope unconstrained. Reaching that requires inverting the
+		// commitment's Fiat-Shamir hash (the commitment is bound into the
+		// challenge that defines kSum), so it is not exploitable. A guarded
+		// addition would close it, but algebra.Curve exposes only Add and
+		// AddUnified; adding AddGuarded means extending the interface and all
+		// four backends, which is out of scope for this fix.
 		kSum = v.curve.Add(kSum, &proof.Commitments[i].G1El)
 	}
 
-	if opt.forceSubgroupCheck {
+	// Ar, Krs and Bs are prover-supplied and must be in G1/G2 before pairing:
+	// the Miller loop treats y == 0 as infinity, and cofactor torsion pairs
+	// to 1. The native verifier checks all three unconditionally.
+	//
+	// AssertIsOnG2(Bs) is redundant on sw_bn254/sw_bls12381 (computeLines
+	// checks G2), but not on sw_bls12377/sw_bw6761.
+	if !opt.noSubgroupCheck {
 		v.pairing.AssertIsOnG1(&proof.Ar)
 		v.pairing.AssertIsOnG1(&proof.Krs)
 		v.pairing.AssertIsOnG2(&proof.Bs)

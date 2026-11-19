@@ -30,7 +30,7 @@ High-performance zk-SNARKs in Go.
 
 ### Requirements
 
-- Go `1.26+` (module target: `go 1.26.8`)
+- Go `1.27.4+` (module target: `go 1.27.4`)
 
 ### Install
 
