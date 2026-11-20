@@ -220,9 +220,12 @@ type CompileConfig struct {
 
 // WithCapacity is a compile option that specifies the estimated capacity needed
 // for internal variables and constraints. If not set, then the initial capacity
-// is 0 and is dynamically allocated as needed.
+// is 0 and is dynamically allocated as needed. The capacity must be non-negative.
 func WithCapacity(capacity int) CompileOption {
 	return func(opt *CompileConfig) error {
+		if capacity < 0 {
+			return fmt.Errorf("invalid capacity: %d (must be non-negative)", capacity)
+		}
 		opt.Capacity = capacity
 		return nil
 	}
@@ -257,9 +260,12 @@ func IgnoreUnconstrainedInputs() CompileOption {
 // chosen carefully.
 //
 // If this option is not given then by default we use the compress threshold of
-// 300.
+// 300. The threshold must be non-negative; 0 disables compression.
 func WithCompressThreshold(threshold int) CompileOption {
 	return func(opt *CompileConfig) error {
+		if threshold < 0 {
+			return fmt.Errorf("invalid compression threshold: %d (must be non-negative)", threshold)
+		}
 		opt.CompressThreshold = threshold
 		return nil
 	}
