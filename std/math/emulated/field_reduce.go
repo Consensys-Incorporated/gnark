@@ -1,5 +1,7 @@
 package emulated
 
+import "github.com/consensys/gnark/frontend"
+
 // ReduceWidth returns an element reduced by the modulus and constrained to have
 // same length as the modulus. The output element has the same width as the
 // modulus but may up to twice larger than the modulus).
@@ -20,9 +22,17 @@ func (f *Field[T]) reduce(a *Element[T], strict bool) *Element[T] {
 		return a
 	}
 	if !strict && a.overflow == 0 {
-		// fast path - we are in non-strict case and the element has no
-		// overflow. We don't need to reduce now.
-		return a
+		if len(a.Limbs) == int(f.fParams.NbLimbs()) {
+			return a
+		}
+		if len(a.Limbs) < int(f.fParams.NbLimbs()) {
+			limbs := make([]frontend.Variable, f.fParams.NbLimbs())
+			copy(limbs, a.Limbs)
+			for i := len(a.Limbs); i < len(limbs); i++ {
+				limbs[i] = 0
+			}
+			return f.newInternalElement(limbs, 0)
+		}
 	}
 	// rest of the cases:
 	//   - in strict case and element was not recently reduced (even if it has no overflow)
