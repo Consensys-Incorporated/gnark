@@ -162,14 +162,17 @@ func (w *witness) Public() (Witness, error) {
 
 func (w *witness) WriteTo(wr io.Writer) (n int64, err error) {
 	// write number of public, number of secret
-	if err := binary.Write(wr, binary.BigEndian, w.nbPublic); err != nil {
-		return 0, err
-	}
-	n = int64(4)
-	if err := binary.Write(wr, binary.BigEndian, w.nbSecret); err != nil {
+	var header [8]byte
+	binary.BigEndian.PutUint32(header[:4], w.nbPublic)
+	binary.BigEndian.PutUint32(header[4:], w.nbSecret)
+	written, err := wr.Write(header[:])
+	n = int64(written)
+	if err != nil {
 		return n, err
 	}
-	n += 4
+	if written != len(header) {
+		return n, io.ErrShortWrite
+	}
 
 	// write the vector
 	var m int64
@@ -326,6 +329,13 @@ func (w *witness) FromJSON(s *schema.Schema, data []byte) error {
 	// field.Element (gnark-crypto) implements json.Unmarshaler
 	if err := dec.Decode(instance); err != nil {
 		return err
+	}
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return err
+		}
+		return errors.New("unexpected trailing JSON value")
 	}
 	// walk through the public AND secret values
 	missingAssignment := func(name string) error {
