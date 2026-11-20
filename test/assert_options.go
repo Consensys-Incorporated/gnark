@@ -150,20 +150,24 @@ func NoSolidityChecks() TestingOption {
 
 // WithProverOpts is a testing option which uses the given proverOpts when
 // calling backend.Prover, backend.ReadAndProve and backend.IsSolved methods in
-// assertions.
+// assertions. The options are added to the ones already set, for example by
+// [WithSolverOpts].
 func WithProverOpts(proverOpts ...backend.ProverOption) TestingOption {
 	return func(opt *testingConfig) error {
-		opt.proverOpts = proverOpts
+		opt.proverOpts = append(opt.proverOpts, proverOpts...)
 		return nil
 	}
 }
 
 // WithSolverOpts is a testing option which uses the given solverOpts when
-// calling constraint system solver.
+// calling constraint system solver. Options from repeated calls accumulate.
 func WithSolverOpts(solverOpts ...solver.Option) TestingOption {
 	return func(opt *testingConfig) error {
-		opt.proverOpts = append(opt.proverOpts, backend.WithSolverOptions(solverOpts...))
-		opt.solverOpts = solverOpts
+		opt.solverOpts = append(opt.solverOpts, solverOpts...)
+		// backend.WithSolverOptions replaces the prover's solver options, so pass the
+		// accumulated list; the last one applied wins.
+		all := append([]solver.Option(nil), opt.solverOpts...)
+		opt.proverOpts = append(opt.proverOpts, backend.WithSolverOptions(all...))
 		return nil
 	}
 }
