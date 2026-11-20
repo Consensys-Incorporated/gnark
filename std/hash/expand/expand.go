@@ -47,7 +47,8 @@ func ExpandMsgXmd(api frontend.API, msg []uints.U8, dst []byte, lenInBytes int) 
 		uint8(lenInBytes),
 	})
 	// DST_prime = DST ∥ I2OSP(len(DST), 1)
-	DST_prime := uints.NewU8Array(append(dst, sizeDomain))
+	// copy dst so that appending the size does not write into the caller's backing array
+	DST_prime := uints.NewU8Array(append(append([]byte{}, dst...), sizeDomain))
 	// b₀ = H(Z_pad ∥ msg ∥ l_i_b_str ∥ I2OSP(0, 1) ∥ DST_prime)
 	h.Write(Z_pad)
 	h.Write(msg)
