@@ -93,6 +93,13 @@ func WithIncompleteArithmetic() AlgebraOption {
 // other cases, such as computing a challenge using a hash function, where
 // non-canonical bit representation leads to incorrect challenge (which in turn
 // makes the verification fail).
+//
+// NB! The emulated [sw_emulated.Curve.MarshalScalar] and
+// [sw_emulated.Curve.MarshalG1] now marshal canonically unconditionally, so
+// passing this option to them is a no-op: a non-canonical encoding is not
+// merely a completeness hazard there, it lets a prover present several
+// encodings of one value to the transcript. The option still has an effect for
+// the native implementations, which keep the non-canonical fast path.
 func WithCanonicalBitRepresentation() AlgebraOption {
 	return func(ac *algebraCfg) error {
 		if ac.ToBitsCanonical {

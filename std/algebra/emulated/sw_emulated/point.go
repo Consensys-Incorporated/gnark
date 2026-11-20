@@ -8,7 +8,6 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/algopts"
 	"github.com/consensys/gnark/std/math/emulated"
-	"github.com/consensys/gnark/std/math/emulated/emparams"
 )
 
 // New returns a new [Curve] instance over the base field Base and scalar field
@@ -105,19 +104,22 @@ type AffinePoint[Base emulated.FieldParams] struct {
 
 // MarshalScalar marshals the scalar into bits. Compatible with scalar
 // marshalling in gnark-crypto.
+//
+// The result is always canonical: the returned bits are the big-endian
+// encoding of the unique integer in [0, r) congruent to s. This is required
+// because the marshalling methods exist to feed Fiat-Shamir transcripts, where
+// several accepted encodings of the same value would let the prover grind the
+// challenge and would diverge from the out-of-circuit verifier.
+//
+// The variadic options are parsed for validity but do not change the result;
+// [algopts.WithCanonicalBitRepresentation] is now the (only) behaviour.
 func (c *Curve[B, S]) MarshalScalar(s emulated.Element[S], opts ...algopts.AlgebraOption) []frontend.Variable {
-	cfg, err := algopts.NewConfig(opts...)
-	if err != nil {
+	if _, err := algopts.NewConfig(opts...); err != nil {
 		panic(fmt.Sprintf("parse opts: %v", err))
 	}
 	var fr S
 	nbBits := 8 * ((fr.Modulus().BitLen() + 7) / 8)
-	var sReduced *emulated.Element[S]
-	if cfg.ToBitsCanonical {
-		sReduced = c.scalarApi.ReduceStrict(&s)
-	} else {
-		sReduced = c.scalarApi.Reduce(&s)
-	}
+	sReduced := c.scalarApi.ReduceStrict(&s)
 	res := c.scalarApi.ToBits(sReduced)[:nbBits]
 	slices.Reverse(res)
 	return res
@@ -125,21 +127,18 @@ func (c *Curve[B, S]) MarshalScalar(s emulated.Element[S], opts ...algopts.Algeb
 
 // MarshalG1 marshals the affine point into bits. The output is compatible with
 // the point marshalling in gnark-crypto.
+//
+// As for [Curve.MarshalScalar], the coordinates are always reduced to their
+// canonical representative before being decomposed into bits.
 func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption) []frontend.Variable {
-	cfg, err := algopts.NewConfig(opts...)
-	if err != nil {
+	if _, err := algopts.NewConfig(opts...); err != nil {
 		panic(fmt.Sprintf("parse opts: %v", err))
 	}
 	var fp B
-	nbBits := 8 * ((fp.Modulus().BitLen() + 7) / 8)
-	var x, y *emulated.Element[B]
-	if cfg.ToBitsCanonical {
-		x = c.baseApi.ReduceStrict(&p.X)
-		y = c.baseApi.ReduceStrict(&p.Y)
-	} else {
-		x = c.baseApi.Reduce(&p.X)
-		y = c.baseApi.Reduce(&p.Y)
-	}
+	bitLen := fp.Modulus().BitLen()
+	nbBits := 8 * ((bitLen + 7) / 8)
+	x := c.baseApi.ReduceStrict(&p.X)
+	y := c.baseApi.ReduceStrict(&p.Y)
 	bx := c.baseApi.ToBits(x)[:nbBits]
 	by := c.baseApi.ToBits(y)[:nbBits]
 	slices.Reverse(bx)
@@ -147,9 +146,19 @@ func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption)
 	res := make([]frontend.Variable, 2*nbBits)
 	copy(res, bx)
 	copy(res[len(bx):], by)
-	switch any(fp).(type) {
-	case emparams.Secp256k1Fp:
-		// in gnark-crypto we do not store the infinity bit for secp256k1 points
+	if spareBits[B]() < 2 {
+		// The leading byte of the encoding is fully used by X, there is no
+		// room for a flag. This is the case for secp256k1, P-256 and P-384,
+		// for which gnark-crypto (and SEC1) do not store an infinity flag
+		// either. Writing res[1] here would silently overwrite a bit of X.
+		return res
+	}
+	if spareBits[B]() < 3 {
+		// There is room for the flag bit, but this curve's uncompressed
+		// encoding carries no infinity flag, so marshalZeroG1 is the constant
+		// 0 (BN254). res[1] is a spare bit of a canonical X and is therefore
+		// already 0, so res[1] = isZero * 0 cannot change the output -- it
+		// would only emit two emulated IsZero calls for nothing.
 		return res
 	}
 	xZ := c.baseApi.IsZero(x)
@@ -162,11 +171,25 @@ func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption)
 	return res
 }
 
-// different curves have different marshalling for zero point
-func (c *Curve[B, S]) marshalZeroG1() frontend.Variable {
+// spareBits returns the number of unused high-order bits in the leading byte
+// of the big-endian, byte-aligned encoding of an element of B. Note that the
+// spare bits are counted from the *byte* boundary -- which is what the
+// encoding is padded to -- and not from the limb boundary.
+func spareBits[B emulated.FieldParams]() int {
 	var fp B
-	unusedBits := 64 - (fp.Modulus().BitLen() % 64)
-	if unusedBits >= 3 {
+	bitLen := fp.Modulus().BitLen()
+	return 8*((bitLen+7)/8) - bitLen
+}
+
+// marshalZeroG1 returns the value of the infinity flag bit (res[1]) used by
+// gnark-crypto for the uncompressed encoding of the point at infinity. Curves
+// with at least three spare bits in the leading byte carry an
+// "uncompressed infinity" mask (e.g. 0b010<<5 for BLS12-381, which is exactly
+// res[1]); curves with only two spare bits (BN254) use a 2-bit mask with no
+// uncompressed infinity flag. Callers must not use this when there are fewer
+// than two spare bits -- there is no flag to write at all then.
+func (c *Curve[B, S]) marshalZeroG1() frontend.Variable {
+	if spareBits[B]() >= 3 {
 		return 1
 	}
 	return 0

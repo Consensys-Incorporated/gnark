@@ -1110,6 +1110,70 @@ func TestExp(t *testing.T) {
 	testExp[emparams.Mod1e512](t)
 }
 
+// expConstZeroBaseCircuit exercises [Field.Exp] with a *structurally constant*
+// zero base, i.e. the compile-time zero element returned by [Field.Zero] which
+// carries no limbs at all. This is the input which takes the constant-folding
+// fast path in Exp; a witness element always carries NbLimbs() limbs and goes
+// through the windowed ladder instead.
+type expConstZeroBaseCircuit[T FieldParams] struct {
+	Exp      Element[T]
+	Expected Element[T]
+}
+
+func (c *expConstZeroBaseCircuit[T]) Define(api frontend.API) error {
+	f, err := NewField[T](api)
+	if err != nil {
+		return fmt.Errorf("new field: %w", err)
+	}
+	res := f.Exp(f.Zero(), &c.Exp)
+	f.AssertIsEqual(&c.Expected, res)
+	return nil
+}
+
+// TestExpConstZeroBase pins 0^0 == 1 for the constant-zero base. The first case
+// regressed: the fast path used to return zero for *every* exponent, but
+// x^0 == 1 for all x including x == 0, which is also what the general path
+// returns for a witness zero base (the ladder selects table[0] = 1). The
+// emulation modulus is always > 1, so unlike [Field.ModExp] there is no
+// modulus == 1 case where 0^0 folds back to 0.
+func testExpConstZeroBase[T FieldParams](t *testing.T) {
+	var fp T
+	assert := test.NewAssert(t)
+	for _, exp := range []*big.Int{big.NewInt(0), big.NewInt(1), big.NewInt(5)} {
+		assert.Run(func(assert *test.Assert) {
+			expected := new(big.Int).Exp(big.NewInt(0), exp, fp.Modulus())
+			circuit := &expConstZeroBaseCircuit[T]{}
+			assignment := &expConstZeroBaseCircuit[T]{
+				Exp:      ValueOf[T](exp),
+				Expected: ValueOf[T](expected),
+			}
+			err := test.IsSolved(circuit, assignment, testCurve.ScalarField())
+			assert.NoError(err)
+		}, fmt.Sprintf("%s/exp=%s", testName[T](), exp))
+	}
+}
+
+func TestExpConstZeroBase(t *testing.T) {
+	testExpConstZeroBase[Goldilocks](t)
+	testExpConstZeroBase[BN254Fr](t)
+	testExpConstZeroBase[emparams.Mod1e512](t)
+}
+
+// TestExpWitnessZeroBase is a regression guard for the general (windowed
+// ladder) path: a *witness* zero base must keep returning 1 for a zero
+// exponent. This already holds on master and must not change.
+func TestExpWitnessZeroBase(t *testing.T) {
+	assert := test.NewAssert(t)
+	circuit := &expCircuit[emparams.Mod1e512]{}
+	assignment := &expCircuit[emparams.Mod1e512]{
+		Base:     ValueOf[emparams.Mod1e512](0),
+		Exp:      ValueOf[emparams.Mod1e512](0),
+		Expected: ValueOf[emparams.Mod1e512](1),
+	}
+	err := test.IsSolved(circuit, assignment, testCurve.ScalarField())
+	assert.NoError(err)
+}
+
 type ReduceStrictCircuit[T FieldParams] struct {
 	Limbs        []frontend.Variable
 	Expected     []frontend.Variable

@@ -224,26 +224,18 @@ type VerifyingKey[G1El algebra.G1ElementT, G2El algebra.G2ElementT] struct {
 	G1 G1El
 }
 
-// PlaceholderVerifyingKey returns a placeholder value for the verifying key for
-// compiling if the witness is going to be in precomputed form using [ValueOfVerifyingKeyFixed].
+// PlaceholderVerifyingKey returns a placeholder value for the verifying key
+// for compiling a circuit whose verifying key comes from the witness. Assign
+// it with [ValueOfVerifyingKey].
+//
+// The placeholder no longer carries precomputed line evaluations for the G2
+// points: the pairing backends reject witness-supplied lines because nothing
+// constrains them to correspond to the point coordinates. To keep the
+// precomputation, embed the verifying key as a compile-time constant with
+// [ValueOfVerifyingKeyFixed] in a field tagged `gnark:"-"` instead of using a
+// placeholder at all.
 func PlaceholderVerifyingKey[G1El algebra.G1ElementT, G2El algebra.G2ElementT]() VerifyingKey[G1El, G2El] {
 	var ret VerifyingKey[G1El, G2El]
-	switch s := any(&ret).(type) {
-	case *VerifyingKey[sw_bn254.G1Affine, sw_bn254.G2Affine]:
-		s.G2[0] = sw_bn254.NewG2AffineFixedPlaceholder()
-		s.G2[1] = sw_bn254.NewG2AffineFixedPlaceholder()
-	case *VerifyingKey[sw_bls12377.G1Affine, sw_bls12377.G2Affine]:
-		s.G2[0] = sw_bls12377.NewG2AffineFixedPlaceholder()
-		s.G2[1] = sw_bls12377.NewG2AffineFixedPlaceholder()
-	case *VerifyingKey[sw_bls12381.G1Affine, sw_bls12381.G2Affine]:
-		s.G2[0] = sw_bls12381.NewG2AffineFixedPlaceholder()
-		s.G2[1] = sw_bls12381.NewG2AffineFixedPlaceholder()
-	case *VerifyingKey[sw_bw6761.G1Affine, sw_bw6761.G2Affine]:
-		s.G2[0] = sw_bw6761.NewG2AffineFixedPlaceholder()
-		s.G2[1] = sw_bw6761.NewG2AffineFixedPlaceholder()
-	default:
-		panic("not supported")
-	}
 	return ret
 }
 
@@ -291,12 +283,18 @@ func ValueOfVerifyingKey[G1El algebra.G1ElementT, G2El algebra.G2ElementT](vk an
 	return ret, nil
 }
 
-// ValueOfVerifyingKeyFixed initializes verifying key witness from the native
-// verifying key and perform pre-computations for G2 elements. It returns an
-// error if there is a mismatch between the type parameters and the provided
-// verifying key type. Such witness is significantly larger than without
-// precomputations. If witness size is important, then use [ValueOfVerifyingKey]
-// instead.
+// ValueOfVerifyingKeyFixed initializes a verifying key from the native
+// verifying key and performs the Miller loop pre-computations for the G2
+// elements. It returns an error if there is a mismatch between the type
+// parameters and the provided verifying key type.
+//
+// The returned value MUST be embedded in the circuit as a compile-time
+// constant (a struct field tagged `gnark:"-"`, or a value built inside
+// Define). It cannot be used as a witness assignment: the precomputed lines
+// are not constrained to correspond to the G2 coordinates, so the pairing
+// backends reject lines that reach them through the witness. For a
+// witness-assigned verifying key use [ValueOfVerifyingKey] together with
+// [PlaceholderVerifyingKey].
 func ValueOfVerifyingKeyFixed[G1El algebra.G1ElementT, G2El algebra.G2ElementT](vk any) (VerifyingKey[G1El, G2El], error) {
 	var ret VerifyingKey[G1El, G2El]
 	switch s := any(&ret).(type) {

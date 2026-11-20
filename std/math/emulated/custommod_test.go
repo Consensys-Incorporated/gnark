@@ -171,6 +171,83 @@ func TestVariableExp(t *testing.T) {
 	assert.NoError(err)
 }
 
+// variableExpConstZeroBase exercises [Field.ModExp] with a *structurally
+// constant* zero base, i.e. the compile-time zero element returned by
+// [Field.Zero] which carries no limbs at all. This is the input which takes the
+// constant-folding fast path in ModExp; a witness element always carries
+// NbLimbs() limbs and goes through the windowed ladder instead.
+type variableExpConstZeroBase[T FieldParams] struct {
+	Modulus  Element[T]
+	Exp      Element[T]
+	Expected Element[T]
+}
+
+func (c *variableExpConstZeroBase[T]) Define(api frontend.API) error {
+	f, err := NewField[T](api)
+	if err != nil {
+		return fmt.Errorf("new variable modulus: %w", err)
+	}
+	res := f.ModExp(f.Zero(), &c.Exp, &c.Modulus)
+	// the expected results are 0 or 1, both canonical, so we can compare
+	// directly instead of modulo the variable modulus.
+	f.AssertIsEqual(res, &c.Expected)
+	return nil
+}
+
+// TestVariableExpConstZeroBase pins 0^0 == 1 for the constant-zero base. The
+// first case regressed: the fast path used to return zero for *every*
+// exponent, but x^0 == 1 for all x including x == 0 (matching the EVM MODEXP
+// specification and Go's [big.Int.Exp] / Python's pow).
+func TestVariableExpConstZeroBase(t *testing.T) {
+	assert := test.NewAssert(t)
+
+	testCases := []struct {
+		name     string
+		exp, mod *big.Int
+		expected *big.Int
+	}{
+		{"zero exponent", big.NewInt(0), big.NewInt(7), big.NewInt(1)},
+		{"one exponent", big.NewInt(1), big.NewInt(7), big.NewInt(0)},
+		{"five exponent", big.NewInt(5), big.NewInt(7), big.NewInt(0)},
+		// modulo 1 everything is 0, including 0^0; the fast path must agree
+		// with the general path here.
+		{"zero exponent mod one", big.NewInt(0), big.NewInt(1), big.NewInt(0)},
+		{"one exponent mod one", big.NewInt(1), big.NewInt(1), big.NewInt(0)},
+	}
+
+	for _, tc := range testCases {
+		assert.Run(func(assert *test.Assert) {
+			// cross-check the expectation against the reference implementation
+			assert.Equal(0, new(big.Int).Exp(big.NewInt(0), tc.exp, tc.mod).Cmp(tc.expected))
+			circuit := &variableExpConstZeroBase[emparams.Mod1e512]{}
+			assignment := &variableExpConstZeroBase[emparams.Mod1e512]{
+				Modulus:  ValueOf[emparams.Mod1e512](tc.mod),
+				Exp:      ValueOf[emparams.Mod1e512](tc.exp),
+				Expected: ValueOf[emparams.Mod1e512](tc.expected),
+			}
+			err := test.IsSolved(circuit, assignment, ecc.BLS12_377.ScalarField())
+			assert.NoError(err)
+		}, tc.name)
+	}
+}
+
+// TestVariableExpWitnessZeroBase is a regression guard for the general
+// (windowed ladder) path: a *witness* zero base must keep returning 1 for a
+// zero exponent. This already holds on master and must not change.
+func TestVariableExpWitnessZeroBase(t *testing.T) {
+	assert := test.NewAssert(t)
+	mod := big.NewInt(7)
+	circuit := &variableExp[emparams.Mod1e512]{}
+	assignment := &variableExp[emparams.Mod1e512]{
+		Modulus:  ValueOf[emparams.Mod1e512](mod),
+		Base:     ValueOf[emparams.Mod1e512](0),
+		Exp:      ValueOf[emparams.Mod1e512](0),
+		Expected: ValueOf[emparams.Mod1e512](1),
+	}
+	err := test.IsSolved(circuit, assignment, ecc.BLS12_377.ScalarField())
+	assert.NoError(err)
+}
+
 func TestVariableExpEdgeCases(t *testing.T) {
 	assert := test.NewAssert(t)
 

@@ -87,7 +87,7 @@ func TestBLS12InBW6WoCommit(t *testing.T) {
 	innerCcs, innerVK, innerWitness, innerProof := getInnerWoCommit(assert, ecc.BLS12_377.ScalarField(), ecc.BW6_761.ScalarField())
 
 	// outer proof
-	circuitVk, err := ValueOfVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bls12377.ScalarField](innerWitness)
 	assert.NoError(err)
@@ -115,7 +115,7 @@ func TestBW6InBN254WoCommit(t *testing.T) {
 	innerCcs, innerVK, innerWitness, innerProof := getInnerWoCommit(assert, ecc.BW6_761.ScalarField(), ecc.BN254.ScalarField())
 
 	// outer proof
-	circuitVk, err := ValueOfVerifyingKey[sw_bw6761.ScalarField, sw_bw6761.G1Affine, sw_bw6761.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bw6761.ScalarField, sw_bw6761.G1Affine, sw_bw6761.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bw6761.ScalarField](innerWitness)
 	assert.NoError(err)
@@ -141,7 +141,7 @@ func TestBLS12381InBN254WoCommit(t *testing.T) {
 	innerCcs, innerVK, innerWitness, innerProof := getInnerWoCommit(assert, ecc.BLS12_381.ScalarField(), ecc.BN254.ScalarField())
 
 	// outer proof
-	circuitVk, err := ValueOfVerifyingKey[sw_bls12381.ScalarField, sw_bls12381.G1Affine, sw_bls12381.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bls12381.ScalarField, sw_bls12381.G1Affine, sw_bls12381.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bls12381.ScalarField](innerWitness)
 	assert.NoError(err)
@@ -223,7 +223,7 @@ func TestBLS12InBW6Commit(t *testing.T) {
 	innerCcs, innerVK, innerWitness, innerProof := getInnerCommit(assert, ecc.BLS12_377.ScalarField(), ecc.BW6_761.ScalarField())
 
 	// outer proof
-	circuitVk, err := ValueOfVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bls12377.ScalarField](innerWitness)
 	assert.NoError(err)
@@ -251,7 +251,7 @@ func TestBW6InBN254Commit(t *testing.T) {
 	innerCcs, innerVK, innerWitness, innerProof := getInnerCommit(assert, ecc.BW6_761.ScalarField(), ecc.BN254.ScalarField())
 
 	// outer proof
-	circuitVk, err := ValueOfVerifyingKey[sw_bw6761.ScalarField, sw_bw6761.G1Affine, sw_bw6761.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bw6761.ScalarField, sw_bw6761.G1Affine, sw_bw6761.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bw6761.ScalarField](innerWitness)
 	assert.NoError(err)
@@ -277,7 +277,7 @@ func TestBLS12381InBN254Commit(t *testing.T) {
 	innerCcs, innerVK, innerWitness, innerProof := getInnerCommit(assert, ecc.BLS12_381.ScalarField(), ecc.BN254.ScalarField())
 
 	// outer proof
-	circuitVk, err := ValueOfVerifyingKey[sw_bls12381.ScalarField, sw_bls12381.G1Affine, sw_bls12381.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bls12381.ScalarField, sw_bls12381.G1Affine, sw_bls12381.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bls12381.ScalarField](innerWitness)
 	assert.NoError(err)
@@ -303,7 +303,7 @@ func TestBN254InBN254Commit(t *testing.T) {
 	innerCcs, innerVK, innerWitness, innerProof := getInnerCommit(assert, ecc.BN254.ScalarField(), ecc.BN254.ScalarField())
 
 	// outer proof
-	circuitVk, err := ValueOfVerifyingKey[sw_bn254.ScalarField, sw_bn254.G1Affine, sw_bn254.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bn254.ScalarField, sw_bn254.G1Affine, sw_bn254.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bn254.ScalarField](innerWitness)
 	assert.NoError(err)
@@ -436,7 +436,7 @@ func TestBLS12InBW6Multi(t *testing.T) {
 		innerSelectors[i], innerWitnesses[i], innerProofs[i] = getRandomParametricProof(assert, innerField, outerField, ccss, vks, pks)
 	}
 
-	circuitBvk, err := ValueOfBaseVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](vks[0])
+	circuitBvk, err := ValueOfBaseVerifyingKeyFixed[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](vks[0])
 	assert.NoError(err)
 	circuitVks := make([]CircuitVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine], nbCircuits)
 	for i := range circuitVks {
@@ -541,7 +541,7 @@ func TestBLS12InBW6MultiHashed(t *testing.T) {
 		innerSelectors[i], innerWitnesses[i], innerProofs[i] = getRandomParametricProof(assert, innerField, outerField, ccss, vks, pks)
 	}
 
-	circuitBvk, err := ValueOfBaseVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](vks[0])
+	circuitBvk, err := ValueOfBaseVerifyingKeyFixed[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](vks[0])
 	assert.NoError(err)
 	circuitVks := make([]CircuitVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine], nbCircuits)
 	for i := range circuitVks {
@@ -751,9 +751,9 @@ func TestAggregationDiff(t *testing.T) {
 	hubProof, hubRoot := getHubProof(assert, outerField, innerField, innerWitnesses, hubCcs, hubVk, hubPk)
 	circuitHubProof, err := ValueOfProof[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](hubProof)
 	assert.NoError(err)
-	circuitVk, err := ValueOfVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](hubVk)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](hubVk)
 	assert.NoError(err)
-	circuitBvk, err := ValueOfBaseVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](vks[0])
+	circuitBvk, err := ValueOfBaseVerifyingKeyFixed[sw_bls12377.ScalarField, sw_bls12377.G1Affine, sw_bls12377.G2Affine](vks[0])
 	assert.NoError(err)
 	circuitVks := make([]CircuitVerifyingKey[sw_bls12377.ScalarField, sw_bls12377.G1Affine], nbCircuits)
 	for i := range circuitVks {
@@ -843,7 +843,7 @@ func TestZeroPublicInputsBW6InBN254(t *testing.T) {
 	innerCcs, innerVK, innerWitness, innerProof := getInnerZeroPublic(assert, ecc.BW6_761.ScalarField(), ecc.BN254.ScalarField())
 
 	// outer proof (recursive verification)
-	circuitVk, err := ValueOfVerifyingKey[sw_bw6761.ScalarField, sw_bw6761.G1Affine, sw_bw6761.G2Affine](innerVK)
+	circuitVk, err := ValueOfVerifyingKeyFixed[sw_bw6761.ScalarField, sw_bw6761.G1Affine, sw_bw6761.G2Affine](innerVK)
 	assert.NoError(err)
 	circuitWitness, err := ValueOfWitness[sw_bw6761.ScalarField](innerWitness)
 	assert.NoError(err)

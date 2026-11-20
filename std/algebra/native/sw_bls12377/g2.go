@@ -21,12 +21,23 @@ type g2AffP struct {
 // G2Affine point in affine coords
 //
 // When Lines is set, [MillerLoop] and [Pair] use the precomputed lines
-// directly and never read P: the lines are trusted input and are not
-// constrained to correspond to P. See [NewG2AffineFixedPlaceholder] for the
-// security assumptions.
+// directly and never read P. Nothing in the constraint system ties the lines
+// back to P, so they must be fixed by the circuit author at compile time:
+// lines that reach the pairing functions through the witness are rejected
+// with [ErrNonConstantLines]. See [NewG2AffineFixed].
 type G2Affine struct {
 	P     g2AffP
 	Lines *lineEvaluations
+
+	// muxedFrom records the line sets that [Pairing.MuxG2] selected between
+	// when this point is the result of a mux over points carrying precomputed
+	// lines. Lines then holds wires rather than constants, but the same
+	// selector drives the point coordinates and the lines, so the selected
+	// pair is consistent as long as every candidate pair was. prepareLines
+	// checks that by requiring every candidate's lines to be compile-time
+	// constants. The field is unexported and only ever set by MuxG2, so it
+	// cannot be supplied through the witness.
+	muxedFrom []*lineEvaluations
 }
 
 // Neg outputs -p

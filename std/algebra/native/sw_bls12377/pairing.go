@@ -5,6 +5,7 @@ package sw_bls12377
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/native/fields_bls12377"
@@ -24,9 +25,9 @@ var loopCounter = [64]int8{
 // ∏ᵢ { fᵢ_{x₀,Q}(P) }
 //
 // When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
-// and Qᵢ.P is never read: the lines are not constrained to correspond to the
-// point — precomputed lines are trusted input, see
-// [NewG2AffineFixedPlaceholder] for the security assumptions.
+// and Qᵢ.P is never read: nothing constrains the lines to correspond to the
+// point, so they must be compile-time constants and witness-supplied lines
+// are rejected with [ErrNonConstantLines].
 func MillerLoop(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 
 	// check input size match
@@ -34,16 +35,124 @@ func MillerLoop(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 	if n == 0 || n != len(Q) {
 		return GT{}, errors.New("invalid inputs sizes")
 	}
-	lines := make([]lineEvaluations, len(Q))
-	for i := range Q {
-		if Q[i].Lines == nil {
-			Qlines := computeLines(api, Q[i].P)
-			Q[i].Lines = Qlines
-		}
-		lines[i] = *Q[i].Lines
+	lines, err := prepareLines(api, Q)
+	if err != nil {
+		return GT{}, err
 	}
 	return millerLoopLines(api, P, lines)
 
+}
+
+// ErrNonConstantLines is returned by the pairing functions when a G2 input
+// carries precomputed line evaluations (G2Affine.Lines) that are not
+// compile-time constants.
+//
+// Precomputed lines encode the whole Miller ladder of the point and are
+// consumed directly by the Miller loop; nothing in the constraint system ties
+// them back to G2Affine.P, and verifying that they do would cost as much as
+// recomputing them. Caller-supplied lines are therefore only safe when the
+// circuit author fixes them at compile time (a hardcoded verifying key or
+// SRS, e.g. a field tagged `gnark:"-"` or a [NewG2AffineFixed] value built
+// inside Define). Lines coming from the witness are under the prover's
+// control and are rejected.
+//
+// To pair a prover-supplied G2 point, assign it with [NewG2Affine] (no
+// lines) so that the lines are computed in-circuit from the constrained
+// coordinates.
+//
+// Constant lines remain the circuit author's responsibility: nothing checks
+// that they belong to the Qᵢ.P they are attached to. If they do not -- say a
+// [NewG2AffineFixed] built for one point is paired against the P of another --
+// Qᵢ.P is silently ignored and the pairing is computed for whichever point the
+// lines came from. That is not a prover attack (both are fixed at compile
+// time), but it is the one trust assumption that is left.
+var ErrNonConstantLines = errors.New("precomputed G2 line evaluations are not compile-time constants; use NewG2Affine so that the lines are computed in-circuit")
+
+// tracksConstants reports whether the builder can identify compile-time
+// constants at all. The test engine deliberately answers "not a constant" for
+// every value so that circuits cannot take constant-folding shortcuts; there
+// we cannot tell a trusted precomputation from a prover-supplied one and fall
+// back to recomputing the lines in-circuit, which is always sound.
+func tracksConstants(api frontend.API) bool {
+	_, ok := api.Compiler().ConstantValue(0)
+	return ok
+}
+
+// assertSuppliedLines returns [ErrNonConstantLines] unless the lines carried
+// by Q are trusted.
+//
+// Lines set directly on Q must be compile-time constants. Lines produced by
+// [Pairing.MuxG2] are wires, but the mux binds them to the muxed coordinates
+// through a single selector, so it is enough that every candidate the mux
+// chose between was itself a constant set.
+func assertSuppliedLines(api frontend.API, Q *G2Affine) error {
+	if Q.muxedFrom != nil {
+		for i, candidate := range Q.muxedFrom {
+			if candidate == nil {
+				return fmt.Errorf("mux candidate %d: %w", i, ErrNonConstantLines)
+			}
+			if err := assertConstantLines(api, candidate); err != nil {
+				return fmt.Errorf("mux candidate %d: %w", i, err)
+			}
+		}
+		return nil
+	}
+	return assertConstantLines(api, Q.Lines)
+}
+
+// assertConstantLines returns [ErrNonConstantLines] unless every coordinate
+// of every supplied line evaluation is a compile-time constant. An all-zero
+// (i.e. unassigned) set of lines is rejected as well: real precomputations
+// always have at least one non-zero coordinate.
+func assertConstantLines(api frontend.API, lines *lineEvaluations) error {
+	var nonZero bool
+	for i := range lines {
+		for j := range lines[i] {
+			l := lines[i][j]
+			if l == nil {
+				// not every slot of the ladder carries a line
+				continue
+			}
+			for _, v := range [...]frontend.Variable{l.R0.A0, l.R0.A1, l.R1.A0, l.R1.A1} {
+				if v == nil {
+					return ErrNonConstantLines
+				}
+				c, ok := api.Compiler().ConstantValue(v)
+				if !ok {
+					return ErrNonConstantLines
+				}
+				nonZero = nonZero || c.Sign() != 0
+			}
+		}
+	}
+	if !nonZero {
+		return ErrNonConstantLines
+	}
+	return nil
+}
+
+// prepareLines returns the line evaluations to feed to the Miller loop for
+// every Qi. When Qi carries no lines they are computed in-circuit; when it
+// does, they must be compile-time constants, see [ErrNonConstantLines].
+//
+// The computed lines are never written back into the caller's Q: they hold
+// wires of the current builder, and caching them on a value the caller may
+// reuse -- for a second pairing call, or for a second compilation of the same
+// circuit -- would leak those wires out of the call that created them.
+func prepareLines(api frontend.API, Q []G2Affine) ([]lineEvaluations, error) {
+	tracks := tracksConstants(api)
+	lines := make([]lineEvaluations, len(Q))
+	for i := range Q {
+		if Q[i].Lines == nil || !tracks {
+			lines[i] = *computeLines(api, Q[i].P)
+			continue
+		}
+		if err := assertSuppliedLines(api, &Q[i]); err != nil {
+			return nil, fmt.Errorf("G2 input %d: %w", i, err)
+		}
+		lines[i] = *Q[i].Lines
+	}
+	return lines, nil
 }
 
 // millerLoopLines computes the multi-Miller loop from points in G1 and precomputed lines in G2
@@ -245,12 +354,9 @@ func FinalExponentiation(api frontend.API, e1 GT) GT {
 // This function doesn't check that the inputs are in the correct subgroup
 //
 // When Qᵢ carries precomputed lines (Qᵢ.Lines != nil), they are used directly
-// and Qᵢ.P is never read: the lines are not constrained to correspond to the
-// point — precomputed lines are trusted input, see
-// [NewG2AffineFixedPlaceholder] for the security assumptions. To assert a
-// pairing equation over untrusted G2 inputs, prefer [PairingCheck], which
-// binds the result to the point coordinates even when precomputed lines are
-// supplied.
+// and Qᵢ.P is never read: nothing constrains the lines to correspond to the
+// point, so they must be compile-time constants and witness-supplied lines
+// are rejected with [ErrNonConstantLines].
 func Pair(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 	f, err := MillerLoop(api, P, Q)
 	if err != nil {
@@ -262,10 +368,10 @@ func Pair(api frontend.API, P []G1Affine, Q []G2Affine) (GT, error) {
 // PairingCheck calculates the reduced pairing for a set of points and asserts if the result is One
 // ∏ᵢ e(Pᵢ, Qᵢ) =? 1
 //
-// The non-residue witness hint is computed from the point coordinates, so the
-// asserted equation binds the result to the coordinates of Qᵢ.P even when Qᵢ
-// carries precomputed lines: lines not corresponding to Qᵢ.P make the circuit
-// unsatisfiable.
+// When Qᵢ carries precomputed lines they must be compile-time constants
+// ([ErrNonConstantLines]): the non-residue witness hint takes the coordinates
+// of Qᵢ.P as input but generates no constraints, so it does not bind the
+// lines to Qᵢ.P.
 //
 // This function doesn't check that the inputs are in the correct subgroups.
 // It uses the classical E12-based Miller loop.
@@ -321,13 +427,9 @@ func PairingCheck(api frontend.API, P []G1Affine, Q []G2Affine) error {
 	var residueWitnessInv GT
 	residueWitnessInv.Inverse(api, residueWitness)
 
-	lines := make([]lineEvaluations, nQ)
-	for i := range Q {
-		if Q[i].Lines == nil {
-			Qlines := computeLines(api, Q[i].P)
-			Q[i].Lines = Qlines
-		}
-		lines[i] = *Q[i].Lines
+	lines, err := prepareLines(api, Q)
+	if err != nil {
+		return err
 	}
 
 	// precomputations
