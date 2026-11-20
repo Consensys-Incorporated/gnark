@@ -15,8 +15,10 @@ func RoundTripCheck(from any, to func() any) error {
 	var buf bytes.Buffer
 
 	reconstruct := func(written int64) error {
+		checked := false
 		// if builder implements io.ReaderFrom
 		if r, ok := to().(io.ReaderFrom); ok {
+			checked = true
 			read, err := r.ReadFrom(bytes.NewReader(buf.Bytes()))
 			if err != nil {
 				return err
@@ -31,6 +33,7 @@ func RoundTripCheck(from any, to func() any) error {
 
 		// if builder implements gnarkio.UnsafeReaderFrom
 		if r, ok := to().(UnsafeReaderFrom); ok {
+			checked = true
 			read, err := r.UnsafeReadFrom(bytes.NewReader(buf.Bytes()))
 			if err != nil {
 				return err
@@ -42,11 +45,16 @@ func RoundTripCheck(from any, to func() any) error {
 				return errors.New("bytes written / read don't match")
 			}
 		}
+		if !checked {
+			return errors.New("reconstructed object implements neither ReaderFrom nor UnsafeReaderFrom")
+		}
 		return nil
 	}
 
+	wrote := false
 	// if from implements io.WriterTo
 	if w, ok := from.(io.WriterTo); ok {
+		wrote = true
 		written, err := w.WriteTo(&buf)
 		if err != nil {
 			return err
@@ -61,6 +69,7 @@ func RoundTripCheck(from any, to func() any) error {
 
 	// if from implements gnarkio.WriterRawTo
 	if w, ok := from.(WriterRawTo); ok {
+		wrote = true
 		written, err := w.WriteRawTo(&buf)
 		if err != nil {
 			return err
@@ -71,6 +80,9 @@ func RoundTripCheck(from any, to func() any) error {
 		}
 	}
 
+	if !wrote {
+		return errors.New("source object implements neither WriterTo nor WriterRawTo")
+	}
 	return nil
 }
 
