@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -19,6 +20,114 @@ import (
 	"github.com/leanovate/gopter/prop"
 	"github.com/stretchr/testify/require"
 )
+
+// Neg, ScalarAdd, ScalarSub and ScalarSubFrom have value receivers, so they can be called on unaddressable vectors.
+var _ = []any{Vector(nil).Neg, Vector(nil).ScalarAdd, Vector(nil).ScalarSub, Vector(nil).ScalarSubFrom}
+
+func TestVectorNegAndScalarOps(t *testing.T) {
+	const size = 17
+	a := make(Vector, size)
+	a.MustSetRandom()
+	var c Element
+	c.MustSetRandom()
+
+	neg, scalarAdd, scalarSub, subFrom := make(Vector, size), make(Vector, size), make(Vector, size), make(Vector, size)
+	neg.Neg(a)
+	scalarAdd.ScalarAdd(a, &c)
+	scalarSub.ScalarSub(a, &c)
+	subFrom.ScalarSubFrom(&c, a)
+
+	for i := range a {
+		var e Element
+		require.Equal(t, *e.Neg(&a[i]), neg[i])
+		require.Equal(t, *e.Add(&a[i], &c), scalarAdd[i])
+		require.Equal(t, *e.Sub(&a[i], &c), scalarSub[i])
+		require.Equal(t, *e.Sub(&c, &a[i]), subFrom[i])
+	}
+
+	// the destination may alias a
+	aliased := make(Vector, size)
+	copy(aliased, a)
+	aliased.Neg(aliased)
+	require.Equal(t, neg, aliased)
+
+	// the scalar may alias an element of the destination
+	c0 := a[0]
+	v := make(Vector, size)
+	for _, op := range []struct {
+		name    string
+		vector  func(v Vector, c *Element)
+		element func(z, x *Element, c *Element)
+	}{
+		{"ScalarAdd", func(v Vector, c *Element) { v.ScalarAdd(v, c) }, func(z, x *Element, c *Element) { z.Add(x, c) }},
+		{"ScalarSub", func(v Vector, c *Element) { v.ScalarSub(v, c) }, func(z, x *Element, c *Element) { z.Sub(x, c) }},
+		{"ScalarSubFrom", func(v Vector, c *Element) { v.ScalarSubFrom(c, v) }, func(z, x *Element, c *Element) { z.Sub(c, x) }},
+	} {
+		copy(v, a)
+		op.vector(v, &v[0])
+		for i := range a {
+			var e Element
+			op.element(&e, &a[i], &c0)
+			require.Equal(t, e, v[i], op.name)
+		}
+	}
+}
+
+func TestVectorNegAndScalarOpsZeroAllocs(t *testing.T) {
+	const n = 17
+	v, a := make(Vector, n), make(Vector, n)
+	var c Element
+	for _, op := range []struct {
+		name string
+		call func()
+	}{
+		{"Neg", func() { v.Neg(a) }},
+		{"ScalarAdd", func() { v.ScalarAdd(a, &c) }},
+		{"ScalarSub", func() { v.ScalarSub(a, &c) }},
+		{"ScalarSubFrom", func() { v.ScalarSubFrom(&c, a) }},
+	} {
+		require.Zero(t, testing.AllocsPerRun(10, op.call), op.name)
+	}
+}
+
+func TestVectorPrefixProduct(t *testing.T) {
+	for _, size := range []int{0, 1, 2, 3, 1<<15 - 1, 1 << 15, 1<<15 + 1, 70001} {
+		for _, nbTasks := range [][]int{nil, {-1}, {0}, {1}, {2}, {3}, {16}, {runtime.NumCPU()}} {
+			v := make(Vector, size)
+			v.MustSetRandom()
+			if size > 5000 {
+				// a zero in the middle of a chunk
+				v[5000].SetZero()
+			}
+			expected := make(Vector, size)
+			for i := range v {
+				expected[i] = v[i]
+				if i > 0 {
+					expected[i].Mul(&expected[i], &expected[i-1])
+				}
+			}
+			v.PrefixProduct(nbTasks...)
+			require.Equal(t, expected, v, "size=%d nbTasks=%v", size, nbTasks)
+		}
+	}
+}
+
+func BenchmarkVectorPrefixProduct(b *testing.B) {
+	for _, size := range []int{1 << 12, 1 << 15, 1 << 17, 1 << 20} {
+		v := make(Vector, size)
+		v.MustSetRandom()
+		b.Run(fmt.Sprintf("generic/n=%d", size), func(b *testing.B) {
+			for b.Loop() {
+				v.prefixProductGeneric()
+			}
+		})
+		b.Run(fmt.Sprintf("parallel/n=%d", size), func(b *testing.B) {
+			for b.Loop() {
+				v.PrefixProduct()
+			}
+		})
+	}
+}
 
 func TestVectorSort(t *testing.T) {
 	assert := require.New(t)

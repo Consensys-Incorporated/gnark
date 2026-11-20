@@ -202,7 +202,7 @@ func Prove(c Circuit, schedule constraint.GkrProvingSchedule, assignment WireAss
 
 	r := newResources(c, schedule, nbVars, hasher)
 	r.assignment = assignment
-	r.memPool = polynomial.NewPool(gkrcore.MemoryRequirements(c, nbInstances)...)
+	r.memPool = polynomial.NewPool()
 	r.workers = utils.NewWorkerPool()
 	defer r.workers.Stop()
 

@@ -57,3 +57,11 @@ func vectorScalarMulAcc(res, a Vector, c *Element) {
 func vectorScalarMulAdd(res, b Vector, c *Element) {
 	scalarMulAddVecGeneric(res, b, c)
 }
+
+func batchInvertRowForward(acc, prefix, row, a Vector) {
+	batchInvertRowForwardGeneric(acc, prefix, row, a)
+}
+
+func batchInvertRowBackward(acc, res, prefix, row, tmp Vector) {
+	batchInvertRowBackwardGeneric(acc, res, prefix, row, tmp)
+}
