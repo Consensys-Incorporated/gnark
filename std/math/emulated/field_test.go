@@ -3,8 +3,10 @@ package emulated
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"testing"
 
+	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/test"
@@ -298,4 +300,34 @@ func (c *LargeMulConstantFastPathCircuit) Define(api frontend.API) error {
 func TestLargeMulConstantFastPathCircuit(t *testing.T) {
 	assert := test.NewAssert(t)
 	assert.CheckCircuit(&LargeMulConstantFastPathCircuit{}, test.WithValidAssignment(&LargeMulConstantFastPathCircuit{Dummy: 1}), test.NoTestEngine())
+}
+
+type evalNegativeShortCircuit struct {
+	B        frontend.Variable
+	Expected Element[Secp256k1Fp]
+}
+
+func (c *evalNegativeShortCircuit) Define(api frontend.API) error {
+	f, err := NewField[Secp256k1Fp](api)
+	if err != nil {
+		return err
+	}
+	// both operands are single-limb variables, the difference is negative
+	x := f.Select(c.B, f.NewElement(3), f.NewElement(5))
+	y := f.Select(c.B, f.NewElement(7), f.NewElement(9))
+	f.AssertIsEqual(f.Eval([][]*Element[Secp256k1Fp]{{x}, {y}}, []int{1, -1}), &c.Expected)
+	return nil
+}
+
+func TestEvalNegativeShortInputs(t *testing.T) {
+	assert := test.NewAssert(t)
+	var fp Secp256k1Fp
+	p := fp.Modulus()
+	// 3 - 7 and 5 - 9
+	minus4 := new(big.Int).Sub(p, big.NewInt(4))
+	assert.CheckCircuit(&evalNegativeShortCircuit{},
+		test.WithValidAssignment(&evalNegativeShortCircuit{B: 1, Expected: ValueOf[Secp256k1Fp](minus4)}),
+		test.WithValidAssignment(&evalNegativeShortCircuit{B: 0, Expected: ValueOf[Secp256k1Fp](minus4)}),
+		test.WithInvalidAssignment(&evalNegativeShortCircuit{B: 1, Expected: ValueOf[Secp256k1Fp](4)}),
+		test.WithCurves(ecc.BN254), test.NoFuzzing())
 }
