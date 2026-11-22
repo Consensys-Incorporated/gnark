@@ -201,14 +201,15 @@ func (e Ext2) MulByNonResidue3Power5(x *E2) *E2 {
 }
 
 func (e Ext2) Mul(x, y *E2) *E2 {
-	// b0 = x0*y0 - x1*y1
-	b0 := e.fp.Eval([][]*baseEl{{&x.A0, &y.A0}, {&x.A1, &y.A1}}, []int{1, -1})
-	// b1 = x0*y1 + x1*y0
-	b1 := e.fp.Eval([][]*baseEl{{&x.A0, &y.A1}, {&x.A1, &y.A0}}, []int{1, 1})
-
+	b := e.fp.EvalSystem([]emulated.PolySpec[emulated.BN254Fp]{
+		// b0 = x0*y0 - x1*y1
+		{At: [][]*baseEl{{&x.A0, &y.A0}, {&x.A1, &y.A1}}, Coefs: []int{1, -1}},
+		// b1 = x0*y1 + x1*y0
+		{At: [][]*baseEl{{&x.A0, &y.A1}, {&x.A1, &y.A0}}, Coefs: []int{1, 1}},
+	})
 	return &E2{
-		A0: *b0,
-		A1: *b1,
+		A0: *b[0],
+		A1: *b[1],
 	}
 }
 
@@ -264,24 +265,28 @@ func (e Ext2) IsZero(z *E2) frontend.Variable {
 }
 
 func (e Ext2) Square(x *E2) *E2 {
-	// a = (x0+x1)(x0-x1) = x0^2 - x1^2
-	a := e.fp.Eval([][]*baseEl{{&x.A0, &x.A0}, {&x.A1, &x.A1}}, []int{1, -1})
-	// b = 2*x0*x1
-	b := e.fp.Eval([][]*baseEl{{&x.A0, &x.A1}}, []int{2})
+	res := e.fp.EvalSystem([]emulated.PolySpec[emulated.BN254Fp]{
+		// a = (x0+x1)(x0-x1) = x0^2 - x1^2
+		{At: [][]*baseEl{{&x.A0, &x.A0}, {&x.A1, &x.A1}}, Coefs: []int{1, -1}},
+		// b = 2*x0*x1
+		{At: [][]*baseEl{{&x.A0, &x.A1}}, Coefs: []int{2}},
+	})
 	return &E2{
-		A0: *a,
-		A1: *b,
+		A0: *res[0],
+		A1: *res[1],
 	}
 }
 
 func (e Ext2) Cube(x *E2) *E2 {
-	// a = x0^3 - 3*x0*x1^2
-	a := e.fp.Eval([][]*baseEl{{&x.A0, &x.A0, &x.A0}, {&x.A0, &x.A1, &x.A1}}, []int{1, -3})
-	// b = 3*x1*x0^2 - x1^3
-	b := e.fp.Eval([][]*baseEl{{&x.A1, &x.A0, &x.A0}, {&x.A1, &x.A1, &x.A1}}, []int{3, -1})
+	res := e.fp.EvalSystem([]emulated.PolySpec[emulated.BN254Fp]{
+		// a = x0^3 - 3*x0*x1^2
+		{At: [][]*baseEl{{&x.A0, &x.A0, &x.A0}, {&x.A0, &x.A1, &x.A1}}, Coefs: []int{1, -3}},
+		// b = 3*x1*x0^2 - x1^3
+		{At: [][]*baseEl{{&x.A1, &x.A0, &x.A0}, {&x.A1, &x.A1, &x.A1}}, Coefs: []int{3, -1}},
+	})
 	return &E2{
-		A0: *a,
-		A1: *b,
+		A0: *res[0],
+		A1: *res[1],
 	}
 }
 
