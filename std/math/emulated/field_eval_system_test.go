@@ -588,9 +588,37 @@ func TestAdversarialQuotientExcessBitsSoundness(t *testing.T) {
 		assert.Error(err, "%s must reject excess-bit quotient wrap-around forgery", tc.name)
 	}
 
-	// Also verify checkZero / AssertIsEqual refuses unsafe full-limb quotient wrap-around.
+	// Also verify checkZero / AssertIsEqual refuses unsafe full-limb quotient wrap-around,
+	// both on 2-limb parameters (nbCarryLimbs > 0) and 1-limb parameters (nbCarryLimbs == 0,
+	// where x=1441, k0=482 would otherwise satisfy pad0 - x == k0*p + (-1)*q mod BabyBear).
 	_, err := frontend.CompileU32(q, widecommitter.From[constraint.U32](r1cs.NewBuilder), &wideBabyBearCheckZeroCircuit{})
 	assert.Error(err)
+	_, err = frontend.CompileU32(q, widecommitter.From[constraint.U32](scs.NewBuilder), &wideBabyBearCheckZeroCircuit{})
+	assert.Error(err)
+	_, err = frontend.CompileU32(q, widecommitter.From[constraint.U32](r1cs.NewBuilder), &singleLimbWideBabyBearCheckZeroCircuit{})
+	assert.Error(err)
+	_, err = frontend.CompileU32(q, widecommitter.From[constraint.U32](scs.NewBuilder), &singleLimbWideBabyBearCheckZeroCircuit{})
+	assert.Error(err)
+}
+
+type singleLimbWideBabyBearParams struct{}
+
+func (singleLimbWideBabyBearParams) NbLimbs() uint     { return 1 }
+func (singleLimbWideBabyBearParams) BitsPerLimb() uint { return 22 }
+func (singleLimbWideBabyBearParams) IsPrime() bool     { return true }
+func (singleLimbWideBabyBearParams) Modulus() *big.Int { return big.NewInt(4194301) } // 2^22 - 3
+
+type singleLimbWideBabyBearCheckZeroCircuit struct {
+	A Element[singleLimbWideBabyBearParams]
+}
+
+func (c *singleLimbWideBabyBearCheckZeroCircuit) Define(api frontend.API) error {
+	f, err := NewField[singleLimbWideBabyBearParams](api)
+	if err != nil {
+		return err
+	}
+	f.AssertIsEqual(&c.A, f.Zero())
+	return nil
 }
 
 func TestTestEngineWitnessNotTreatedAsConstant(t *testing.T) {
@@ -714,5 +742,206 @@ func TestEvalSystemCoefOverflowAndLargeGammaTower(t *testing.T) {
 		w, err := frontend.NewWitness(witness, ecc.BN254.ScalarField())
 		assert.NoError(err)
 		assert.NoError(ccs.IsSolved(w))
+	}
+}
+
+type twoLimb16Params struct{}
+
+func (twoLimb16Params) NbLimbs() uint     { return 2 }
+func (twoLimb16Params) BitsPerLimb() uint { return 16 }
+func (twoLimb16Params) IsPrime() bool     { return true }
+func (twoLimb16Params) Modulus() *big.Int { return big.NewInt(4294967291) } // 2^32 - 5
+
+type oneLimb16Params struct{}
+
+func (oneLimb16Params) NbLimbs() uint     { return 1 }
+func (oneLimb16Params) BitsPerLimb() uint { return 16 }
+func (oneLimb16Params) IsPrime() bool     { return true }
+func (oneLimb16Params) Modulus() *big.Int { return big.NewInt(65521) } // 2^16 - 15 (smallFieldOptimization == true)
+
+type packWidthCircuit[T FieldParams] struct {
+	Width int `gnark:"-"`
+	Limbs []frontend.Variable
+	Dummy frontend.Variable
+}
+
+func (c *packWidthCircuit[T]) Define(api frontend.API) error {
+	// Ensure >= 2 constraints for SCS setup on 1-bit/tiny cases.
+	api.AssertIsEqual(c.Dummy, 1)
+	api.AssertIsEqual(c.Dummy, 1)
+	f, err := NewField[T](api)
+	if err != nil {
+		return err
+	}
+	_ = f.packLimbsWithWidth(c.Limbs, c.Width)
+	return nil
+}
+
+type polyMvQuoBoundaryCircuit struct {
+	Mode int `gnark:"-"`
+	Bit  frontend.Variable
+	X    Element[twoLimb16Params]
+	Out  Element[twoLimb16Params]
+}
+
+func (c *polyMvQuoBoundaryCircuit) Define(api frontend.API) error {
+	f, err := NewField[twoLimb16Params](api)
+	if err != nil {
+		return err
+	}
+	api.AssertIsBoolean(c.Bit)
+	var got *Element[twoLimb16Params]
+	switch c.Mode {
+	case 0:
+		// quoBits == 0 (maxQuo == 0, nbQuoLimbs == 0): 1-limb FromBits(Bit) has maxElemVal 65535 < p.
+		b := f.FromBits(c.Bit)
+		got = f.Eval([][]*Element[twoLimb16Params]{{b}}, []int{1})
+	case 16:
+		// quoBits == nbBits == 16: floor(65535 * (2^32 - 1) / (2^32 - 5)) == 65535 (16 bits).
+		got = f.Eval([][]*Element[twoLimb16Params]{{&c.X}}, []int{65535})
+	case 21:
+		// quoBits == nbBits + 5 == 21 (nbQuoLimbs == 2, topWidth == 5): maxQuo == 2097151 (21 bits).
+		got = f.Eval([][]*Element[twoLimb16Params]{{&c.X}}, []int{2097151})
+	case 32:
+		// quoBits == 2*nbBits == 32: floor((p - 1) * (2^32 - 1) / p) == 2^32 - 3 (32 bits).
+		constPMinus1 := f.NewElement(uint64(4294967290))
+		got = f.Eval([][]*Element[twoLimb16Params]{{&c.X, constPMinus1}}, []int{1})
+	}
+	// Compare limbs directly so AssertIsEqual does not add a second deferred check.
+	for i := range 2 {
+		api.AssertIsEqual(got.Limbs[i], c.Out.Limbs[i])
+	}
+	return nil
+}
+
+func runPackWidthSuite[T FieldParams](t *testing.T, label string) {
+	assert := test.NewAssert(t)
+	field := ecc.BN254.ScalarField()
+	cases := []struct {
+		width   int
+		valid   []int64
+		invalid [][]int64
+	}{
+		{
+			width:   5,
+			valid:   []int64{31},
+			invalid: [][]int64{{32}}, // 1 << topWidth (< 1 << nbBits)
+		},
+		{
+			width:   16, // exact width == nbBits
+			valid:   []int64{65535},
+			invalid: [][]int64{{65536}}, // 1 << nbBits
+		},
+		{
+			width:   21, // nbBits + 5 (topWidth == 5)
+			valid:   []int64{65535, 31},
+			invalid: [][]int64{{65536, 0}, {0, 32}}, // limb0 == 1<<16 and top limb == 1<<topWidth (< 1<<16)
+		},
+		{
+			width:   32, // exact width == 2*nbBits
+			valid:   []int64{65535, 65535},
+			invalid: [][]int64{{65536, 0}, {0, 65536}},
+		},
+	}
+
+	for _, tc := range cases {
+		for _, b := range []struct {
+			name    string
+			builder frontend.NewBuilder
+		}{
+			{"R1CS", r1cs.NewBuilder[constraint.U64]},
+			{"SCS", scs.NewBuilder[constraint.U64]},
+		} {
+			circuit := &packWidthCircuit[T]{
+				Width: tc.width,
+				Limbs: make([]frontend.Variable, len(tc.valid)),
+			}
+			ccs, err := frontend.Compile(field, b.builder, circuit)
+			assert.NoError(err)
+
+			validW := &packWidthCircuit[T]{
+				Width: tc.width,
+				Limbs: make([]frontend.Variable, len(tc.valid)),
+				Dummy: 1,
+			}
+			for i, v := range tc.valid {
+				validW.Limbs[i] = v
+			}
+			w, err := frontend.NewWitness(validW, field)
+			assert.NoError(err)
+			assert.NoError(ccs.IsSolved(w), "%s/%s/width=%d max valid witness must pass", label, b.name, tc.width)
+
+			for _, bad := range tc.invalid {
+				badW := &packWidthCircuit[T]{
+					Width: tc.width,
+					Limbs: make([]frontend.Variable, len(bad)),
+					Dummy: 1,
+				}
+				for i, v := range bad {
+					badW.Limbs[i] = v
+				}
+				wb, err := frontend.NewWitness(badW, field)
+				assert.NoError(err)
+				assert.Error(ccs.IsSolved(wb), "%s/%s/width=%d invalid limbs %v must fail", label, b.name, tc.width, bad)
+			}
+		}
+	}
+}
+
+func TestPackLimbsWithWidthAndPolyMvQuoBitsBoundaries(t *testing.T) {
+	assert := test.NewAssert(t)
+	// Test both enforceWidth (NbLimbs=2) and smallEnforceWidth (NbLimbs=1, useSmallFieldOptimization=true).
+	runPackWidthSuite[twoLimb16Params](t, "enforceWidth")
+	runPackWidthSuite[oneLimb16Params](t, "smallEnforceWidth")
+
+	field := ecc.BN254.ScalarField()
+	mod := twoLimb16Params{}.Modulus()
+	xMax := new(big.Int).Sub(mod, big.NewInt(1)) // p - 1 = 4294967290
+
+	for _, mode := range []int{0, 16, 21, 32} {
+		var expected *big.Int
+		switch mode {
+		case 0:
+			expected = big.NewInt(1)
+		case 16:
+			expected = new(big.Int).Mod(new(big.Int).Mul(big.NewInt(65535), xMax), mod)
+		case 21:
+			expected = new(big.Int).Mod(new(big.Int).Mul(big.NewInt(2097151), xMax), mod)
+		case 32:
+			expected = new(big.Int).Mod(new(big.Int).Mul(xMax, xMax), mod)
+		}
+		witness := &polyMvQuoBoundaryCircuit{
+			Mode: mode,
+			Bit:  1,
+			X:    ValueOf[twoLimb16Params](xMax),
+			Out:  ValueOf[twoLimb16Params](expected),
+		}
+
+		for _, b := range []struct {
+			name    string
+			builder frontend.NewBuilder
+		}{
+			{"R1CS", r1cs.NewBuilder[constraint.U64]},
+			{"SCS", scs.NewBuilder[constraint.U64]},
+		} {
+			ccs, err := frontend.Compile(field, b.builder, &polyMvQuoBoundaryCircuit{Mode: mode})
+			assert.NoError(err)
+			w, err := frontend.NewWitness(witness, field)
+			assert.NoError(err)
+			assert.NoError(ccs.IsSolved(w), "%s/quoBits=%d honest witness must solve", b.name, mode)
+
+			if mode == 21 {
+				// Malicious hint sets top limb of quo (limb 1) to 1 << topWidth == 32 (still < 1 << 16).
+				tamperTopQuo := func(nativeMod *big.Int, inputs, outputs []*big.Int) error {
+					if err := polyMvHint(nativeMod, inputs, outputs); err != nil {
+						return err
+					}
+					outputs[1].SetInt64(1 << 5)
+					return nil
+				}
+				err := ccs.IsSolved(w, solver.OverrideHint(solver.GetHintID(polyMvHint), tamperTopQuo))
+				assert.Error(err, "%s/quoBits=21 must reject top quotient limb == 1<<topWidth", b.name)
+			}
+		}
 	}
 }

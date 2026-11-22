@@ -729,11 +729,12 @@ func (f *Field[T]) polyMvBounds(mv *multivariate[T], at []*Element[T]) (posMax, 
 // challenge soundness error, that it is also divisible by the odd native
 // modulus q. Existing range checks bound its absolute value below 2^wBits, so
 // it is enough to choose nbLow with q*2^(BitsPerLimb*nbLow) >= 2^wBits.
-func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbCarryLimbs int) int {
+func (f *Field[T]) crtRequiredLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint) int {
 	bpl := f.fParams.BitsPerLimb()
 	// a and b are non-negative limb representations whose total widths are
 	// tracked by their limb counts and overflow metadata.
 	abBits := uint(len(a.Limbs))*bpl + a.overflow + uint(len(b.Limbs))*bpl + b.overflow
+	abMaxBits := uint(new(big.Int).Mul(f.maxElemVal(a), f.maxElemVal(b)).BitLen())
 	// k is range-checked to nbQuoLimbs limbs. A custom modulus has modBits=0;
 	// checkModulus guarantees zero-overflow limbs, so the full parameter width
 	// is a conservative bound in that case. The extra bit covers adding r.
@@ -742,7 +743,10 @@ func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbC
 	}
 	sao := uint(f.smallAdditionalOverflow())
 	kprBits := nbQuoLimbs*bpl + sao + modBits + sao + 1
-	wBits := max(abBits, kprBits)
+	kprMax := f.maxPackedVal(int(nbQuoLimbs*bpl), sao)
+	kprMax.Mul(kprMax, f.maxPackedVal(int(modBits), 0))
+	kprMax.Add(kprMax, f.maxPackedVal(int(modBits), sao))
+	wBits := max(abBits, abMaxBits, kprBits, uint(kprMax.BitLen()))
 
 	// A field with bit length F has q >= 2^(F-1).
 	qBitsLowerBound := uint(f.api.Compiler().FieldBitLen()) - 1
@@ -750,7 +754,11 @@ func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbC
 	if wBits > qBitsLowerBound {
 		remainingBits = wBits - qBitsLowerBound
 	}
-	nbLow := int((remainingBits + bpl - 1) / bpl)
+	return int((remainingBits + bpl - 1) / bpl)
+}
+
+func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbCarryLimbs int) int {
+	nbLow := f.crtRequiredLowCarries(a, b, nbQuoLimbs, modBits)
 	return max(0, min(nbLow, nbCarryLimbs))
 }
 
@@ -758,9 +766,9 @@ func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbC
 // carry limbs for a multivariate evaluation check with the given quotient
 // parameters. Because [Field.callPolyMvHint] constrains the quotient witness to
 // maxQuo.BitLen() bits via packLimbsWithWidth, both honest and malicious
-// witnesses satisfy k < 2^(maxQuo.BitLen() + sao), so the k*p limb contribution
-// is soundly bounded by the minimum of the coefficient bound and quotient-value
-// bound.
+// witnesses satisfy k <= maxPackedVal(maxQuo.BitLen(), sao), so the k*p limb
+// contribution is soundly bounded by the minimum of the coefficient bound and
+// quotient-value bound.
 func (f *Field[T]) mvCarryBound(mv *multivariate[T], at []*Element[T], nbQuoLimbs uint, maxQuo *big.Int) uint {
 	bpl := f.fParams.BitsPerLimb()
 	sao := f.maxSmallOverflow()
@@ -807,7 +815,7 @@ func (f *Field[T]) mvCarryBound(mv *multivariate[T], at []*Element[T], nbQuoLimb
 	if nbQuoLimbs == 0 {
 		kpVal = sao + 1
 	} else {
-		kpVal = uint(maxQuo.BitLen()) + sao + 1
+		kpVal = uint(f.maxPackedVal(maxQuo.BitLen(), sao).BitLen()) + 1
 	}
 	kpTerm := min(kpCoef, kpVal)
 	return max(lhsTerm, kpTerm) + 2
@@ -945,15 +953,22 @@ func (f *Field[T]) callMulHint(a, b *Element[T], isMulMod bool, customMod *Eleme
 	// The low carries provide the power-of-two half of a CRT certificate; the
 	// committed random-point check provides the native-modulus half.
 	bound := f.mulCarryBound(a, b, nextOverflow, nbQuoLimbs, modbits)
-	nbLow := f.crtLowCarries(a, b, nbQuoLimbs, modbits, len(carries.Limbs))
-	if nbLow > 0 && nbQuoLimbs > 0 {
-		// Because quo is packed to full nbBits-wide limbs here, a malicious prover
-		// can drive each (k*p)_i coefficient up to min(nbQuoLimbs, nbLimbs)*2^(2*nbBits+sao)
-		// even when the honest quotient value is tiny (e.g. in checkZero/Reduce).
-		// Ensure that malicious coefficient difference also stays strictly below q.
-		malKpBound := nbBits + max(quo.overflow, rem.overflow) + uint(bits.Len(uint(min(int(nbQuoLimbs), int(nbLimbs))+1))) + 2
-		if malKpBound > f.maxCarryBits() {
-			panic(fmt.Sprintf("emulated: quotient carry bound %d bits exceeds soundness limit %d bits: limb width %d is too wide for native field", malKpBound, f.maxCarryBits(), nbBits))
+	reqLow := f.crtRequiredLowCarries(a, b, nbQuoLimbs, modbits)
+	nbLow := max(0, min(reqLow, len(carries.Limbs)))
+	if reqLow > 0 {
+		if bound > f.maxCarryBits() {
+			panic(fmt.Sprintf("emulated: carry bound %d bits exceeds soundness limit %d bits: reduce the inputs before the operation", bound, f.maxCarryBits()))
+		}
+		if nbQuoLimbs > 0 {
+			// Because quo is packed to full nbBits-wide limbs here, a malicious prover
+			// can drive each (k*p)_i coefficient up to min(nbQuoLimbs, nbLimbs)*2^(2*nbBits+sao)
+			// even when the honest quotient value is tiny (e.g. in checkZero/Reduce)
+			// or when len(carries.Limbs) == 0 (single-limb degree-0 check).
+			// Ensure that malicious coefficient difference also stays strictly below q.
+			malKpBound := nbBits + max(quo.overflow, rem.overflow) + uint(bits.Len(uint(min(int(nbQuoLimbs), int(nbLimbs))+1))) + 2
+			if malKpBound > f.maxCarryBits() {
+				panic(fmt.Sprintf("emulated: quotient carry bound %d bits exceeds soundness limit %d bits: limb width %d is too wide for native field", malKpBound, f.maxCarryBits(), nbBits))
+			}
 		}
 	}
 	f.constrainCarryLimbs(carries.Limbs[:nbLow], bound)
@@ -1829,6 +1844,9 @@ func (f *Field[T]) callPolyMvHint(mv *multivariate[T], at []*Element[T], assertZ
 	// As in multiplication, only the low carries needed for the power-of-two
 	// half of the CRT certificate need individual range checks.
 	bound := f.mvCarryBound(mv, at, nbQuoLimbs, maxQuo)
+	if bound > f.maxCarryBits() {
+		panic(fmt.Sprintf("emulated: carry bound %d bits exceeds soundness limit %d bits: reduce the inputs before the operation", bound, f.maxCarryBits()))
+	}
 	nbLow := f.mvLowCarries(posMax, negMax, quoBits, quo.overflow, modBits, rem.overflow, assertZero, hasKNeg, nbCarryLimbs)
 	f.constrainCarryLimbs(carries.Limbs[:nbLow], bound)
 	if hasKNeg {
