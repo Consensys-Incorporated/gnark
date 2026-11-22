@@ -531,22 +531,35 @@ func (f *Field[T]) mulCarryBound(a, b *Element[T], nextOverflow uint, nbQuoLimbs
 	return max(abTerm, kpTerm) + 2
 }
 
-// constElemVal returns the recomposed non-negative integer value of b when b is
-// a compile-time constant or literal limb slice, and ok=false otherwise. Unlike
-// [Field.constantValue], it also works in the test engine (which reports no
-// constants) when all limbs are literals.
-func (f *Field[T]) constElemVal(b *Element[T]) (*big.Int, bool) {
+// compileConstVal returns the recomposed non-negative integer value of b when b
+// is a compile-time constant, and ok=false when b is a circuit witness or
+// intermediate wire. Note that in test.IsSolved all witness limbs are populated
+// as big.Int and all hint/arithmetic wires as *big.Int, whereas ConstantValue
+// returns false; inspecting big.Int/*big.Int limb types directly would
+// misclassify witnesses and wires as compile-time constants in test.IsSolved.
+func (f *Field[T]) compileConstVal(b *Element[T]) (*big.Int, bool) {
+	if b == nil {
+		return new(big.Int), true
+	}
 	if bb, ok := f.constantValue(b); ok && bb.Sign() >= 0 {
 		return bb, true
 	}
-	if len(b.Limbs) == 0 {
-		// zero (or uninitialized) element
+	if b.Limbs != nil && len(b.Limbs) == 0 {
 		return new(big.Int), true
+	}
+	if b == f.oneConst {
+		return big.NewInt(1), true
+	}
+	if b == f.nConst {
+		return new(big.Int).Set(f.fParams.Modulus()), true
+	}
+	if b == f.nprevConst {
+		return new(big.Int).Sub(f.fParams.Modulus(), big.NewInt(1)), true
 	}
 	constLimbs := make([]*big.Int, len(b.Limbs))
 	for i, l := range b.Limbs {
 		switch l.(type) {
-		case big.Int, *big.Int, uint8, uint16, uint32, uint64, uint, int8, int16, int32, int64, int, string:
+		case uint8, uint16, uint32, uint64, uint, int8, int16, int32, int64, int:
 			v := utils.FromInterface(l)
 			if v.Sign() < 0 {
 				return nil, false
@@ -564,10 +577,9 @@ func (f *Field[T]) constElemVal(b *Element[T]) (*big.Int, bool) {
 }
 
 // constBitLen returns the bit-length of b when b is a compile-time constant
-// and ok=false otherwise. Unlike [Field.constantValue], it also works in the
-// test engine (which reports no constants) when all limbs are literals.
+// and ok=false otherwise.
 func (f *Field[T]) constBitLen(b *Element[T]) (uint, bool) {
-	res, ok := f.constElemVal(b)
+	res, ok := f.compileConstVal(b)
 	if !ok {
 		return 0, false
 	}
@@ -575,25 +587,25 @@ func (f *Field[T]) constBitLen(b *Element[T]) (uint, bool) {
 }
 
 func (f *Field[T]) isConstZeroElem(b *Element[T]) bool {
-	if b == nil || len(b.Limbs) == 0 {
+	if b == nil || (b.Limbs != nil && len(b.Limbs) == 0) {
 		return true
 	}
-	val, ok := f.constElemVal(b)
+	val, ok := f.compileConstVal(b)
 	return ok && val.Sign() == 0
 }
 
 func (f *Field[T]) isConstOneElem(b *Element[T]) bool {
-	if b == nil || len(b.Limbs) == 0 {
+	if b == nil || (b.Limbs != nil && len(b.Limbs) == 0) {
 		return false
 	}
-	val, ok := f.constElemVal(b)
+	val, ok := f.compileConstVal(b)
 	return ok && val.IsUint64() && val.Uint64() == 1
 }
 
 // maxElemVal returns a sound upper bound on the non-negative integer value
 // recomposed from el's limbs under the enforced limb range checks.
 func (f *Field[T]) maxElemVal(el *Element[T]) *big.Int {
-	if el == nil || len(el.Limbs) == 0 {
+	if el == nil || (el.Limbs != nil && len(el.Limbs) == 0) {
 		return new(big.Int)
 	}
 	bpl := f.fParams.BitsPerLimb()
@@ -611,10 +623,45 @@ func (f *Field[T]) maxElemVal(el *Element[T]) *big.Int {
 			genericMax.Add(genericMax, shifted)
 		}
 	}
-	if cv, ok := f.constElemVal(el); ok && cv.Cmp(genericMax) < 0 {
+	if cv, ok := f.compileConstVal(el); ok && cv.Cmp(genericMax) < 0 {
 		return cv
 	}
 	return genericMax
+}
+
+// maxPackedVal returns the exact maximum non-negative integer value recomposed
+// from an element constructed via packLimbsWithWidth(limbs, nbBits) with the
+// given limb overflow (0 outside small-field inexact-overflow mode).
+func (f *Field[T]) maxPackedVal(nbBits int, limbOverflow uint) *big.Int {
+	if nbBits <= 0 {
+		return new(big.Int)
+	}
+	if limbOverflow == 0 {
+		res := new(big.Int).Lsh(big.NewInt(1), uint(nbBits))
+		return res.Sub(res, big.NewInt(1))
+	}
+	bpl := int(f.fParams.BitsPerLimb())
+	nbLimbs := (nbBits + bpl - 1) / bpl
+	res := new(big.Int)
+	limbMax := new(big.Int)
+	for i := range nbLimbs {
+		w := bpl
+		if i == nbLimbs-1 {
+			w = ((nbBits - 1) % bpl) + 1
+		}
+		limbMax.Lsh(big.NewInt(1), uint(w)+limbOverflow)
+		limbMax.Sub(limbMax, big.NewInt(1))
+		limbMax.Lsh(limbMax, uint(i*bpl))
+		res.Add(res, limbMax)
+	}
+	return res
+}
+
+func (f *Field[T]) maxSmallOverflow() uint {
+	if !f.useSmallFieldOptimization() {
+		return 0
+	}
+	return uint((rangeCheckBaseLengthForSmallField - (f.fParams.Modulus().BitLen() % rangeCheckBaseLengthForSmallField)) % rangeCheckBaseLengthForSmallField)
 }
 
 // polyMvBounds computes exact worst-case positive and negative magnitude bounds
@@ -693,7 +740,8 @@ func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbC
 	if modBits == 0 {
 		modBits = f.fParams.NbLimbs() * bpl
 	}
-	kprBits := nbQuoLimbs*bpl + modBits + 1
+	sao := uint(f.smallAdditionalOverflow())
+	kprBits := nbQuoLimbs*bpl + sao + modBits + sao + 1
 	wBits := max(abBits, kprBits)
 
 	// A field with bit length F has q >= 2^(F-1).
@@ -706,15 +754,16 @@ func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbC
 	return max(0, min(nbLow, nbCarryLimbs))
 }
 
-// mvCarryBound returns an upper bound on the bit-length of the honest
-// (signed) carry limbs for a multivariate evaluation check with the given
-// quotient parameters. The limb coefficients of the evaluated polynomial are
-// bounded term-wise by the sums of the factor widths plus the coefficient
-// width, accumulated over the terms; the carries are these coefficients
-// shifted down by BitsPerLimb. The k*p contribution is bounded both
-// coefficient-wise and by the quotient value (see [Field.mulCarryBound]).
+// mvCarryBound returns a sound upper bound on the bit-length of the (signed)
+// carry limbs for a multivariate evaluation check with the given quotient
+// parameters. Because [Field.callPolyMvHint] constrains the quotient witness to
+// maxQuo.BitLen() bits via packLimbsWithWidth, both honest and malicious
+// witnesses satisfy k < 2^(maxQuo.BitLen() + sao), so the k*p limb contribution
+// is soundly bounded by the minimum of the coefficient bound and quotient-value
+// bound.
 func (f *Field[T]) mvCarryBound(mv *multivariate[T], at []*Element[T], nbQuoLimbs uint, maxQuo *big.Int) uint {
 	bpl := f.fParams.BitsPerLimb()
+	sao := f.maxSmallOverflow()
 	var maxTerm uint
 	for i, term := range mv.Terms {
 		var termBits uint
@@ -748,17 +797,17 @@ func (f *Field[T]) mvCarryBound(mv *multivariate[T], at []*Element[T], nbQuoLimb
 		}
 	}
 	var lhsTerm uint
-	if maxTerm > bpl {
-		lhsTerm = maxTerm + uint(bits.Len(uint(len(mv.Terms)))) - bpl
+	if totalLhs := maxTerm + uint(bits.Len(uint(len(mv.Terms)))); totalLhs > bpl {
+		lhsTerm = totalLhs - bpl
 	}
-	// contribution of the k*p limbs: minimum of the coefficient bound and the
-	// quotient value bound
-	kpCoef := bpl + uint(bits.Len(uint(min(int(nbQuoLimbs), int(f.fParams.NbLimbs()))+1)))
+	// contribution of the k*p and remainder limbs: minimum of the coefficient
+	// bound and the range-enforced quotient value bound
+	kpCoef := bpl + sao + uint(bits.Len(uint(min(int(nbQuoLimbs), int(f.fParams.NbLimbs()))+1)))
 	var kpVal uint
 	if nbQuoLimbs == 0 {
-		kpVal = 1
+		kpVal = sao + 1
 	} else {
-		kpVal = uint(maxQuo.BitLen()) + 1
+		kpVal = uint(maxQuo.BitLen()) + sao + 1
 	}
 	kpTerm := min(kpCoef, kpVal)
 	return max(lhsTerm, kpTerm) + 2
@@ -766,22 +815,31 @@ func (f *Field[T]) mvCarryBound(mv *multivariate[T], at []*Element[T], nbQuoLimb
 
 // mvLowCarries returns how many low carry limbs must be range-checked for a
 // multivariate evaluation. This uses the same CRT certificate as
-// [Field.crtLowCarries]: existing limb range checks bound the signed integer
-// discrepancy |fullLhs - (r + s*k*p)| <= maxDelta < 2^wBits, so q*2^(bpl*nbLow) >= 2^wBits
-// uniquely forces the integer equality.
-func (f *Field[T]) mvLowCarries(maxEval *big.Int, nbQuoLimbs, modBits uint, assertZero bool, nbCarryLimbs int) int {
+// [Field.crtLowCarries]: enforced limb range checks on the inputs, remainder,
+// and quotient bound the signed integer discrepancy
+// |fullLhs - (r + s*k*p)| <= maxDelta < 2^wBits for every witness, so
+// q*2^(bpl*nbLow) >= 2^wBits uniquely forces the integer equality.
+func (f *Field[T]) mvLowCarries(posMax, negMax *big.Int, quoBits int, quoOverflow uint, modBits uint, remOverflow uint, assertZero, hasKNeg bool, nbCarryLimbs int) int {
 	bpl := f.fParams.BitsPerLimb()
-	maxDelta := new(big.Int).Set(maxEval)
-	if !assertZero {
-		remBits := modBits + uint(f.smallAdditionalOverflow())
-		maxRem := new(big.Int).Lsh(big.NewInt(1), remBits)
-		maxRem.Sub(maxRem, big.NewInt(1))
-		maxDelta.Add(maxDelta, maxRem)
+	kpMax := f.maxPackedVal(quoBits, quoOverflow)
+	kpMax.Mul(kpMax, f.fParams.Modulus())
+
+	// Positive maximum of fullLhs - r - s*k*p: if s can be -1 (hasKNeg), +k*p
+	// adds to posMax; otherwise s = +1 is fixed in-circuit so -r - k*p <= 0.
+	posDelta := new(big.Int).Set(posMax)
+	if hasKNeg {
+		posDelta.Add(posDelta, kpMax)
 	}
-	if nbQuoLimbs > 0 {
-		maxK := new(big.Int).Lsh(big.NewInt(1), nbQuoLimbs*bpl)
-		maxK.Sub(maxK, big.NewInt(1))
-		maxDelta.Add(maxDelta, maxK.Mul(maxK, f.fParams.Modulus()))
+
+	// Negative magnitude maximum of -(fullLhs - r - s*k*p) = -fullLhs + r + s*k*p.
+	negDelta := new(big.Int).Add(negMax, kpMax)
+	if !assertZero {
+		negDelta.Add(negDelta, f.maxPackedVal(int(modBits), remOverflow))
+	}
+
+	maxDelta := posDelta
+	if negDelta.Cmp(maxDelta) > 0 {
+		maxDelta = negDelta
 	}
 	wBits := uint(maxDelta.BitLen())
 	qBitsLowerBound := uint(f.api.Compiler().FieldBitLen()) - 1
@@ -888,6 +946,16 @@ func (f *Field[T]) callMulHint(a, b *Element[T], isMulMod bool, customMod *Eleme
 	// committed random-point check provides the native-modulus half.
 	bound := f.mulCarryBound(a, b, nextOverflow, nbQuoLimbs, modbits)
 	nbLow := f.crtLowCarries(a, b, nbQuoLimbs, modbits, len(carries.Limbs))
+	if nbLow > 0 && nbQuoLimbs > 0 {
+		// Because quo is packed to full nbBits-wide limbs here, a malicious prover
+		// can drive each (k*p)_i coefficient up to min(nbQuoLimbs, nbLimbs)*2^(2*nbBits+sao)
+		// even when the honest quotient value is tiny (e.g. in checkZero/Reduce).
+		// Ensure that malicious coefficient difference also stays strictly below q.
+		malKpBound := nbBits + max(quo.overflow, rem.overflow) + uint(bits.Len(uint(min(int(nbQuoLimbs), int(nbLimbs))+1))) + 2
+		if malKpBound > f.maxCarryBits() {
+			panic(fmt.Sprintf("emulated: quotient carry bound %d bits exceeds soundness limit %d bits: limb width %d is too wide for native field", malKpBound, f.maxCarryBits(), nbBits))
+		}
+	}
 	f.constrainCarryLimbs(carries.Limbs[:nbLow], bound)
 	return
 }
@@ -1679,11 +1747,8 @@ func (f *Field[T]) callPolyMvHint(mv *multivariate[T], at []*Element[T], assertZ
 	nbLimbs, nbBits := f.fParams.NbLimbs(), f.fParams.BitsPerLimb()
 	modBits := uint(f.fParams.Modulus().BitLen())
 	posMax, negMax, maxQuo, _ := f.polyMvBounds(mv, at)
-	maxEval := posMax
-	if negMax.Cmp(maxEval) > 0 {
-		maxEval = negMax
-	}
-	nbQuoLimbs := (uint(maxQuo.BitLen()) + nbBits - 1) / nbBits
+	quoBits := maxQuo.BitLen()
+	nbQuoLimbs := (uint(quoBits) + nbBits - 1) / nbBits
 	nbRemLimbs := nbLimbs
 	if assertZero {
 		nbRemLimbs = 0
@@ -1750,7 +1815,11 @@ func (f *Field[T]) callPolyMvHint(mv *multivariate[T], at []*Element[T], assertZ
 		err = fmt.Errorf("call hint: %w", err)
 		return
 	}
-	quo = f.packLimbs(ret[:nbQuoLimbs], false)
+	if nbQuoLimbs > 0 {
+		quo = f.packLimbsWithWidth(ret[:nbQuoLimbs], quoBits)
+	} else {
+		quo = f.Zero()
+	}
 	if assertZero {
 		rem = f.Zero()
 	} else {
@@ -1760,7 +1829,7 @@ func (f *Field[T]) callPolyMvHint(mv *multivariate[T], at []*Element[T], assertZ
 	// As in multiplication, only the low carries needed for the power-of-two
 	// half of the CRT certificate need individual range checks.
 	bound := f.mvCarryBound(mv, at, nbQuoLimbs, maxQuo)
-	nbLow := f.mvLowCarries(maxEval, nbQuoLimbs, modBits, assertZero, nbCarryLimbs)
+	nbLow := f.mvLowCarries(posMax, negMax, quoBits, quo.overflow, modBits, rem.overflow, assertZero, hasKNeg, nbCarryLimbs)
 	f.constrainCarryLimbs(carries.Limbs[:nbLow], bound)
 	if hasKNeg {
 		kNeg = ret[nbQuoLimbs+nbRemLimbs+uint(nbCarryLimbs)]

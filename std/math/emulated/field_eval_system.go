@@ -342,9 +342,21 @@ func buildEvalSystemPlan[T FieldParams](polys []*multivariate[T], useKara bool) 
 	for m := range nMonoms {
 		coefMat[m] = make([]int, nP)
 	}
+	// If buildCanonicalMv kept duplicate monomial entries in a polynomial to
+	// avoid int overflow on extreme coefficients, exclude that monomial from
+	// algebraic rewrites so coefMat accumulation cannot wrap modulo 2^64.
+	dupMonom := make([]bool, nMonoms)
+	seenInPoly := make([]bool, nMonoms)
 	for p := range nP {
+		clear(seenInPoly)
 		for _, ref := range polyRefs[p] {
-			coefMat[ref.node][p] += ref.coef
+			if seenInPoly[ref.node] {
+				dupMonom[ref.node] = true
+			}
+			seenInPoly[ref.node] = true
+			if !dupMonom[ref.node] {
+				coefMat[ref.node][p] = ref.coef
+			}
 		}
 	}
 
@@ -363,12 +375,13 @@ func buildEvalSystemPlan[T FieldParams](polys []*multivariate[T], useKara bool) 
 	}
 
 	consumed := make([]bool, nMonoms)
+	copy(consumed, dupMonom)
 
 	// Step 1: Difference-of-squares pairing [i, i] and [j, j] when
 	// coef(p, [i,i]) + coef(p, [j,j]) == 0 across all polynomials p.
 	var sqNodes []int
 	for m := range nMonoms {
-		if len(nodes[m].vars) == 2 && nodes[m].vars[0] == nodes[m].vars[1] && !usedInHigherDeg[nodes[m].vars[0]] {
+		if !consumed[m] && len(nodes[m].vars) == 2 && nodes[m].vars[0] == nodes[m].vars[1] && !usedInHigherDeg[nodes[m].vars[0]] {
 			sqNodes = append(sqNodes, m)
 		}
 	}
@@ -389,11 +402,13 @@ func buildEvalSystemPlan[T FieldParams](polys []*multivariate[T], useKara bool) 
 			opposite := true
 			nonZero := false
 			for p := range nP {
-				if coefMat[m1][p]+coefMat[m2][p] != 0 {
+				c1, c2 := coefMat[m1][p], coefMat[m2][p]
+				overflows := (c2 > 0 && c1 > math.MaxInt-c2) || (c2 < 0 && c1 < -math.MaxInt-c2)
+				if overflows || c1+c2 != 0 {
 					opposite = false
 					break
 				}
-				if coefMat[m1][p] != 0 {
+				if c1 != 0 {
 					nonZero = true
 				}
 			}
@@ -1323,7 +1338,7 @@ func (tc *trinomial12Check[T]) check(api frontend.API, peval, coef frontend.Vari
 
 type qVal struct {
 	v       frontend.Variable
-	c       int64
+	c       *big.Int
 	isZero  bool
 	isConst bool
 }
@@ -1331,6 +1346,12 @@ type qVal struct {
 func qZero() qVal { return qVal{isZero: true} }
 func qConst(c int64) qVal {
 	if c == 0 {
+		return qZero()
+	}
+	return qVal{c: big.NewInt(c), isConst: true}
+}
+func qConstBig(c *big.Int) qVal {
+	if c.Sign() == 0 {
 		return qZero()
 	}
 	return qVal{c: c, isConst: true}
@@ -1348,7 +1369,7 @@ func (x qVal) toFrontend() frontend.Variable {
 }
 
 func (x qVal) isOne() bool {
-	return x.isConst && x.c == 1
+	return x.isConst && x.c.IsInt64() && x.c.Int64() == 1
 }
 
 func (tc *trinomial12Check[T]) slotToQVal(slot int) qVal {
@@ -1367,9 +1388,27 @@ func qNeg(api frontend.API, x qVal) qVal {
 		return x
 	}
 	if x.isConst {
-		return qConst(-x.c)
+		return qConstBig(new(big.Int).Neg(x.c))
 	}
 	return qVar(api.Neg(x.v))
+}
+
+func qMulConstBig(api frontend.API, x qVal, c *big.Int) qVal {
+	if x.isZero || c.Sign() == 0 {
+		return qZero()
+	}
+	if c.IsInt64() {
+		switch c.Int64() {
+		case 1:
+			return x
+		case -1:
+			return qNeg(api, x)
+		}
+	}
+	if x.isConst {
+		return qConstBig(new(big.Int).Mul(x.c, c))
+	}
+	return qVar(api.Mul(x.v, c))
 }
 
 func qMulConst(api frontend.API, x qVal, c int64) qVal {
@@ -1383,7 +1422,7 @@ func qMulConst(api frontend.API, x qVal, c int64) qVal {
 		return qNeg(api, x)
 	}
 	if x.isConst {
-		return qConst(x.c * c)
+		return qConstBig(new(big.Int).Mul(x.c, big.NewInt(c)))
 	}
 	return qVar(api.Mul(x.v, c))
 }
@@ -1396,7 +1435,7 @@ func qAdd(api frontend.API, x, y qVal) qVal {
 		return x
 	}
 	if x.isConst && y.isConst {
-		return qConst(x.c + y.c)
+		return qConstBig(new(big.Int).Add(x.c, y.c))
 	}
 	return qVar(api.Add(x.toFrontend(), y.toFrontend()))
 }
@@ -1409,7 +1448,7 @@ func qSub(api frontend.API, x, y qVal) qVal {
 		return qNeg(api, y)
 	}
 	if x.isConst && y.isConst {
-		return qConst(x.c - y.c)
+		return qConstBig(new(big.Int).Sub(x.c, y.c))
 	}
 	return qVar(api.Sub(x.toFrontend(), y.toFrontend()))
 }
@@ -1425,10 +1464,10 @@ func qMul(api frontend.API, x, y qVal) qVal {
 		return x
 	}
 	if x.isConst {
-		return qMulConst(api, y, x.c)
+		return qMulConstBig(api, y, x.c)
 	}
 	if y.isConst {
-		return qMulConst(api, x, y.c)
+		return qMulConstBig(api, x, y.c)
 	}
 	return qVar(api.Mul(x.v, y.v))
 }
@@ -1481,7 +1520,7 @@ func dotBigModNative(api frontend.API, fieldMod *big.Int, row []*big.Int, vec []
 			continue
 		}
 		if vec[j].isConst {
-			tmp.Mul(w, big.NewInt(vec[j].c))
+			tmp.Mul(w, vec[j].c)
 			constAcc.Add(constAcc, tmp)
 			continue
 		}
@@ -1577,7 +1616,7 @@ func (tc *trinomial12Check[T]) evalVandermondeNative(
 
 type extQVal struct {
 	v       fieldextension.Element
-	c       int64
+	c       *big.Int
 	isZero  bool
 	isConst bool
 }
@@ -1585,6 +1624,12 @@ type extQVal struct {
 func extQZero() extQVal { return extQVal{isZero: true} }
 func extQConst(c int64) extQVal {
 	if c == 0 {
+		return extQZero()
+	}
+	return extQVal{c: big.NewInt(c), isConst: true}
+}
+func extQConstBig(c *big.Int) extQVal {
+	if c.Sign() == 0 {
 		return extQZero()
 	}
 	return extQVal{c: c, isConst: true}
@@ -1610,7 +1655,7 @@ func extQAdd(ext fieldextension.Field, x, y extQVal) extQVal {
 		return x
 	}
 	if x.isConst && y.isConst {
-		return extQConst(x.c + y.c)
+		return extQConstBig(new(big.Int).Add(x.c, y.c))
 	}
 	xv := x.v
 	if x.isConst {
@@ -1629,12 +1674,12 @@ func extQSub(ext fieldextension.Field, x, y extQVal) extQVal {
 	}
 	if x.isZero {
 		if y.isConst {
-			return extQConst(-y.c)
+			return extQConstBig(new(big.Int).Neg(y.c))
 		}
 		return extQVar(ext.Sub(ext.Zero(), y.v))
 	}
 	if x.isConst && y.isConst {
-		return extQConst(x.c - y.c)
+		return extQConstBig(new(big.Int).Sub(x.c, y.c))
 	}
 	xv := x.v
 	if x.isConst {
@@ -1651,14 +1696,14 @@ func extQMul(ext fieldextension.Field, x, y extQVal) extQVal {
 	if x.isZero || y.isZero {
 		return extQZero()
 	}
-	if x.isConst && x.c == 1 {
+	if x.isConst && x.c.IsInt64() && x.c.Int64() == 1 {
 		return y
 	}
-	if y.isConst && y.c == 1 {
+	if y.isConst && y.c.IsInt64() && y.c.Int64() == 1 {
 		return x
 	}
 	if x.isConst && y.isConst {
-		return extQConst(x.c * y.c)
+		return extQConstBig(new(big.Int).Mul(x.c, y.c))
 	}
 	if x.isConst {
 		return extQVar(ext.MulByElement(y.v, x.c))
@@ -1721,7 +1766,7 @@ func dotBigModExt(ext fieldextension.Field, fieldMod *big.Int, row []*big.Int, v
 			continue
 		}
 		if vec[j].isConst {
-			tmp.Mul(w, big.NewInt(vec[j].c))
+			tmp.Mul(w, vec[j].c)
 			constAcc.Add(constAcc, tmp)
 			continue
 		}

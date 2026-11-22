@@ -7,11 +7,13 @@ import (
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/field/babybear"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/frontend/cs/scs"
+	"github.com/consensys/gnark/internal/widecommitter"
 	"github.com/consensys/gnark/std/math/emulated/emparams"
 	"github.com/consensys/gnark/test"
 )
@@ -494,5 +496,223 @@ func TestAdversarialPolyMvWitnessTamperingRejected(t *testing.T) {
 			err := ccs.IsSolved(w, solver.OverrideHint(solver.GetHintID(polyMvHint), badHint))
 			assert.Error(err, fmt.Sprintf("%s/%s should reject tampered polyMvHint output", tc.name, m.name))
 		}
+	}
+}
+
+// wideBabyBearParams exercises 22-bit limbs over 31-bit BabyBear (2*bpl = 44 > 31,
+// while bpl+3 = 25 <= 31 and maxCarryBits = 7). Without exact quotient bit-width
+// enforcement in callPolyMvHint, k0=288641 wraps k0*p0 - r0 = 177*q and
+// k0*p1 - r1 = 451*q to 0 mod q, forging Eval(-0) = 13192249374048 != 0 (mod p).
+type wideBabyBearParams struct{}
+
+func (wideBabyBearParams) NbLimbs() uint     { return 2 }
+func (wideBabyBearParams) BitsPerLimb() uint { return 22 }
+func (wideBabyBearParams) IsPrime() bool     { return true }
+func (wideBabyBearParams) Modulus() *big.Int { return big.NewInt(13194140767889) }
+
+type wideBabyBearNegBitCircuit struct {
+	Bit frontend.Variable
+	Out [2]frontend.Variable
+}
+
+func (c *wideBabyBearNegBitCircuit) Define(api frontend.API) error {
+	f, err := NewField[wideBabyBearParams](api)
+	if err != nil {
+		return err
+	}
+	api.AssertIsBoolean(c.Bit)
+	x := f.FromBits(c.Bit)
+	res := f.Eval([][]*Element[wideBabyBearParams]{{x}}, []int{-1})
+	api.AssertIsEqual(res.Limbs[0], c.Out[0])
+	api.AssertIsEqual(res.Limbs[1], c.Out[1])
+	return nil
+}
+
+type wideBabyBearCheckZeroCircuit struct {
+	A, B Element[wideBabyBearParams]
+}
+
+func (c *wideBabyBearCheckZeroCircuit) Define(api frontend.API) error {
+	f, err := NewField[wideBabyBearParams](api)
+	if err != nil {
+		return err
+	}
+	f.AssertIsEqual(&c.A, &c.B)
+	return nil
+}
+
+func TestAdversarialQuotientExcessBitsSoundness(t *testing.T) {
+	assert := test.NewAssert(t)
+	q := babybear.Modulus()
+
+	honest := &wideBabyBearNegBitCircuit{
+		Bit: 0,
+		Out: [2]frontend.Variable{0, 0},
+	}
+	// Forgery witness crafted so k0*p0 - r0 == 177*q and k0*p1 - r1 == 451*q over BabyBear:
+	const (
+		forgedK0 = 288641
+		forgedR0 = 3272276
+		forgedR1 = 3143881
+	)
+	forged := &wideBabyBearNegBitCircuit{
+		Bit: 0,
+		Out: [2]frontend.Variable{forgedR0, forgedR1},
+	}
+	forgedHint := func(nativeMod *big.Int, inputs, outputs []*big.Int) error {
+		outputs[0].SetInt64(forgedK0) // quo[0]
+		outputs[1].SetInt64(forgedR0) // rem[0]
+		outputs[2].SetInt64(forgedR1) // rem[1]
+		outputs[3].SetInt64(0)        // carry[0]
+		outputs[4].SetInt64(1)        // kNeg = 1
+		return nil
+	}
+
+	for _, tc := range []struct {
+		name    string
+		builder frontend.NewBuilderU32
+	}{
+		{"R1CS_U32", widecommitter.From[constraint.U32](r1cs.NewBuilder)},
+		{"SCS_U32", widecommitter.From[constraint.U32](scs.NewBuilder)},
+	} {
+		ccs, err := frontend.CompileU32(q, tc.builder, &wideBabyBearNegBitCircuit{})
+		assert.NoError(err)
+
+		wHonest, err := frontend.NewWitness(honest, q)
+		assert.NoError(err)
+		assert.NoError(ccs.IsSolved(wHonest))
+
+		wForged, err := frontend.NewWitness(forged, q)
+		assert.NoError(err)
+		err = ccs.IsSolved(wForged, solver.OverrideHint(solver.GetHintID(polyMvHint), forgedHint))
+		assert.Error(err, "%s must reject excess-bit quotient wrap-around forgery", tc.name)
+	}
+
+	// Also verify checkZero / AssertIsEqual refuses unsafe full-limb quotient wrap-around.
+	_, err := frontend.CompileU32(q, widecommitter.From[constraint.U32](r1cs.NewBuilder), &wideBabyBearCheckZeroCircuit{})
+	assert.Error(err)
+}
+
+func TestTestEngineWitnessNotTreatedAsConstant(t *testing.T) {
+	assert := test.NewAssert(t)
+	mod := BN254Fp{}.Modulus()
+	a := big.NewInt(1)
+	b := big.NewInt(0)
+
+	exp := new(big.Int).Mul(big.NewInt(-1558), new(big.Int).Mul(a, b))
+	exp.Add(exp, new(big.Int).Mul(big.NewInt(3), a))
+	exp.Sub(exp, big.NewInt(1))
+	exp.Mod(exp, mod)
+	negOne := new(big.Int).Sub(mod, big.NewInt(1))
+
+	witness := &dedupAndEdgeEvalCircuit[BN254Fp]{
+		A:              ValueOf[BN254Fp](a),
+		B:              ValueOf[BN254Fp](b),
+		OneWitness:     ValueOf[BN254Fp](1),
+		Expected:       ValueOf[BN254Fp](exp),
+		NegOneExpected: ValueOf[BN254Fp](negOne),
+	}
+
+	hintCalls := 0
+	countHint := func(nativeMod *big.Int, inputs, outputs []*big.Int) error {
+		hintCalls++
+		return polyMvHint(nativeMod, inputs, outputs)
+	}
+	err := test.IsSolved(
+		&dedupAndEdgeEvalCircuit[BN254Fp]{},
+		witness,
+		ecc.BN254.ScalarField(),
+		test.WithReplacementHint(solver.GetHintID(polyMvHint), countHint),
+	)
+	assert.NoError(err)
+	// Both res (using witnesses A=1, B=0) and witNegOne (using witness OneWitness=1)
+	// must execute polyMvHint in test.IsSolved rather than folding witnesses as constants.
+	assert.Equal(2, hintCalls)
+}
+
+type extremeEvalSystemAndGammaCircuit struct {
+	X, Y       Element[BN254Fp]
+	OutSumSq   Element[BN254Fp]
+	OutOther   Element[BN254Fp]
+	OutBigTrig [12]Element[BN254Fp]
+}
+
+func (c *extremeEvalSystemAndGammaCircuit) Define(api frontend.API) error {
+	f, err := NewField[BN254Fp](api)
+	if err != nil {
+		return err
+	}
+	const cHi = (1 << 62) + 1
+	const cLo = (1 << 62) - 1
+	// Duplicate monomials summing to +2^63 on both X^2 and Y^2: must NOT wrap to
+	// MinInt64 in coefMat and falsely trigger difference-of-squares X^2 - Y^2.
+	sys := f.EvalSystem([]PolySpec[BN254Fp]{
+		{
+			At:    [][]*Element[BN254Fp]{{&c.X, &c.X}, {&c.X, &c.X}, {&c.Y, &c.Y}, {&c.Y, &c.Y}},
+			Coefs: []int{cHi, cLo, cHi, cLo},
+		},
+		{
+			At:    [][]*Element[BN254Fp]{{&c.X, &c.Y}},
+			Coefs: []int{1},
+		},
+	})
+	f.AssertIsEqual(sys[0], &c.OutSumSq)
+	f.AssertIsEqual(sys[1], &c.OutOther)
+
+	// Large Z-tower parameter gamma = 1.3e6 => |alpha*beta| ~= 4.39e18 <= MaxInt/2,
+	// while One()-slot tower products reach ~8.6e24 >> MaxInt64.
+	const gamma = 1_300_000
+	const alpha = 2 * gamma
+	const beta = -(gamma*gamma + 1)
+	one := f.One()
+	ap := [12]*Element[BN254Fp]{one, one, one, one, one, one, one, one, one, one, one, &c.X}
+	bp := [12]*Element[BN254Fp]{one, one, one, one, one, one, one, one, one, one, one, &c.Y}
+	got := f.MulPolyModTrinomial12(ap, bp, alpha, beta)
+	for i := range 12 {
+		f.AssertIsEqual(got[i], &c.OutBigTrig[i])
+	}
+	return nil
+}
+
+func TestEvalSystemCoefOverflowAndLargeGammaTower(t *testing.T) {
+	assert := test.NewAssert(t)
+	mod := BN254Fp{}.Modulus()
+	x, _ := rand.Int(rand.Reader, mod)
+	y, _ := rand.Int(rand.Reader, mod)
+
+	two63 := new(big.Int).Lsh(big.NewInt(1), 63)
+	sumSq := new(big.Int).Add(new(big.Int).Mul(x, x), new(big.Int).Mul(y, y))
+	sumSq.Mul(sumSq, two63).Mod(sumSq, mod)
+	xy := new(big.Int).Mul(x, y)
+	xy.Mod(xy, mod)
+
+	const gamma = int64(1_300_000)
+	const alpha = 2 * gamma
+	const beta = -(gamma*gamma + 1)
+	var aBig, bBig [12]*big.Int
+	for i := range 11 {
+		aBig[i] = big.NewInt(1)
+		bBig[i] = big.NewInt(1)
+	}
+	aBig[11] = x
+	bBig[11] = y
+	trigOut := mulPolyModTrinomial12Big(aBig, bBig, alpha, beta, mod)
+
+	witness := &extremeEvalSystemAndGammaCircuit{
+		X:        ValueOf[BN254Fp](x),
+		Y:        ValueOf[BN254Fp](y),
+		OutSumSq: ValueOf[BN254Fp](sumSq),
+		OutOther: ValueOf[BN254Fp](xy),
+	}
+	for i := range 12 {
+		witness.OutBigTrig[i] = ValueOf[BN254Fp](trigOut[i])
+	}
+
+	for _, builder := range []frontend.NewBuilder{r1cs.NewBuilder[constraint.U64], scs.NewBuilder[constraint.U64]} {
+		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), builder, &extremeEvalSystemAndGammaCircuit{})
+		assert.NoError(err)
+		w, err := frontend.NewWitness(witness, ecc.BN254.ScalarField())
+		assert.NoError(err)
+		assert.NoError(ccs.IsSolved(w))
 	}
 }
