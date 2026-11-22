@@ -864,9 +864,9 @@ func TestBilinearConstraintCounts(t *testing.T) {
 }
 
 type dirtySquare034Circuit struct {
-	noCommit         bool
-	Dirty, S034In    E12
-	WantS034         E12
+	noCommit      bool
+	Dirty, S034In E12
+	WantS034      E12
 }
 
 func (c *dirtySquare034Circuit) Define(api frontend.API) error {
