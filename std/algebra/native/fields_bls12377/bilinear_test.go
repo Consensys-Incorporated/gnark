@@ -5,6 +5,7 @@ package fields_bls12377
 
 import (
 	"math/big"
+	"sync"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -858,6 +859,140 @@ func TestBilinearConstraintCounts(t *testing.T) {
 		}
 		if got := cSCSNoSZ.GetNbConstraints(); got != tc.wantSCSNoSZ {
 			t.Errorf("%s SCS(noCommit) constraints = %d, want %d", tc.op, got, tc.wantSCSNoSZ)
+		}
+	}
+}
+
+type dirtySquare034Circuit struct {
+	noCommit         bool
+	Dirty, S034In    E12
+	WantS034         E12
+}
+
+func (c *dirtySquare034Circuit) Define(api frontend.API) error {
+	if c.noCommit {
+		api = noCommitAPI{api}
+	}
+	r := c.Dirty
+	r.Square034(api, c.S034In)
+	r.AssertIsEqual(api, c.WantS034)
+	return nil
+}
+
+func TestBilinearConcurrentCacheU32SolveAndDirtySquare034(t *testing.T) {
+	// 1. Concurrent multi-goroutine cache fill + circuit compilation stress test.
+	freshTable6 := newRationalInterpTable(6)
+	freshTable12 := newRationalInterpTable(12)
+	primes := []*big.Int{
+		big.NewInt(5),
+		big.NewInt(11),
+		big.NewInt(19),
+		big.NewInt(23),
+		big.NewInt(47),
+		ecc.BW6_761.ScalarField(),
+	}
+	var wg sync.WaitGroup
+	errCh := make(chan error, 32)
+	for g := 0; g < 32; g++ {
+		wg.Add(1)
+		go func(gid int) {
+			defer wg.Done()
+			for step := 0; step < 8; step++ {
+				p := primes[(gid+step)%len(primes)]
+				_, _ = freshTable6.weightsForField(p)
+				_, _ = freshTable12.weightsForField(p)
+			}
+			_, err := frontend.Compile(ecc.BW6_761.ScalarField(), r1cs.NewBuilder, &allOpsCheckCircuit{}, frontend.IgnoreUnconstrainedInputs())
+			if err != nil {
+				errCh <- err
+			}
+		}(g)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatalf("concurrent compile failed: %v", err)
+	}
+
+	// 2. Actual witness solving over constraint.U32 (F_47) with non-zero W^10, W^11
+	// exercising 64-bit evaluation constants (> 2^32) reduced into U32.
+	pTiny := tinyfield.Modulus()
+	ccs12U32, err := frontend.CompileGeneric[constraint.U32](pTiny, r1cs.NewBuilder, &e12MulCheckCircuit{})
+	if err != nil {
+		t.Fatalf("compile e12MulCheckCircuit over F_47 U32: %v", err)
+	}
+	a12 := make([]*big.Int, 12)
+	b12 := make([]*big.Int, 12)
+	for i := 0; i < 12; i++ {
+		a12[i] = new(big.Int).Mod(big.NewInt(int64(3*i+5)), pTiny)
+		b12[i] = new(big.Int).Mod(big.NewInt(int64(7*i+11)), pTiny)
+	}
+	c12 := polyMulModXPlus5(a12, b12, pTiny)
+	var witU32 e12MulCheckCircuit
+	var d12 [12]frontend.Variable
+	for i := 0; i < 12; i++ {
+		d12[i] = new(big.Int).Set(a12[i])
+	}
+	assignMonomialE12(&witU32.A, d12)
+	for i := 0; i < 12; i++ {
+		d12[i] = new(big.Int).Set(b12[i])
+	}
+	assignMonomialE12(&witU32.B, d12)
+	for i := 0; i < 12; i++ {
+		d12[i] = new(big.Int).Set(c12[i])
+	}
+	assignMonomialE12(&witU32.C, d12)
+
+	wU32, err := frontend.NewWitness(&witU32, pTiny)
+	if err != nil {
+		t.Fatalf("NewWitness F_47 U32: %v", err)
+	}
+	if err := ccs12U32.IsSolved(wU32); err != nil {
+		t.Fatalf("U32 E12.Mul IsSolved failed: %v", err)
+	}
+	// Corrupting C.C1.B2.A1 must fail U32 IsSolved.
+	witU32.C.C1.B2.A1 = new(big.Int).Mod(new(big.Int).Add(c12[11], big.NewInt(1)), pTiny)
+	wU32Bad, _ := frontend.NewWitness(&witU32, pTiny)
+	if err := ccs12U32.IsSolved(wU32Bad); err == nil {
+		t.Fatal("U32 E12.Mul accepted corrupted output coordinate")
+	}
+
+	// 3. Dirty receiver Square034 must explicitly zero C1.B2 across R1CS, SCS(SZ), and SCS(noCommit).
+	dirty := randomE12()
+	if dirty.C1.B2.IsZero() {
+		dirty.C1.B2.SetOne()
+	}
+	var s034In, s034Out bls12377.E12
+	s034In.C0.B0 = dirty.C0.B0
+	s034In.C1.B0 = dirty.C1.B0
+	s034In.C1.B1 = dirty.C1.B1
+	s034Out.Square(&s034In)
+
+	field := ecc.BW6_761.ScalarField()
+	for _, nc := range []bool{false, true} {
+		var witDirty dirtySquare034Circuit
+		witDirty.Dirty.Assign(&dirty)
+		witDirty.S034In.Assign(&s034In)
+		witDirty.WantS034.Assign(&s034Out)
+		wDirty, err := frontend.NewWitness(&witDirty, field)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !nc {
+			cR1, err := frontend.Compile(field, r1cs.NewBuilder, &dirtySquare034Circuit{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := cR1.IsSolved(wDirty); err != nil {
+				t.Fatalf("R1CS dirty Square034 failed: %v", err)
+			}
+		}
+		cSCS, err := frontend.Compile(field, scs.NewBuilder, &dirtySquare034Circuit{noCommit: nc})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cSCS.IsSolved(wDirty); err != nil {
+			t.Fatalf("SCS(noCommit=%v) dirty Square034 failed: %v", nc, err)
 		}
 	}
 }
