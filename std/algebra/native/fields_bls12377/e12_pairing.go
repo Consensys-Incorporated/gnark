@@ -23,6 +23,17 @@ func (e *E12) nSquareKarabina12345(api frontend.API, n int) {
 
 // Square034 squares a sparse element in Fp12
 func (e *E12) Square034(api frontend.API, x E12) *E12 {
+	if ft, ok := api.Compiler().(frontendtype.FrontendTyper); ok {
+		if ft.FrontendType() == frontendtype.SCS {
+			if _, ok := api.(frontend.Committer); ok {
+				return e.square034SZ(api, x)
+			}
+		}
+	}
+	return e.square034Karatsuba(api, x)
+}
+
+func (e *E12) square034SZ(api frontend.API, x E12) *E12 {
 	var c0, c2, c3 E6
 
 	c0.B0.Sub(api, x.C0.B0, x.C1.B0)
@@ -42,6 +53,33 @@ func (e *E12) Square034(api frontend.API, x E12) *E12 {
 	e.C0.B0 = c3.B0
 	e.C0.B1.Add(api, c3.B1, c2.B0)
 	e.C0.B2.Add(api, c3.B2, c2.B1)
+	e.C1.B2.SetZero()
+
+	return e
+}
+
+func (e *E12) square034Karatsuba(api frontend.API, x E12) *E12 {
+	// For x = A + (d0 + d1*v)*w with w^2 = v and v^3 = u:
+	//   x^2 = (A^2 + u*d1^2) + d0^2*v + 2*d0*d1*v^2 + (2*A*d0)*w + (2*A*d1)*v*w
+	var a2, d0Sq, d1Sq, d01, ad0, ad1, uD1Sq E2
+	a2.Square(api, x.C0.B0)
+	d0Sq.Square(api, x.C1.B0)
+	d1Sq.Square(api, x.C1.B1)
+	d01.Add(api, x.C1.B0, x.C1.B1)
+	d01.Square(api, d01)
+	d01.Sub(api, d01, d0Sq)
+	d01.Sub(api, d01, d1Sq)
+
+	ad0.Mul(api, x.C0.B0, x.C1.B0)
+	ad1.Mul(api, x.C0.B0, x.C1.B1)
+
+	uD1Sq.MulByNonResidue(api, d1Sq)
+	e.C0.B0.Add(api, a2, uD1Sq)
+	e.C0.B1 = d0Sq
+	e.C0.B2 = d01
+	e.C1.B0.Double(api, ad0)
+	e.C1.B1.Double(api, ad1)
+	e.C1.B2.SetZero()
 
 	return e
 }
@@ -59,18 +97,15 @@ func (e *E12) MulBy034(api frontend.API, c3, c4 E2) *E12 {
 }
 
 func (e *E12) mulBy034Karatsuba(api frontend.API, c3, c4 E2) *E12 {
-	var d E6
+	// (C0 + C1*w) * (1 + (c3 + c4*v)*w) = (C0 + v*(C1*s)) + (C1 + C0*s)*w
+	c0, c1 := e.C0, e.C1
+	p0, p1 := c0, c1
+	p0.MulBy01(api, c3, c4)
+	p1.MulBy01(api, c3, c4)
+	p1.MulByNonResidue(api, p1)
 
-	a := e.C0
-	b := e.C1
-
-	b.MulBy01(api, c3, c4)
-	c3.A0 = api.Add(1, c3.A0)
-	d.Add(api, e.C0, e.C1)
-	d.MulBy01(api, c3, c4)
-
-	e.C1.Add(api, a, b).Neg(api, e.C1).Add(api, e.C1, d)
-	e.C0.MulByNonResidue(api, b).Add(api, e.C0, a)
+	e.C0.Add(api, c0, p1)
+	e.C1.Add(api, c1, p0)
 
 	return e
 }
@@ -160,7 +195,10 @@ func Mul01234By034(api frontend.API, x [5]E2, z3, z4 E2) *E12 {
 
 func (e *E12) MulBy01234(api frontend.API, x [5]E2) *E12 {
 	if ft, ok := api.Compiler().(frontendtype.FrontendTyper); ok {
-		if ft.FrontendType() == frontendtype.SCS {
+		switch ft.FrontendType() {
+		case frontendtype.R1CS:
+			return e.mulBy01234Rank22(api, x)
+		case frontendtype.SCS:
 			if _, ok := api.(frontend.Committer); ok {
 				return e.mulBy01234SZ(api, x)
 			}

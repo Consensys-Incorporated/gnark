@@ -139,7 +139,10 @@ func (e *E12) Neg(api frontend.API, e1 E12) *E12 {
 // Mul multiplies 2 elmts in Fp12
 func (e *E12) Mul(api frontend.API, e1, e2 E12) *E12 {
 	if ft, ok := api.Compiler().(frontendtype.FrontendTyper); ok {
-		if ft.FrontendType() == frontendtype.SCS {
+		switch ft.FrontendType() {
+		case frontendtype.R1CS:
+			return e.mulRank23(api, e1, e2)
+		case frontendtype.SCS:
 			if _, ok := api.(frontend.Committer); ok {
 				return e.mulSZ(api, e1, e2)
 			}

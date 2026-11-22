@@ -117,12 +117,15 @@ type fp6MulVariants struct {
 func (circuit *fp6MulVariants) Define(api frontend.API) error {
 	expected1 := E6{}
 	expected2 := E6{}
+	expected3 := E6{}
 
 	expected1.mulKaratsubaOverKaratsuba(api, circuit.A, circuit.B)
 	expected2.mulToom3OverKaratsuba(api, circuit.A, circuit.B)
+	expected3.mulRank11(api, circuit.A, circuit.B)
 
 	expected1.AssertIsEqual(api, circuit.C)
 	expected2.AssertIsEqual(api, circuit.C)
+	expected3.AssertIsEqual(api, circuit.C)
 	return nil
 }
 

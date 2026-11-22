@@ -91,7 +91,7 @@ func (e *E6) Mul(api frontend.API, e1, e2 E6) *E6 {
 	if ft, ok := api.Compiler().(frontendtype.FrontendTyper); ok {
 		switch ft.FrontendType() {
 		case frontendtype.R1CS:
-			return e.mulToom3OverKaratsuba(api, e1, e2)
+			return e.mulRank11(api, e1, e2)
 		case frontendtype.SCS:
 			if _, ok := api.(frontend.Committer); ok {
 				return e.mulSZ(api, e1, e2)
@@ -300,7 +300,10 @@ func (e *E6) MulByNonResidue(api frontend.API, e1 E6) *E6 {
 // Square sets z to the E6 product of x,x, returns e
 func (e *E6) Square(api frontend.API, x E6) *E6 {
 	if ft, ok := api.Compiler().(frontendtype.FrontendTyper); ok {
-		if ft.FrontendType() == frontendtype.SCS {
+		switch ft.FrontendType() {
+		case frontendtype.R1CS:
+			return e.squareToom3(api, x)
+		case frontendtype.SCS:
 			if _, ok := api.(frontend.Committer); ok {
 				return e.squareSZ(api, x)
 			}
@@ -431,7 +434,10 @@ func (e *E6) MulByE2(api frontend.API, e1 E6, e2 E2) *E6 {
 // MulBy01 multiplication by sparse element (c0,c1,0)
 func (e *E6) MulBy01(api frontend.API, c0, c1 E2) *E6 {
 	if ft, ok := api.Compiler().(frontendtype.FrontendTyper); ok {
-		if ft.FrontendType() == frontendtype.SCS {
+		switch ft.FrontendType() {
+		case frontendtype.R1CS:
+			return e.mulBy01Rank10(api, c0, c1)
+		case frontendtype.SCS:
 			if _, ok := api.(frontend.Committer); ok {
 				return e.mulBy01SZ(api, c0, c1)
 			}
