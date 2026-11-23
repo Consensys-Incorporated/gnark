@@ -5,7 +5,10 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark-crypto/ecc/bn254"
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/frontend/cs/r1cs"
+	"github.com/consensys/gnark/frontend/cs/scs"
 	"github.com/consensys/gnark/test"
 )
 
@@ -527,4 +530,72 @@ func Mul034By034(d0, d3, d4, c0, c3, c4 *bn254.E2) [5]bn254.E2 {
 		Add(&z00, &x0)
 
 	return [5]bn254.E2{z00, x3, x34, x03, x04}
+}
+
+type e12AliasAndSemiSparse struct {
+	A          E12
+	E3, E4     E2
+	C3, C4     E2
+	SqExpected E12
+	WExpected  E12
+}
+
+func (circuit *e12AliasAndSemiSparse) Define(api frontend.API) error {
+	e := NewExt12(api)
+	// Mul(&A, &A) self-aliasing must match Square(&A)
+	aliasSq := e.Mul(&circuit.A, &circuit.A)
+	directSq := e.Square(&circuit.A)
+	e.AssertIsEqual(aliasSq, &circuit.SqExpected)
+	e.AssertIsEqual(directSq, &circuit.SqExpected)
+
+	semi := e.Mul01379By01379(&circuit.E3, &circuit.E4, &circuit.C3, &circuit.C4)
+	w := e.MulBy012346789(&circuit.A, semi)
+	e.AssertIsEqual(w, &circuit.WExpected)
+	return nil
+}
+
+func TestFp12AliasSemiSparseAndSmallField(t *testing.T) {
+	assert := test.NewAssert(t)
+	var a, sq, w bn254.E12
+	_, _ = a.SetRandom()
+	sq.Square(&a)
+
+	var one, e3, e4, c3, c4 bn254.E2
+	one.SetOne()
+	_, _ = e3.SetRandom()
+	_, _ = e4.SetRandom()
+	_, _ = c3.SetRandom()
+	_, _ = c4.SetRandom()
+
+	w.Set(&a)
+	w.MulBy034(&one, &e3, &e4)
+	w.MulBy034(&one, &c3, &c4)
+
+	mkWitness := func() *e12AliasAndSemiSparse {
+		return &e12AliasAndSemiSparse{
+			A:          FromE12(&a),
+			E3:         FromE2(&e3),
+			E4:         FromE2(&e4),
+			C3:         FromE2(&c3),
+			C4:         FromE2(&c4),
+			SqExpected: FromE12(&sq),
+			WExpected:  FromE12(&w),
+		}
+	}
+
+	for _, builder := range []frontend.NewBuilder{r1cs.NewBuilder[constraint.U64], scs.NewBuilder[constraint.U64]} {
+		ccs, err := frontend.Compile(ecc.BN254.ScalarField(), builder, &e12AliasAndSemiSparse{})
+		assert.NoError(err)
+		wt, err := frontend.NewWitness(mkWitness(), ecc.BN254.ScalarField())
+		assert.NoError(err)
+		assert.NoError(ccs.IsSolved(wt))
+	}
+
+	// Verify over small scalar fields (BabyBear / KoalaBear, extensionApi != nil).
+	assert.CheckCircuit(
+		&e12AliasAndSemiSparse{},
+		test.WithValidAssignment(mkWitness()),
+		test.WithoutCurveChecks(),
+		test.WithSmallfieldCheck(),
+	)
 }

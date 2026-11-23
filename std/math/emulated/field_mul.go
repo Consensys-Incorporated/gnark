@@ -531,32 +531,193 @@ func (f *Field[T]) mulCarryBound(a, b *Element[T], nextOverflow uint, nbQuoLimbs
 	return max(abTerm, kpTerm) + 2
 }
 
-// constBitLen returns the bit-length of b when b is a compile-time constant
-// and ok=false otherwise. Unlike [Field.constantValue], it also works in the
-// test engine (which reports no constants) when all limbs are literals.
-func (f *Field[T]) constBitLen(b *Element[T]) (uint, bool) {
-	if bb, ok := f.constantValue(b); ok {
-		return uint(bb.BitLen()), true
+// compileConstVal returns the recomposed non-negative integer value of b when b
+// is a compile-time constant, and ok=false when b is a circuit witness or
+// intermediate wire. Note that in test.IsSolved all witness limbs are populated
+// as big.Int and all hint/arithmetic wires as *big.Int, whereas ConstantValue
+// returns false; inspecting big.Int/*big.Int limb types directly would
+// misclassify witnesses and wires as compile-time constants in test.IsSolved.
+func (f *Field[T]) compileConstVal(b *Element[T]) (*big.Int, bool) {
+	if b == nil {
+		return new(big.Int), true
 	}
-	if len(b.Limbs) == 0 {
-		// zero (or uninitialized) element
-		return 0, true
+	if bb, ok := f.constantValue(b); ok && bb.Sign() >= 0 {
+		return bb, true
+	}
+	if b.Limbs != nil && len(b.Limbs) == 0 {
+		return new(big.Int), true
+	}
+	if b == f.oneConst {
+		return big.NewInt(1), true
+	}
+	if b == f.nConst {
+		return new(big.Int).Set(f.fParams.Modulus()), true
+	}
+	if b == f.nprevConst {
+		return new(big.Int).Sub(f.fParams.Modulus(), big.NewInt(1)), true
 	}
 	constLimbs := make([]*big.Int, len(b.Limbs))
 	for i, l := range b.Limbs {
 		switch l.(type) {
-		case big.Int, *big.Int, uint8, uint16, uint32, uint64, uint, int8, int16, int32, int64, int, string:
+		case uint8, uint16, uint32, uint64, uint, int8, int16, int32, int64, int:
 			v := utils.FromInterface(l)
+			if v.Sign() < 0 {
+				return nil, false
+			}
 			constLimbs[i] = &v
 		default:
-			return 0, false
+			return nil, false
 		}
 	}
 	res := new(big.Int)
 	if err := limbs.Recompose(constLimbs, f.fParams.BitsPerLimb(), res); err != nil {
+		return nil, false
+	}
+	return res, true
+}
+
+// constBitLen returns the bit-length of b when b is a compile-time constant
+// and ok=false otherwise.
+func (f *Field[T]) constBitLen(b *Element[T]) (uint, bool) {
+	res, ok := f.compileConstVal(b)
+	if !ok {
 		return 0, false
 	}
 	return uint(res.BitLen()), true
+}
+
+func (f *Field[T]) isConstZeroElem(b *Element[T]) bool {
+	if b == nil || (b.Limbs != nil && len(b.Limbs) == 0) {
+		return true
+	}
+	val, ok := f.compileConstVal(b)
+	return ok && val.Sign() == 0
+}
+
+func (f *Field[T]) isConstOneElem(b *Element[T]) bool {
+	if b == nil || (b.Limbs != nil && len(b.Limbs) == 0) {
+		return false
+	}
+	val, ok := f.compileConstVal(b)
+	return ok && val.IsUint64() && val.Uint64() == 1
+}
+
+// maxElemVal returns a sound upper bound on the non-negative integer value
+// recomposed from el's limbs under the enforced limb range checks.
+func (f *Field[T]) maxElemVal(el *Element[T]) *big.Int {
+	if el == nil || (el.Limbs != nil && len(el.Limbs) == 0) {
+		return new(big.Int)
+	}
+	bpl := f.fParams.BitsPerLimb()
+	var genericMax *big.Int
+	if el.overflow == 0 {
+		genericMax = new(big.Int).Lsh(big.NewInt(1), uint(len(el.Limbs))*bpl)
+		genericMax.Sub(genericMax, big.NewInt(1))
+	} else {
+		maxLimb := new(big.Int).Lsh(big.NewInt(1), bpl+el.overflow)
+		maxLimb.Sub(maxLimb, big.NewInt(1))
+		genericMax = new(big.Int)
+		shifted := new(big.Int)
+		for l := range el.Limbs {
+			shifted.Lsh(maxLimb, uint(l)*bpl)
+			genericMax.Add(genericMax, shifted)
+		}
+	}
+	if cv, ok := f.compileConstVal(el); ok && cv.Cmp(genericMax) < 0 {
+		return cv
+	}
+	return genericMax
+}
+
+// maxPackedVal returns the exact maximum non-negative integer value recomposed
+// from an element constructed via packLimbsWithWidth(limbs, nbBits) with the
+// given limb overflow (0 outside small-field inexact-overflow mode).
+func (f *Field[T]) maxPackedVal(nbBits int, limbOverflow uint) *big.Int {
+	if nbBits <= 0 {
+		return new(big.Int)
+	}
+	if limbOverflow == 0 {
+		res := new(big.Int).Lsh(big.NewInt(1), uint(nbBits))
+		return res.Sub(res, big.NewInt(1))
+	}
+	bpl := int(f.fParams.BitsPerLimb())
+	nbLimbs := (nbBits + bpl - 1) / bpl
+	res := new(big.Int)
+	limbMax := new(big.Int)
+	for i := range nbLimbs {
+		w := bpl
+		if i == nbLimbs-1 {
+			w = ((nbBits - 1) % bpl) + 1
+		}
+		limbMax.Lsh(big.NewInt(1), uint(w)+limbOverflow)
+		limbMax.Sub(limbMax, big.NewInt(1))
+		limbMax.Lsh(limbMax, uint(i*bpl))
+		res.Add(res, limbMax)
+	}
+	return res
+}
+
+func (f *Field[T]) maxSmallOverflow() uint {
+	if !f.useSmallFieldOptimization() {
+		return 0
+	}
+	return uint((rangeCheckBaseLengthForSmallField - (f.fParams.Modulus().BitLen() % rangeCheckBaseLengthForSmallField)) % rangeCheckBaseLengthForSmallField)
+}
+
+// polyMvBounds computes exact worst-case positive and negative magnitude bounds
+// for mv(at) over Z, together with the exact maximum Euclidean quotient
+// magnitude maxQuo against the field modulus and quoSize = max(posMax, negMax).BitLen().
+func (f *Field[T]) polyMvBounds(mv *multivariate[T], at []*Element[T]) (posMax, negMax, maxQuo *big.Int, quoSize uint) {
+	posMax = new(big.Int)
+	negMax = new(big.Int)
+	maxQuo = new(big.Int)
+	if len(mv.Terms) == 0 {
+		return posMax, negMax, maxQuo, 0
+	}
+	elemMax := make([]*big.Int, len(at))
+	for j := range at {
+		elemMax[j] = f.maxElemVal(at[j])
+	}
+	termMax := new(big.Int)
+	for i, term := range mv.Terms {
+		coef := mv.Coefficients[i]
+		if coef == 0 {
+			continue
+		}
+		absCoef := coef
+		if absCoef < 0 {
+			absCoef = -absCoef
+		}
+		termMax.SetInt64(int64(absCoef))
+		for j, pow := range term {
+			for range pow {
+				termMax.Mul(termMax, elemMax[j])
+			}
+		}
+		if coef > 0 {
+			posMax.Add(posMax, termMax)
+		} else {
+			negMax.Add(negMax, termMax)
+		}
+	}
+	maxEval := posMax
+	if negMax.Cmp(maxEval) > 0 {
+		maxEval = negMax
+	}
+	quoSize = uint(maxEval.BitLen())
+	p := f.fParams.Modulus()
+	if p.Sign() > 0 {
+		maxQuo.Quo(posMax, p)
+		if negMax.Sign() > 0 {
+			qNeg := new(big.Int).Add(negMax, p)
+			qNeg.Sub(qNeg, big.NewInt(1))
+			qNeg.Quo(qNeg, p)
+			if qNeg.Cmp(maxQuo) > 0 {
+				maxQuo = qNeg
+			}
+		}
+	}
+	return posMax, negMax, maxQuo, quoSize
 }
 
 // crtLowCarries returns how many low carry limbs must be range-checked so
@@ -568,19 +729,24 @@ func (f *Field[T]) constBitLen(b *Element[T]) (uint, bool) {
 // challenge soundness error, that it is also divisible by the odd native
 // modulus q. Existing range checks bound its absolute value below 2^wBits, so
 // it is enough to choose nbLow with q*2^(BitsPerLimb*nbLow) >= 2^wBits.
-func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbCarryLimbs int) int {
+func (f *Field[T]) crtRequiredLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint) int {
 	bpl := f.fParams.BitsPerLimb()
 	// a and b are non-negative limb representations whose total widths are
 	// tracked by their limb counts and overflow metadata.
 	abBits := uint(len(a.Limbs))*bpl + a.overflow + uint(len(b.Limbs))*bpl + b.overflow
+	abMaxBits := uint(new(big.Int).Mul(f.maxElemVal(a), f.maxElemVal(b)).BitLen())
 	// k is range-checked to nbQuoLimbs limbs. A custom modulus has modBits=0;
 	// checkModulus guarantees zero-overflow limbs, so the full parameter width
 	// is a conservative bound in that case. The extra bit covers adding r.
 	if modBits == 0 {
 		modBits = f.fParams.NbLimbs() * bpl
 	}
-	kprBits := nbQuoLimbs*bpl + modBits + 1
-	wBits := max(abBits, kprBits)
+	sao := uint(f.smallAdditionalOverflow())
+	kprBits := nbQuoLimbs*bpl + sao + modBits + sao + 1
+	kprMax := f.maxPackedVal(int(nbQuoLimbs*bpl), sao)
+	kprMax.Mul(kprMax, f.maxPackedVal(int(modBits), 0))
+	kprMax.Add(kprMax, f.maxPackedVal(int(modBits), sao))
+	wBits := max(abBits, abMaxBits, kprBits, uint(kprMax.BitLen()))
 
 	// A field with bit length F has q >= 2^(F-1).
 	qBitsLowerBound := uint(f.api.Compiler().FieldBitLen()) - 1
@@ -588,25 +754,34 @@ func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbC
 	if wBits > qBitsLowerBound {
 		remainingBits = wBits - qBitsLowerBound
 	}
-	nbLow := int((remainingBits + bpl - 1) / bpl)
+	return int((remainingBits + bpl - 1) / bpl)
+}
+
+func (f *Field[T]) crtLowCarries(a, b *Element[T], nbQuoLimbs, modBits uint, nbCarryLimbs int) int {
+	nbLow := f.crtRequiredLowCarries(a, b, nbQuoLimbs, modBits)
 	return max(0, min(nbLow, nbCarryLimbs))
 }
 
-// mvCarryBound returns an upper bound on the bit-length of the honest
-// (signed) carry limbs for a multivariate evaluation check with the given
-// quotient parameters. The limb coefficients of the evaluated polynomial are
-// bounded term-wise by the sums of the factor widths plus the coefficient
-// width, accumulated over the terms; the carries are these coefficients
-// shifted down by BitsPerLimb. The k*p contribution is bounded both
-// coefficient-wise and by the quotient value (see [Field.mulCarryBound]).
-func (f *Field[T]) mvCarryBound(mv *multivariate[T], at []*Element[T], nbQuoLimbs uint, modbits uint, quoSize uint) uint {
+// mvCarryBound returns a sound upper bound on the bit-length of the (signed)
+// carry limbs for a multivariate evaluation check with the given quotient
+// parameters. Because [Field.callPolyMvHint] constrains the quotient witness to
+// maxQuo.BitLen() bits via packLimbsWithWidth, both honest and malicious
+// witnesses satisfy k <= maxPackedVal(maxQuo.BitLen(), sao), so the k*p limb
+// contribution is soundly bounded by the minimum of the coefficient bound and
+// quotient-value bound.
+func (f *Field[T]) mvCarryBound(mv *multivariate[T], at []*Element[T], nbQuoLimbs uint, maxQuo *big.Int) uint {
 	bpl := f.fParams.BitsPerLimb()
+	sao := f.maxSmallOverflow()
 	var maxTerm uint
 	for i, term := range mv.Terms {
 		var termBits uint
 		var factorLens []int
 		for j, pow := range term {
-			termBits += uint(pow) * (bpl + at[j].overflow)
+			limbWidth := bpl + at[j].overflow
+			if cbl, isConst := f.constBitLen(at[j]); isConst && cbl < limbWidth {
+				limbWidth = cbl
+			}
+			termBits += uint(pow) * limbWidth
 			for range pow {
 				factorLens = append(factorLens, len(at[j].Limbs))
 			}
@@ -630,21 +805,17 @@ func (f *Field[T]) mvCarryBound(mv *multivariate[T], at []*Element[T], nbQuoLimb
 		}
 	}
 	var lhsTerm uint
-	if maxTerm > bpl {
-		lhsTerm = maxTerm + uint(bits.Len(uint(len(mv.Terms)))) - bpl
+	if totalLhs := maxTerm + uint(bits.Len(uint(len(mv.Terms)))); totalLhs > bpl {
+		lhsTerm = totalLhs - bpl
 	}
-	// contribution of the k*p limbs: minimum of the coefficient bound and the
-	// quotient value bound
-	kpCoef := bpl + uint(bits.Len(uint(min(int(nbQuoLimbs), int(f.fParams.NbLimbs()))+1)))
+	// contribution of the k*p and remainder limbs: minimum of the coefficient
+	// bound and the range-enforced quotient value bound
+	kpCoef := bpl + sao + uint(bits.Len(uint(min(int(nbQuoLimbs), int(f.fParams.NbLimbs()))+1)))
 	var kpVal uint
 	if nbQuoLimbs == 0 {
-		kpVal = 1
+		kpVal = sao + 1
 	} else {
-		var quoValueBits uint
-		if quoSize > modbits {
-			quoValueBits = quoSize - modbits + 1
-		}
-		kpVal = quoValueBits + 1
+		kpVal = uint(f.maxPackedVal(maxQuo.BitLen(), sao).BitLen()) + 1
 	}
 	kpTerm := min(kpCoef, kpVal)
 	return max(lhsTerm, kpTerm) + 2
@@ -652,12 +823,33 @@ func (f *Field[T]) mvCarryBound(mv *multivariate[T], at []*Element[T], nbQuoLimb
 
 // mvLowCarries returns how many low carry limbs must be range-checked for a
 // multivariate evaluation. This uses the same CRT certificate as
-// [Field.crtLowCarries]. quoSize bounds the evaluated expression; the
-// additional modulus width and sign margin conservatively bound the signed
-// relation checked by mvCheck.
-func (f *Field[T]) mvLowCarries(quoSize, modBits uint, nbCarryLimbs int) int {
+// [Field.crtLowCarries]: enforced limb range checks on the inputs, remainder,
+// and quotient bound the signed integer discrepancy
+// |fullLhs - (r + s*k*p)| <= maxDelta < 2^wBits for every witness, so
+// q*2^(bpl*nbLow) >= 2^wBits uniquely forces the integer equality.
+func (f *Field[T]) mvLowCarries(posMax, negMax *big.Int, quoBits int, quoOverflow uint, modBits uint, remOverflow uint, assertZero, hasKNeg bool, nbCarryLimbs int) int {
 	bpl := f.fParams.BitsPerLimb()
-	wBits := quoSize + modBits + 1
+	kpMax := f.maxPackedVal(quoBits, quoOverflow)
+	kpMax.Mul(kpMax, f.fParams.Modulus())
+
+	// Positive maximum of fullLhs - r - s*k*p: if s can be -1 (hasKNeg), +k*p
+	// adds to posMax; otherwise s = +1 is fixed in-circuit so -r - k*p <= 0.
+	posDelta := new(big.Int).Set(posMax)
+	if hasKNeg {
+		posDelta.Add(posDelta, kpMax)
+	}
+
+	// Negative magnitude maximum of -(fullLhs - r - s*k*p) = -fullLhs + r + s*k*p.
+	negDelta := new(big.Int).Add(negMax, kpMax)
+	if !assertZero {
+		negDelta.Add(negDelta, f.maxPackedVal(int(modBits), remOverflow))
+	}
+
+	maxDelta := posDelta
+	if negDelta.Cmp(maxDelta) > 0 {
+		maxDelta = negDelta
+	}
+	wBits := uint(maxDelta.BitLen())
 	qBitsLowerBound := uint(f.api.Compiler().FieldBitLen()) - 1
 	var remainingBits uint
 	if wBits > qBitsLowerBound {
@@ -761,7 +953,24 @@ func (f *Field[T]) callMulHint(a, b *Element[T], isMulMod bool, customMod *Eleme
 	// The low carries provide the power-of-two half of a CRT certificate; the
 	// committed random-point check provides the native-modulus half.
 	bound := f.mulCarryBound(a, b, nextOverflow, nbQuoLimbs, modbits)
-	nbLow := f.crtLowCarries(a, b, nbQuoLimbs, modbits, len(carries.Limbs))
+	reqLow := f.crtRequiredLowCarries(a, b, nbQuoLimbs, modbits)
+	nbLow := max(0, min(reqLow, len(carries.Limbs)))
+	if reqLow > 0 {
+		if bound > f.maxCarryBits() {
+			panic(fmt.Sprintf("emulated: carry bound %d bits exceeds soundness limit %d bits: reduce the inputs before the operation", bound, f.maxCarryBits()))
+		}
+		if nbQuoLimbs > 0 {
+			// Because quo is packed to full nbBits-wide limbs here, a malicious prover
+			// can drive each (k*p)_i coefficient up to min(nbQuoLimbs, nbLimbs)*2^(2*nbBits+sao)
+			// even when the honest quotient value is tiny (e.g. in checkZero/Reduce)
+			// or when len(carries.Limbs) == 0 (single-limb degree-0 check).
+			// Ensure that malicious coefficient difference also stays strictly below q.
+			malKpBound := nbBits + max(quo.overflow, rem.overflow) + uint(bits.Len(uint(min(int(nbQuoLimbs), int(nbLimbs))+1))) + 2
+			if malKpBound > f.maxCarryBits() {
+				panic(fmt.Sprintf("emulated: quotient carry bound %d bits exceeds soundness limit %d bits: limb width %d is too wide for native field", malKpBound, f.maxCarryBits(), nbBits))
+			}
+		}
+	}
 	f.constrainCarryLimbs(carries.Limbs[:nbLow], bound)
 	return
 }
@@ -1146,6 +1355,12 @@ func (f *Field[T]) Eval(at [][]*Element[T], coefs []int) *Element[T] {
 		return f.Zero()
 	}
 	mv, allElems := f.polyMvPrep(at, coefs)
+	if len(mv.Terms) == 0 {
+		return f.Zero()
+	}
+	if constRes, ok := f.evalConstantMv(mv, allElems); ok {
+		return newConstElement[T](f.api.Compiler().Field(), constRes, false)
+	}
 
 	// A high-degree identity may have coefficients wider than the native field
 	// even when every input is reduced. Evaluate it through ordinary reduced
@@ -1204,6 +1419,15 @@ func (f *Field[T]) AssertEvalIsZero(at [][]*Element[T], coefs []int) {
 		return
 	}
 	mv, allElems := f.polyMvPrep(at, coefs)
+	if len(mv.Terms) == 0 {
+		return
+	}
+	if constRes, ok := f.evalConstantMv(mv, allElems); ok {
+		if constRes.Sign() != 0 {
+			panic(fmt.Sprintf("asserted zero evaluation is constant %s != 0", constRes))
+		}
+		return
+	}
 
 	// A high-degree identity may have coefficients wider than the native field
 	// even when every input is reduced. Evaluate it through ordinary reduced
@@ -1243,10 +1467,172 @@ func (f *Field[T]) AssertEvalIsZero(at [][]*Element[T], coefs []int) {
 	profile.RecordOperation("emulated.AssertEvalIsZero", nbLimbs)
 }
 
+// evalConstantMv evaluates mv(at) mod p at compile time if every element in at
+// is a compile-time constant recognized by the compiler.
+func (f *Field[T]) evalConstantMv(mv *multivariate[T], at []*Element[T]) (*big.Int, bool) {
+	vals := make([]*big.Int, len(at))
+	for i := range at {
+		v, ok := f.constantValue(at[i])
+		if !ok {
+			return nil, false
+		}
+		vals[i] = v
+	}
+	acc := new(big.Int)
+	termVal := new(big.Int)
+	for i, term := range mv.Terms {
+		termVal.SetInt64(int64(mv.Coefficients[i]))
+		for j, pow := range term {
+			for range pow {
+				termVal.Mul(termVal, vals[j])
+			}
+		}
+		acc.Add(acc, termVal)
+	}
+	acc.Mod(acc, f.fParams.Modulus())
+	return acc, true
+}
+
+// buildCanonicalMv builds a canonical multivariate representation over the
+// slice of width-enforced candidate elements: it strips zero-coefficient and
+// zero-factor terms, removes multiplicative identity factors, merges identical
+// exponent rows by summing their coefficients (without int overflow), drops
+// cancelled zero rows, and prunes unused elements.
+func (f *Field[T]) buildCanonicalMv(at [][]*Element[T], coefs []int, elemMap map[*Element[T]]*Element[T]) (*multivariate[T], []*Element[T]) {
+	type filteredTerm struct {
+		factors []*Element[T]
+		coef    int
+	}
+	filtered := make([]filteredTerm, 0, len(at))
+	var allElems []*Element[T]
+	addElem := func(el *Element[T]) {
+		for k := range allElems {
+			if allElems[k] == el {
+				return
+			}
+		}
+		allElems = append(allElems, el)
+	}
+
+	for i := range at {
+		coef := coefs[i]
+		if coef == 0 {
+			continue
+		}
+		var factors []*Element[T]
+		zeroTerm := false
+		for j := range at[i] {
+			el := at[i][j]
+			if elemMap != nil {
+				if mapped, ok := elemMap[el]; ok {
+					el = mapped
+				}
+			}
+			if f.isConstZeroElem(el) {
+				zeroTerm = true
+				break
+			}
+			if f.isConstOneElem(el) {
+				continue
+			}
+			factors = append(factors, el)
+		}
+		if zeroTerm {
+			continue
+		}
+		for _, el := range factors {
+			addElem(el)
+		}
+		filtered = append(filtered, filteredTerm{factors: factors, coef: coef})
+	}
+
+	terms := make([][]int, 0, len(filtered))
+	mergedCoefs := make([]int, 0, len(filtered))
+	for _, ft := range filtered {
+		term := make([]int, len(allElems))
+		for _, el := range ft.factors {
+			term[slices.Index(allElems, el)]++
+		}
+		merged := false
+		for k := range terms {
+			if slices.Equal(terms[k], term) {
+				c1, c2 := mergedCoefs[k], ft.coef
+				overflows := (c2 > 0 && c1 > math.MaxInt-c2) || (c2 < 0 && c1 < -math.MaxInt-c2)
+				if !overflows {
+					mergedCoefs[k] = c1 + c2
+					merged = true
+					break
+				}
+			}
+		}
+		if !merged {
+			terms = append(terms, term)
+			mergedCoefs = append(mergedCoefs, ft.coef)
+		}
+	}
+
+	// Drop any terms whose summed coefficient cancelled to 0, and prune any
+	// elements that no longer appear with positive exponent.
+	nonZeroTerms := terms[:0]
+	nonZeroCoefs := mergedCoefs[:0]
+	for i := range terms {
+		if mergedCoefs[i] != 0 {
+			nonZeroTerms = append(nonZeroTerms, terms[i])
+			nonZeroCoefs = append(nonZeroCoefs, mergedCoefs[i])
+		}
+	}
+	if len(nonZeroTerms) == 0 {
+		return &multivariate[T]{}, nil
+	}
+
+	used := make([]bool, len(allElems))
+	for _, t := range nonZeroTerms {
+		for j, pow := range t {
+			if pow > 0 {
+				used[j] = true
+			}
+		}
+	}
+	needPrune := false
+	for _, u := range used {
+		if !u {
+			needPrune = true
+			break
+		}
+	}
+	if needPrune {
+		newElems := make([]*Element[T], 0, len(allElems))
+		remap := make([]int, len(allElems))
+		for j, u := range used {
+			if u {
+				remap[j] = len(newElems)
+				newElems = append(newElems, allElems[j])
+			} else {
+				remap[j] = -1
+			}
+		}
+		for i, t := range nonZeroTerms {
+			nt := make([]int, len(newElems))
+			for j, pow := range t {
+				if pow > 0 {
+					nt[remap[j]] = pow
+				}
+			}
+			nonZeroTerms[i] = nt
+		}
+		allElems = newElems
+	}
+
+	return &multivariate[T]{
+		Terms:        nonZeroTerms,
+		Coefficients: nonZeroCoefs,
+	}, allElems
+}
+
 // polyMvPrep prepares the multivariate polynomial evaluation of the terms at
-// with coefficients coefs: it deduplicates the elements appearing in the
-// terms, converts the terms into exponent form and ensures that all elements
-// have their limb widths enforced.
+// with coefficients coefs: it enforces limb widths on all inputs, deduplicates
+// elements and identical monomials, strips zero terms, and reduces lazy inputs
+// when needed.
 func (f *Field[T]) polyMvPrep(at [][]*Element[T], coefs []int) (*multivariate[T], []*Element[T]) {
 	if len(at) != len(coefs) {
 		panic("terms and coefficients mismatch")
@@ -1256,57 +1642,35 @@ func (f *Field[T]) polyMvPrep(at [][]*Element[T], coefs []int) (*multivariate[T]
 			panic("coefficient math.MinInt overflows on negation")
 		}
 	}
-	// initialize the multivariate struct from the inputs. The current method
-	// takes as input references to the elements. However, the hint function
-	// works with solved values. So it would be better to work with the exact
-	// exponents there.
-
-	// we detect all different elements in the inputs.
-	//
-	// it would be easier to use a map to store the elements and then use the
-	// map to get the inputs in the right order. However, for deterministic
-	// circuit compilation we need to use the same order of inputs. So we use
-	// slice instead.
-	var allElems []*Element[T]
+	// Enforce limb widths on all input elements in deterministic order, even if
+	// a term is later simplified away (e.g. multiplied by zero).
+	var seen []*Element[T]
 	for i := range at {
-	AT_INNER:
+	SEEN_INNER:
 		for j := range at[i] {
-			for k := range allElems {
-				if allElems[k] == at[i][j] {
-					continue AT_INNER
+			for k := range seen {
+				if seen[k] == at[i][j] {
+					continue SEEN_INNER
 				}
 			}
-			allElems = append(allElems, at[i][j])
+			seen = append(seen, at[i][j])
 		}
 	}
-	// we already know all different inputs. We now count the number of
-	// occurrences in every term.
-	terms := make([][]int, 0, len(at))
-	for i := range at {
-		term := make([]int, len(allElems))
-		for j := range at[i] {
-			term[slices.Index(allElems, at[i][j])]++
-		}
-		terms = append(terms, term)
+	for i := range seen {
+		f.enforceWidthConditional(seen[i])
 	}
 
-	// ensure that all the elements have the range checks enforced on limbs.
-	// Necessary in case the input is a witness.
-	for i := range allElems {
-		f.enforceWidthConditional(allElems[i])
+	mv, allElems := f.buildCanonicalMv(at, coefs, nil)
+	if len(mv.Terms) == 0 {
+		return mv, allElems
 	}
 
-	// multivariate is used for passing the terms and coefficients to the hint
-	// in a compact form.
-	mv := &multivariate[T]{
-		Terms:        terms,
-		Coefficients: coefs,
-	}
 	// Reduce lazy inputs until their overflow no longer pushes the carry above
 	// the ordinary carry budget. Higher-degree expressions may have a larger
 	// irreducible bound even with fully reduced inputs; the final soundness cap
 	// is enforced by constrainCarryLimbs.
-	for f.polyMvCarryBound(mv, allElems) > maxLazyOverflow {
+	var elemMap map[*Element[T]]*Element[T]
+	for len(mv.Terms) > 0 && f.polyMvCarryBound(mv, allElems) > maxLazyOverflow {
 		toReduce := -1
 		for i := range allElems {
 			if allElems[i].overflow > 0 && (toReduce == -1 || allElems[i].overflow > allElems[toReduce].overflow) {
@@ -1316,7 +1680,21 @@ func (f *Field[T]) polyMvPrep(at [][]*Element[T], coefs []int) (*multivariate[T]
 		if toReduce == -1 {
 			break
 		}
-		allElems[toReduce] = f.Reduce(allElems[toReduce])
+		oldEl := allElems[toReduce]
+		reducedEl := f.Reduce(oldEl)
+		allElems[toReduce] = reducedEl
+		if f.isConstZeroElem(reducedEl) || f.isConstOneElem(reducedEl) {
+			if elemMap == nil {
+				elemMap = make(map[*Element[T]]*Element[T])
+			}
+			for orig, cur := range elemMap {
+				if cur == oldEl {
+					elemMap[orig] = reducedEl
+				}
+			}
+			elemMap[oldEl] = reducedEl
+			mv, allElems = f.buildCanonicalMv(at, coefs, elemMap)
+		}
 	}
 	return mv, allElems
 }
@@ -1380,19 +1758,32 @@ func (f *Field[T]) evalByMul(mv *multivariate[T], at []*Element[T]) *Element[T] 
 // rem is the zero-limb constant zero) and it errors at solving time if the
 // evaluation is not divisible by the modulus.
 func (f *Field[T]) callPolyMvHint(mv *multivariate[T], at []*Element[T], assertZero bool) (quo, rem, carries *Element[T], kNeg frontend.Variable, err error) {
-	// first compute the length of the result so that we know how many bits we need for the quotient.
+	// compute exact worst-case magnitude and quotient bounds over Z.
 	nbLimbs, nbBits := f.fParams.NbLimbs(), f.fParams.BitsPerLimb()
 	modBits := uint(f.fParams.Modulus().BitLen())
-	quoSize := f.polyMvEvalQuoSize(mv, at)
-	var nbQuoLimbs uint
-	if quoSize+nbBits > modBits {
-		nbQuoLimbs = (quoSize - modBits + nbBits) / nbBits
-	}
+	posMax, negMax, maxQuo, _ := f.polyMvBounds(mv, at)
+	quoBits := maxQuo.BitLen()
+	nbQuoLimbs := (uint(quoBits) + nbBits - 1) / nbBits
 	nbRemLimbs := nbLimbs
 	if assertZero {
 		nbRemLimbs = 0
 	}
-	nbCarryLimbs := nbMultiplicationResLimbs(int(nbQuoLimbs), int(nbLimbs)) - 1
+	maxLhsLimbs := 0
+	for _, term := range mv.Terms {
+		termLimbs := 1
+		for j, pow := range term {
+			if pow > 0 && len(at[j].Limbs) > 0 {
+				termLimbs += pow * (len(at[j].Limbs) - 1)
+			}
+		}
+		if termLimbs > maxLhsLimbs {
+			maxLhsLimbs = termLimbs
+		}
+	}
+	nbCarryLimbs := max(0, max(maxLhsLimbs, int(nbRemLimbs), nbMultiplicationResLimbs(int(nbQuoLimbs), int(nbLimbs)))-1)
+
+	canQuoBeNeg := negMax.Sign() > 0 && nbQuoLimbs > 0
+	hasKNeg := canQuoBeNeg || (nbQuoLimbs == 0 && nbRemLimbs == 0 && nbCarryLimbs == 0)
 
 	nbHintInputs := 7 + len(mv.Coefficients) + len(at)*len(mv.Terms) + len(mv.Coefficients) + len(f.Modulus().Limbs)
 	for i := range at {
@@ -1430,13 +1821,20 @@ func (f *Field[T]) callPolyMvHint(mv *multivariate[T], at []*Element[T], assertZ
 		hintInputs = append(hintInputs, len(at[i].Limbs))
 		hintInputs = append(hintInputs, at[i].Limbs...)
 	}
-	nbOutputs := int(nbQuoLimbs) + int(nbRemLimbs) + int(nbCarryLimbs) + 1
+	nbOutputs := int(nbQuoLimbs) + int(nbRemLimbs) + int(nbCarryLimbs)
+	if hasKNeg {
+		nbOutputs++
+	}
 	ret, err := f.api.NewHint(polyMvHint, nbOutputs, hintInputs...)
 	if err != nil {
 		err = fmt.Errorf("call hint: %w", err)
 		return
 	}
-	quo = f.packLimbs(ret[:nbQuoLimbs], false)
+	if nbQuoLimbs > 0 {
+		quo = f.packLimbsWithWidth(ret[:nbQuoLimbs], quoBits)
+	} else {
+		quo = f.Zero()
+	}
 	if assertZero {
 		rem = f.Zero()
 	} else {
@@ -1445,23 +1843,24 @@ func (f *Field[T]) callPolyMvHint(mv *multivariate[T], at []*Element[T], assertZ
 	carries = f.newInternalElement(ret[nbQuoLimbs+nbRemLimbs:nbQuoLimbs+nbRemLimbs+uint(nbCarryLimbs)], 0)
 	// As in multiplication, only the low carries needed for the power-of-two
 	// half of the CRT certificate need individual range checks.
-	bound := f.mvCarryBound(mv, at, nbQuoLimbs, modBits, quoSize)
-	nbLow := f.mvLowCarries(quoSize, modBits, int(nbCarryLimbs))
+	bound := f.mvCarryBound(mv, at, nbQuoLimbs, maxQuo)
+	if bound > f.maxCarryBits() {
+		panic(fmt.Sprintf("emulated: carry bound %d bits exceeds soundness limit %d bits: reduce the inputs before the operation", bound, f.maxCarryBits()))
+	}
+	nbLow := f.mvLowCarries(posMax, negMax, quoBits, quo.overflow, modBits, rem.overflow, assertZero, hasKNeg, nbCarryLimbs)
 	f.constrainCarryLimbs(carries.Limbs[:nbLow], bound)
-	kNeg = ret[nbQuoLimbs+nbRemLimbs+uint(nbCarryLimbs)]
-	f.api.AssertIsBoolean(kNeg)
+	if hasKNeg {
+		kNeg = ret[nbQuoLimbs+nbRemLimbs+uint(nbCarryLimbs)]
+		f.api.AssertIsBoolean(kNeg)
+	}
 	return quo, rem, carries, kNeg, nil
 }
 
 func (f *Field[T]) polyMvCarryBound(mv *multivariate[T], at []*Element[T]) uint {
 	nbBits := f.fParams.BitsPerLimb()
-	modBits := uint(f.fParams.Modulus().BitLen())
-	quoSize := f.polyMvEvalQuoSize(mv, at)
-	var nbQuoLimbs uint
-	if quoSize+nbBits > modBits {
-		nbQuoLimbs = (quoSize - modBits + nbBits) / nbBits
-	}
-	return f.mvCarryBound(mv, at, nbQuoLimbs, modBits, quoSize)
+	_, _, maxQuo, _ := f.polyMvBounds(mv, at)
+	nbQuoLimbs := (uint(maxQuo.BitLen()) + nbBits - 1) / nbBits
+	return f.mvCarryBound(mv, at, nbQuoLimbs, maxQuo)
 }
 
 // mvCheck is a deferred check for multivariate polynomial evaluation. It
@@ -1475,11 +1874,14 @@ type mvCheck[T FieldParams] struct {
 	r    *Element[T]       // reduced result
 	k    *Element[T]       // quotient (absolute value)
 	c    *Element[T]       // carry
-	kNeg frontend.Variable // 1 if quotient is negative, 0 otherwise
+	kNeg frontend.Variable // 1 if quotient is negative, 0 otherwise; nil when quotient is provably non-negative
 }
 
 func (mc *mvCheck[T]) toCommit() []frontend.Variable {
-	nbToCommit := len(mc.r.Limbs) + len(mc.k.Limbs) + len(mc.c.Limbs) + 1
+	nbToCommit := len(mc.r.Limbs) + len(mc.k.Limbs) + len(mc.c.Limbs)
+	if mc.kNeg != nil {
+		nbToCommit++
+	}
 	for j := range mc.vals {
 		nbToCommit += len(mc.vals[j].Limbs)
 	}
@@ -1487,7 +1889,9 @@ func (mc *mvCheck[T]) toCommit() []frontend.Variable {
 	toCommit = append(toCommit, mc.r.Limbs...)
 	toCommit = append(toCommit, mc.k.Limbs...)
 	toCommit = append(toCommit, mc.c.Limbs...)
-	toCommit = append(toCommit, mc.kNeg)
+	if mc.kNeg != nil {
+		toCommit = append(toCommit, mc.kNeg)
+	}
 	for j := range mc.vals {
 		toCommit = append(toCommit, mc.vals[j].Limbs...)
 	}
@@ -1516,67 +1920,90 @@ func (mc *mvCheck[T]) evalRound2(at []frontend.Variable) {
 	}
 }
 
+func (f *Field[T]) checkMvRhs(api frontend.API, ls, peval, coef frontend.Variable, r, k, c *Element[T], kNeg frontend.Variable) {
+	if f.extensionApi == nil {
+		var rsTerms []frontend.Variable
+		if len(r.Limbs) > 0 {
+			rsTerms = append(rsTerms, r.evaluation)
+		}
+		if len(k.Limbs) > 0 {
+			kp := api.Mul(k.evaluation, peval)
+			if kNeg != nil {
+				s := api.Sub(1, api.Mul(2, kNeg))
+				kp = api.Mul(s, kp)
+			}
+			rsTerms = append(rsTerms, kp)
+		}
+		if len(c.Limbs) > 0 {
+			rsTerms = append(rsTerms, api.Mul(c.evaluation, coef))
+		}
+		var rs frontend.Variable = 0
+		if len(rsTerms) == 1 {
+			rs = rsTerms[0]
+		} else if len(rsTerms) > 1 {
+			rs = api.Add(rsTerms[0], rsTerms[1], rsTerms[2:]...)
+		}
+		api.AssertIsEqual(ls, rs)
+	} else {
+		ext := f.extensionApi
+		rs := ext.Zero()
+		if len(r.Limbs) > 0 {
+			rs = r.evaluation.(fieldextension.Element)
+		}
+		if len(k.Limbs) > 0 {
+			pevalext := peval.(fieldextension.Element)
+			kext := k.evaluation.(fieldextension.Element)
+			kpext := ext.Mul(pevalext, kext)
+			if kNeg != nil {
+				s := api.Sub(1, api.Mul(2, kNeg))
+				kpext = ext.MulByElement(kpext, s)
+			}
+			rs = ext.Add(rs, kpext)
+		}
+		if len(c.Limbs) > 0 {
+			coefext := coef.(fieldextension.Element)
+			cext := c.evaluation.(fieldextension.Element)
+			rs = ext.Add(rs, ext.Mul(coefext, cext))
+		}
+		ext.AssertIsEqual(ls.(fieldextension.Element), rs)
+	}
+}
+
 // check checks that the multivariate polynomial f(x1(ch), x2(ch), ...) = r(ch)
 // + k(ch)*p(ch) + (2^t-ch) c(ch) holds. As p and (2^t-ch) are same over all
 // checks then we get them as arguments to this method.
 func (mc *mvCheck[T]) check(api frontend.API, peval, coef frontend.Variable) {
-	// we either have to perform the equality check in the native field or in
-	// the extension field. It was already determined at the [Field]
-	// initialization time which kind of check needs to be done.
-	//
-	// The hint returns |k| and a boolean kNeg ∈ {0,1} indicating whether the
-	// quotient is negative. We define the sign factor s = 1 - 2·kNeg which
-	// maps kNeg=0 → s=1 (positive quotient) and kNeg=1 → s=-1 (negative
-	// quotient). The checked equation is then:
-	//
-	//   lhs(ch) = r(ch) + s·|k(ch)|·p(ch) + (2^t - ch)·c(ch)
 	if mc.f.extensionApi == nil {
-		ls := frontend.Variable(0)
+		var termProds []frontend.Variable
 		for i, term := range mc.mv.Terms {
 			termProd := frontend.Variable(mc.mv.Coefficients[i])
-			for i, pow := range term {
+			for idx, pow := range term {
 				for j := 0; j < pow; j++ {
-					termProd = api.Mul(termProd, mc.vals[i].evaluation)
+					termProd = api.Mul(termProd, mc.vals[idx].evaluation)
 				}
 			}
-			ls = api.Add(ls, termProd)
+			termProds = append(termProds, termProd)
 		}
-		kp := api.Mul(mc.k.evaluation, peval)
-		s := api.Sub(1, api.Mul(2, mc.kNeg))
-		rs := api.Add(mc.r.evaluation, api.Mul(s, kp), api.Mul(mc.c.evaluation, coef))
-		api.AssertIsEqual(ls, rs)
+		var ls frontend.Variable = 0
+		if len(termProds) == 1 {
+			ls = termProds[0]
+		} else if len(termProds) > 1 {
+			ls = api.Add(termProds[0], termProds[1], termProds[2:]...)
+		}
+		mc.f.checkMvRhs(api, ls, peval, coef, mc.r, mc.k, mc.c, mc.kNeg)
 	} else {
-		// here we use the fact that [frontend.Variable] is defined as any, but
-		// we have actually provided [ExtensionVariable]. We type assert to be
-		// able to use the fieldextension API.
-		//
-		// the computations are same as in the previous conditional block, but
-		// only in the extension.
 		ls := mc.f.extensionApi.Zero()
 		for i, term := range mc.mv.Terms {
 			termProd := mc.f.extensionApi.AsExtensionVariable(mc.mv.Coefficients[i])
-			for i, pow := range term {
+			for idx, pow := range term {
 				for j := 0; j < pow; j++ {
-					valsexti := mc.vals[i].evaluation.(fieldextension.Element)
+					valsexti := mc.vals[idx].evaluation.(fieldextension.Element)
 					termProd = mc.f.extensionApi.Mul(termProd, valsexti)
 				}
 			}
 			ls = mc.f.extensionApi.Add(ls, termProd)
 		}
-		rext := mc.r.evaluation.(fieldextension.Element)
-		pevalext := peval.(fieldextension.Element)
-		kext := mc.k.evaluation.(fieldextension.Element)
-		cext := mc.c.evaluation.(fieldextension.Element)
-		coefext := coef.(fieldextension.Element)
-
-		kpext := mc.f.extensionApi.Mul(pevalext, kext)
-		sext := mc.f.extensionApi.AsExtensionVariable(api.Sub(1, api.Mul(2, mc.kNeg)))
-
-		ccoefext := mc.f.extensionApi.Mul(coefext, cext)
-		rs := mc.f.extensionApi.Add(rext, mc.f.extensionApi.Mul(sext, kpext))
-		rs = mc.f.extensionApi.Add(rs, ccoefext)
-
-		mc.f.extensionApi.AssertIsEqual(ls, rs)
+		mc.f.checkMvRhs(api, ls, peval, coef, mc.r, mc.k, mc.c, mc.kNeg)
 	}
 }
 
@@ -1593,40 +2020,10 @@ func (mc *mvCheck[T]) cleanEvaluations() {
 	mc.c.isEvaluated = false
 }
 
-// polyMvEvalQuoSize compute the length of the quotient in bits when evaluating
-// the multivariate polynomial. The method is used to compute the number of bits
-// required to represent the quotient in the hint function.
-//
-// As it only depends on the bit-length of the inputs, then we can precompute it
-// regardless of the actual values.
+// polyMvEvalQuoSize returns the exact worst-case bit-length of |mv(at)| over Z
+// under the enforced limb range checks on at.
 func (f *Field[T]) polyMvEvalQuoSize(mv *multivariate[T], at []*Element[T]) (quoSize uint) {
-	if len(mv.Terms) == 0 {
-		return 0
-	}
-	quoSizes := make([]uint, len(mv.Terms))
-	for i, term := range mv.Terms {
-		// for every term, the result length is the sum of the lengths of the
-		// variables and the coefficient.
-		var lengths []uint
-		for j, pow := range term {
-			for k := 0; k < pow; k++ {
-				lengths = append(lengths, uint(len(at[j].Limbs))*f.fParams.BitsPerLimb()+at[j].overflow)
-			}
-		}
-		coef := mv.Coefficients[i]
-		if coef < 0 {
-			coef = -coef
-		}
-		lengths = append(lengths, uint(bits.Len(uint(coef))))
-		if lengthSum := sum(lengths...); lengthSum > 0 {
-			// in edge case when inputs are zeros and coefficient is zero, we
-			// would have a underflow otherwise.
-			quoSizes[i] = lengthSum - 1
-		}
-	}
-	// and for the full result, it is maximum of the inputs. We also add a bit
-	// for every term for overflow.
-	quoSize = slices.Max(quoSizes) + uint(len(quoSizes))
+	_, _, _, quoSize = f.polyMvBounds(mv, at)
 	return quoSize
 }
 
@@ -1634,7 +2031,7 @@ func (f *Field[T]) polyMvEvalQuoSize(mv *multivariate[T], at []*Element[T]) (quo
 // called directly, but rather through [Field.callPolyMvHint] method which
 // handles the input packing and output unpacking.
 func polyMvHint(mod *big.Int, inputs, outputs []*big.Int) error {
-	if len(inputs) < 8 {
+	if len(inputs) < 7 {
 		return errors.New("not enough inputs")
 	}
 	var (
@@ -1649,7 +2046,11 @@ func polyMvHint(mod *big.Int, inputs, outputs []*big.Int) error {
 	// nbRemLimbs == 0 indicates that the caller asserts the evaluation to be
 	// zero modulo the modulus: no remainder limbs are output and a non-zero
 	// remainder is a solving error.
-	if len(outputs) != nbQuoLimbs+nbRemLimbs+nbCarryLimbs+1 {
+	baseOutputs := nbQuoLimbs + nbRemLimbs + nbCarryLimbs
+	hasKNeg := false
+	if len(outputs) == baseOutputs+1 {
+		hasKNeg = true
+	} else if len(outputs) != baseOutputs {
 		return errors.New("output length mismatch")
 	}
 	outPtr := 0
@@ -1659,7 +2060,10 @@ func polyMvHint(mod *big.Int, inputs, outputs []*big.Int) error {
 	outPtr += nbRemLimbs
 	carryLimbs := outputs[outPtr : outPtr+nbCarryLimbs]
 	outPtr += nbCarryLimbs
-	kNegOut := outputs[outPtr]
+	var kNegOut *big.Int
+	if hasKNeg {
+		kNegOut = outputs[outPtr]
+	}
 	// read per-coefficient signs: 0 = positive, 1 = negative
 	ptr := 7
 	signs := make([]int, nbTerms)
@@ -1748,10 +2152,15 @@ func polyMvHint(mod *big.Int, inputs, outputs []*big.Int) error {
 	// if quotient is negative, output |k| and set kNeg = 1
 	var kNegVal int
 	if quo.Sign() < 0 {
+		if !hasKNeg {
+			return errors.New("unexpected negative quotient without sign output")
+		}
 		kNegVal = 1
 		quo.Neg(quo)
 	}
-	kNegOut.SetInt64(int64(kNegVal))
+	if hasKNeg {
+		kNegOut.SetInt64(int64(kNegVal))
+	}
 	// write the remainder and quotient to output
 	if err := limbs.Decompose(quo, uint(nbBits), quoLimbs); err != nil {
 		return fmt.Errorf("decompose quo: %w", err)
