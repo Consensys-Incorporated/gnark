@@ -7,39 +7,39 @@ package tinyfield
 
 // Add adds two vectors element-wise and stores the result in self.
 // It panics if the vectors don't have the same length.
-func (vector *Vector) Add(a, b Vector) {
-	addVecGeneric(*vector, a, b)
+func (vector Vector) Add(a, b Vector) {
+	addVecGeneric(vector, a, b)
 }
 
 // Sub subtracts two vectors element-wise and stores the result in self.
 // It panics if the vectors don't have the same length.
-func (vector *Vector) Sub(a, b Vector) {
-	subVecGeneric(*vector, a, b)
+func (vector Vector) Sub(a, b Vector) {
+	subVecGeneric(vector, a, b)
 }
 
 // ScalarMul multiplies a vector by a scalar element-wise and stores the result in self.
 // It panics if the vectors don't have the same length.
-func (vector *Vector) ScalarMul(a Vector, b *Element) {
-	scalarMulVecGeneric(*vector, a, b)
+func (vector Vector) ScalarMul(a Vector, b *Element) {
+	scalarMulVecGeneric(vector, a, b)
 }
 
 // Sum computes the sum of all elements in the vector.
-func (vector *Vector) Sum() (res Element) {
-	sumVecGeneric(&res, *vector)
+func (vector Vector) Sum() (res Element) {
+	sumVecGeneric(&res, vector)
 	return
 }
 
 // InnerProduct computes the inner product of two vectors.
 // It panics if the vectors don't have the same length.
-func (vector *Vector) InnerProduct(other Vector) (res Element) {
-	innerProductVecGeneric(&res, *vector, other)
+func (vector Vector) InnerProduct(other Vector) (res Element) {
+	innerProductVecGeneric(&res, vector, other)
 	return
 }
 
 // Mul multiplies two vectors element-wise and stores the result in self.
 // It panics if the vectors don't have the same length.
-func (vector *Vector) Mul(a, b Vector) {
-	mulVecGeneric(*vector, a, b)
+func (vector Vector) Mul(a, b Vector) {
+	mulVecGeneric(vector, a, b)
 }
 
 func vectorFoldPairs(res, layer, halfInvTwiddles Vector, alpha *Element) {
@@ -64,4 +64,16 @@ func batchInvertRowForward(acc, prefix, row, a Vector) {
 
 func batchInvertRowBackward(acc, res, prefix, row, tmp Vector) {
 	batchInvertRowBackwardGeneric(acc, res, prefix, row, tmp)
+}
+
+func vectorNeg(res, a Vector) {
+	negVecGeneric(res, a)
+}
+
+func vectorScalarAdd(res, a Vector, c *Element) {
+	scalarAddVecGeneric(res, a, c)
+}
+
+func vectorScalarSubFrom(res, a Vector, c *Element) {
+	scalarSubFromVecGeneric(res, a, c)
 }

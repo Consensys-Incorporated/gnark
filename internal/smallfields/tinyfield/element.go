@@ -604,11 +604,11 @@ const (
 )
 
 // batchInvertLanes returns the number of interleaved product chains batchInvert
-// runs for n elements, 0 meaning the scalar path (batchInvertScalar). A field
-// product is cheap enough that the per-call cost of the vectorised Vector.Mul only pays
-// off on long inputs, and wider rows keep more independent products in
-// flight, while every chain adds to the inversion of the chain products; the
-// thresholds are measured (BenchmarkElementBatchInvertLanes).
+// runs for n elements, 0 meaning the scalar path (batchInvertScalar). Wider
+// rows amortise the per-call cost of the vectorised row kernels and keep more
+// independent products in flight, while every chain adds to the inversion of
+// the chain products; the thresholds are measured
+// (BenchmarkElementBatchInvertLanes).
 // It must stay at most n/2, so that the chain products are fewer than n.
 func batchInvertLanes(n int) int {
 	if cpu.SupportNEON {
@@ -641,13 +641,22 @@ func batchInvertLanes(n int) int {
 			return 0
 		}
 	}
+	// measured on Sapphire Rapids (Xeon 8488C): since the kernels return with
+	// VZEROUPPER, a vectorised row costs a few ns, and narrow rows pay off
+	// from the shortest inputs; wider rows only for long ones.
 	switch {
-	case n >= 8192:
+	case n >= 1<<18:
 		return 1024
-	case n >= 3072:
-		return 512
-	case n >= 768:
+	case n >= 16384:
 		return 256
+	case n >= 8192:
+		return 128
+	case n >= 1536:
+		return 64
+	case n >= 192:
+		return 32
+	case n >= 32:
+		return 16
 	default:
 		return 0
 	}

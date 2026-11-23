@@ -2374,7 +2374,7 @@ func TestElementBatchInvertChains(t *testing.T) {
 // at every row width, against the scalar path (lanes=0), to set the
 // thresholds of batchInvertLanes.
 func BenchmarkElementBatchInvertLanes(b *testing.B) {
-	for _, n := range []int{256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 8192, 12288, 16384, 32768, 65536, 262144} {
+	for _, n := range []int{32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 8192, 12288, 16384, 32768, 65536, 262144} {
 		a := make([]Element, n)
 		for i := range a {
 			a[i].MustSetRandom()

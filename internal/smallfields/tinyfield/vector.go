@@ -350,46 +350,84 @@ func (vector Vector) Equal(other Vector) bool {
 	return slices.Equal(vector, other)
 }
 
-// Neg sets self to -a, element-wise. self may be identical to a; partially overlapping slices are not supported.
-// It panics if the vectors don't have the same length.
+// Neg sets vector[i] = -a[i] for all i.
+//
+// vector may be identical to a; partially overlapping slices are not
+// supported. It panics if the vectors don't have the same length.
 func (vector Vector) Neg(a Vector) {
 	if len(a) != len(vector) {
 		panic("vector.Neg: vectors don't have the same length")
 	}
-	for i := range a {
-		vector[i].Neg(&a[i])
+	if len(vector) == 0 {
+		return
 	}
+	vectorNeg(vector, a)
 }
 
-// ScalarAdd adds the scalar c to each element of a and stores the result in self.
-// self may be identical to a, and c may point into self; partially overlapping slices are not supported. It panics if the vectors don't have the same length.
+// ScalarAdd sets vector[i] = a[i] + c for all i.
+//
+// vector may be identical to a, and c may point into vector or a; partially
+// overlapping slices are not supported. It panics if the vectors don't have
+// the same length.
 func (vector Vector) ScalarAdd(a Vector, c *Element) {
 	if len(a) != len(vector) {
 		panic("vector.ScalarAdd: vectors don't have the same length")
 	}
-	cc := *c
-	for i := range a {
-		vector[i].Add(&a[i], &cc)
+	if len(vector) == 0 {
+		return
 	}
+	cc := *c
+	vectorScalarAdd(vector, a, &cc)
 }
 
-// ScalarSub subtracts the scalar c from each element of a and stores the result in self.
-// self may be identical to a, and c may point into self; partially overlapping slices are not supported. It panics if the vectors don't have the same length.
+// ScalarSub sets vector[i] = a[i] - c for all i.
+//
+// vector may be identical to a, and c may point into vector or a; partially
+// overlapping slices are not supported. It panics if the vectors don't have
+// the same length.
 func (vector Vector) ScalarSub(a Vector, c *Element) {
+	if len(a) != len(vector) {
+		panic("vector.ScalarSub: vectors don't have the same length")
+	}
+	if len(vector) == 0 {
+		return
+	}
 	var negC Element
 	negC.Neg(c)
 	vector.ScalarAdd(a, &negC)
 }
 
-// ScalarSubFrom subtracts each element of a from the scalar c and stores the result in self.
-// self may be identical to a, and c may point into self; partially overlapping slices are not supported. It panics if the vectors don't have the same length.
+// ScalarSubFrom sets vector[i] = c - a[i] for all i.
+//
+// vector may be identical to a, and c may point into vector or a; partially
+// overlapping slices are not supported. It panics if the vectors don't have
+// the same length.
 func (vector Vector) ScalarSubFrom(c *Element, a Vector) {
 	if len(a) != len(vector) {
 		panic("vector.ScalarSubFrom: vectors don't have the same length")
 	}
+	if len(vector) == 0 {
+		return
+	}
 	cc := *c
-	for i := range a {
-		vector[i].Sub(&cc, &a[i])
+	vectorScalarSubFrom(vector, a, &cc)
+}
+
+func negVecGeneric(res, a Vector) {
+	for i := range res {
+		res[i].Neg(&a[i])
+	}
+}
+
+func scalarAddVecGeneric(res, a Vector, c *Element) {
+	for i := range res {
+		res[i].Add(&a[i], c)
+	}
+}
+
+func scalarSubFromVecGeneric(res, a Vector, c *Element) {
+	for i := range res {
+		res[i].Sub(c, &a[i])
 	}
 }
 
@@ -597,8 +635,12 @@ func scalarMulVecGeneric(res, a Vector, b *Element) {
 	if len(a) != len(res) {
 		panic("vector.ScalarMul: vectors don't have the same length")
 	}
+	if len(a) == 0 {
+		return
+	}
+	bb := *b // b may point into res
 	for i := range len(a) {
-		res[i].Mul(&a[i], b)
+		res[i].Mul(&a[i], &bb)
 	}
 }
 
