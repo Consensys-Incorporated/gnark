@@ -322,8 +322,7 @@ func buildEvalSystemPlan[T FieldParams](polys []*multivariate[T], useKara bool) 
 	}
 
 	// coefMatrix[m][p] stores coefficient of monomial m in polynomial p.
-	var polyRefs [][]polyTermRef
-	polyRefs = make([][]polyTermRef, nP)
+	polyRefs := make([][]polyTermRef, nP)
 	for p, mv := range polys {
 		for tIdx, term := range mv.Terms {
 			var vars []int
@@ -2004,7 +2003,7 @@ func qe6Mul(api frontend.API, x, y qE6, gamma int64) qE6 {
 	}
 	if nx < ny {
 		x, y = y, x
-		nx, ny = ny, nx
+		ny = nx
 	}
 	switch ny {
 	case 1:
