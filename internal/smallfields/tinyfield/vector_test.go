@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"slices"
 	"sort"
 	"testing"
 
@@ -19,6 +21,240 @@ import (
 	"github.com/leanovate/gopter/prop"
 	"github.com/stretchr/testify/require"
 )
+
+// Neg, ScalarAdd, ScalarSub and ScalarSubFrom have value receivers, so they can be called on unaddressable vectors.
+var _ = []any{Vector(nil).Neg, Vector(nil).ScalarAdd, Vector(nil).ScalarSub, Vector(nil).ScalarSubFrom}
+
+func TestVectorNegAndScalarOps(t *testing.T) {
+	var qMinusOne Element
+	qMinusOne.SetOne()
+	qMinusOne.Neg(&qMinusOne)
+	scalars := map[string]func() Element{
+		"zero":   func() (c Element) { return },
+		"one":    func() Element { return One() },
+		"q-1":    func() Element { return qMinusOne },
+		"random": func() (c Element) { c.MustSetRandom(); return },
+	}
+	type op struct {
+		name    string
+		vector  func(v, a Vector, c *Element)
+		element func(z, x, c *Element)
+	}
+	ops := []op{
+		{"Neg", func(v, a Vector, _ *Element) { v.Neg(a) }, func(z, x, _ *Element) { z.Neg(x) }},
+		{"ScalarAdd", func(v, a Vector, c *Element) { v.ScalarAdd(a, c) }, func(z, x, c *Element) { z.Add(x, c) }},
+		{"ScalarSub", func(v, a Vector, c *Element) { v.ScalarSub(a, c) }, func(z, x, c *Element) { z.Sub(x, c) }},
+		{"ScalarSubFrom", func(v, a Vector, c *Element) { v.ScalarSubFrom(c, a) }, func(z, x, c *Element) { z.Sub(c, x) }},
+	}
+	// sizes straddle the SIMD block sizes (4 on NEON, 16 on AVX-512) with
+	// unaligned tails.
+	for _, size := range []int{0, 1, 3, 4, 5, 15, 16, 17, 65, 1024} {
+		for cName, newC := range scalars {
+			t.Run(fmt.Sprintf("%d/%s", size, cName), func(t *testing.T) {
+				a := make(Vector, size)
+				a.MustSetRandom()
+				// edge values in the vector
+				for i, e := range []Element{{}, One(), qMinusOne} {
+					if i < size {
+						a[(i*7)%size] = e
+					}
+				}
+				c := newC()
+				for _, op := range ops {
+					want := make(Vector, size)
+					for i := range a {
+						op.element(&want[i], &a[i], &c)
+					}
+
+					got := make(Vector, size)
+					got.MustSetRandom()
+					op.vector(got, a, &c)
+					require.Equal(t, want, got, op.name)
+
+					// in place
+					got = slices.Clone(a)
+					op.vector(got, got, &c)
+					require.Equal(t, want, got, op.name+" in place")
+
+					if size == 0 {
+						continue
+					}
+					// the scalar points into the destination, at its first
+					// and last element (read before any write)
+					for _, j := range []int{0, size - 1} {
+						x := slices.Clone(a)
+						x[j] = c
+						wantAlias := make(Vector, size)
+						for i := range x {
+							op.element(&wantAlias[i], &x[i], &c)
+						}
+						op.vector(x, x, &x[j])
+						require.Equal(t, wantAlias, x, "%s scalar alias at %d", op.name, j)
+					}
+
+					// a sub-slice is a valid receiver (value receivers)
+					got = make(Vector, size)
+					op.vector(got[1:], a[1:], &c)
+					require.Equal(t, want[1:], got[1:], op.name+" sub-slice")
+					require.True(t, got[0].IsZero(), op.name+" sub-slice wrote out of range")
+				}
+			})
+		}
+	}
+
+	// on empty vectors, the scalar is not read (it may be nil)
+	var empty Vector
+	require.NotPanics(t, func() { empty.ScalarAdd(nil, nil) }, "ScalarAdd")
+	require.NotPanics(t, func() { empty.ScalarSub(nil, nil) }, "ScalarSub")
+	require.NotPanics(t, func() { empty.ScalarSubFrom(nil, nil) }, "ScalarSubFrom")
+
+	// length mismatches panic, including for an empty receiver
+	var c Element
+	for _, op := range ops {
+		require.Panics(t, func() { op.vector(make(Vector, 3), make(Vector, 4), &c) }, op.name)
+		require.Panics(t, func() { op.vector(nil, make(Vector, 1), &c) }, op.name)
+	}
+}
+
+// TestVectorValueReceivers checks the base vector operations on sub-slices
+// and conversions, which only compile with value receivers, and across the
+// SIMD block size (the kernels are skipped below one block).
+func TestVectorValueReceivers(t *testing.T) {
+	for _, size := range []int{1, 2, 3, 4, 5, 15, 16, 17, 33} {
+		a, b := make(Vector, size+2), make(Vector, size+2)
+		a.MustSetRandom()
+		b.MustSetRandom()
+		var c Element
+		c.MustSetRandom()
+		res := make([]Element, size+2)
+
+		Vector(res)[1:size+1].Add(a[1:size+1], b[1:size+1])
+		for i := 1; i <= size; i++ {
+			var e Element
+			require.Equal(t, *e.Add(&a[i], &b[i]), res[i], "Add %d", size)
+		}
+		Vector(res)[1:size+1].Sub(a[1:size+1], b[1:size+1])
+		for i := 1; i <= size; i++ {
+			var e Element
+			require.Equal(t, *e.Sub(&a[i], &b[i]), res[i], "Sub %d", size)
+		}
+		Vector(res)[1:size+1].Mul(a[1:size+1], b[1:size+1])
+		for i := 1; i <= size; i++ {
+			var e Element
+			require.Equal(t, *e.Mul(&a[i], &b[i]), res[i], "Mul %d", size)
+		}
+		Vector(res)[1:size+1].ScalarMul(a[1:size+1], &c)
+		for i := 1; i <= size; i++ {
+			var e Element
+			require.Equal(t, *e.Mul(&a[i], &c), res[i], "ScalarMul %d", size)
+		}
+		require.True(t, res[0].IsZero() && res[size+1].IsZero(), "wrote out of range")
+
+		var sum, ip Element
+		for i := 1; i <= size; i++ {
+			var e Element
+			sum.Add(&sum, &a[i])
+			ip.Add(&ip, e.Mul(&a[i], &b[i]))
+		}
+		require.Equal(t, sum, a[1:size+1].Sum(), "Sum %d", size)
+		require.Equal(t, ip, a[1:size+1].InnerProduct(b[1:size+1]), "InnerProduct %d", size)
+	}
+}
+
+func BenchmarkVectorNegScalar(b *testing.B) {
+	for _, n := range []int{1 << 12, 1 << 16} {
+		a, res := make(Vector, n), make(Vector, n)
+		a.MustSetRandom()
+		var c Element
+		c.MustSetRandom()
+		b.Run(fmt.Sprintf("Neg/n=%d", n), func(b *testing.B) {
+			for b.Loop() {
+				res.Neg(a)
+			}
+		})
+		b.Run(fmt.Sprintf("NegGeneric/n=%d", n), func(b *testing.B) {
+			for b.Loop() {
+				negVecGeneric(res, a)
+			}
+		})
+		b.Run(fmt.Sprintf("ScalarAdd/n=%d", n), func(b *testing.B) {
+			for b.Loop() {
+				res.ScalarAdd(a, &c)
+			}
+		})
+		b.Run(fmt.Sprintf("ScalarAddGeneric/n=%d", n), func(b *testing.B) {
+			for b.Loop() {
+				scalarAddVecGeneric(res, a, &c)
+			}
+		})
+		b.Run(fmt.Sprintf("ScalarSubFrom/n=%d", n), func(b *testing.B) {
+			for b.Loop() {
+				res.ScalarSubFrom(&c, a)
+			}
+		})
+		b.Run(fmt.Sprintf("ScalarSubFromGeneric/n=%d", n), func(b *testing.B) {
+			for b.Loop() {
+				scalarSubFromVecGeneric(res, a, &c)
+			}
+		})
+	}
+}
+
+func TestVectorNegAndScalarOpsZeroAllocs(t *testing.T) {
+	const n = 1024 + 17
+	v, a := make(Vector, n), make(Vector, n)
+	var c Element
+	for _, op := range []struct {
+		name string
+		call func()
+	}{
+		{"Neg", func() { v.Neg(a) }},
+		{"ScalarAdd", func() { v.ScalarAdd(a, &c) }},
+		{"ScalarSub", func() { v.ScalarSub(a, &c) }},
+		{"ScalarSubFrom", func() { v.ScalarSubFrom(&c, a) }},
+	} {
+		require.Zero(t, testing.AllocsPerRun(10, op.call), op.name)
+	}
+}
+
+func TestVectorPrefixProduct(t *testing.T) {
+	for _, size := range []int{0, 1, 2, 3, 1<<15 - 1, 1 << 15, 1<<15 + 1, 70001} {
+		for _, nbTasks := range [][]int{nil, {-1}, {0}, {1}, {2}, {3}, {16}, {runtime.NumCPU()}} {
+			v := make(Vector, size)
+			v.MustSetRandom()
+			if size > 5000 {
+				// a zero in the middle of a chunk
+				v[5000].SetZero()
+			}
+			expected := make(Vector, size)
+			for i := range v {
+				expected[i] = v[i]
+				if i > 0 {
+					expected[i].Mul(&expected[i], &expected[i-1])
+				}
+			}
+			v.PrefixProduct(nbTasks...)
+			require.Equal(t, expected, v, "size=%d nbTasks=%v", size, nbTasks)
+		}
+	}
+}
+
+func BenchmarkVectorPrefixProduct(b *testing.B) {
+	for _, size := range []int{1 << 12, 1 << 15, 1 << 17, 1 << 20} {
+		v := make(Vector, size)
+		v.MustSetRandom()
+		b.Run(fmt.Sprintf("generic/n=%d", size), func(b *testing.B) {
+			for b.Loop() {
+				v.prefixProductGeneric()
+			}
+		})
+		b.Run(fmt.Sprintf("parallel/n=%d", size), func(b *testing.B) {
+			for b.Loop() {
+				v.PrefixProduct()
+			}
+		})
+	}
+}
 
 func TestVectorSort(t *testing.T) {
 	assert := require.New(t)
@@ -125,7 +361,7 @@ func deterministicVector(size int, seed uint64) Vector {
 
 func TestVectorAliasing(t *testing.T) {
 	assert := require.New(t)
-	sizes := []int{1, 8, 9, 64, 65}
+	sizes := []int{1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 64, 65}
 
 	for _, size := range sizes {
 		t.Run(fmt.Sprintf("size-%d", size), func(t *testing.T) {
@@ -159,6 +395,15 @@ func TestVectorAliasing(t *testing.T) {
 			copy(got, a)
 			got.ScalarMul(got, &scalar)
 			assert.True(got.Equal(want), "ScalarMul should support res == a")
+
+			// the scalar may point into the vector being written
+			for _, idx := range []int{0, size - 1} {
+				s := a[idx]
+				want.ScalarMul(a, &s)
+				copy(got, a)
+				got.ScalarMul(got, &got[idx])
+				assert.True(got.Equal(want), "ScalarMul should support b == &res[%d]", idx)
+			}
 
 			want.Mul(a, b)
 			copy(got, a)

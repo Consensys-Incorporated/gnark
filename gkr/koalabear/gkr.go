@@ -211,7 +211,7 @@ func Prove[D hash.ArrayBlock[koalabear.Element]](c Circuit, schedule constraint.
 
 	r := newResources(c, schedule, nbVars, hasher)
 	r.assignment = assignment
-	r.memPool = polynomial.NewPoolE6(gkrcore.MemoryRequirements(c, nbInstances)...)
+	r.memPool = polynomial.NewPoolE6()
 	r.workers = utils.NewWorkerPool()
 	defer r.workers.Stop()
 
