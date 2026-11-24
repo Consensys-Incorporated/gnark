@@ -11,6 +11,10 @@ import (
 	fr_bn254 "github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761"
 	fr_bw6761 "github.com/consensys/gnark-crypto/ecc/bw6-761/fr"
+	stark_curve "github.com/consensys/gnark-crypto/ecc/stark-curve"
+	fr_stark "github.com/consensys/gnark-crypto/ecc/stark-curve/fr"
+	"github.com/consensys/gnark-crypto/field/babybear"
+	"github.com/consensys/gnark-crypto/field/koalabear"
 	"github.com/consensys/gnark/frontend"
 	limbs "github.com/consensys/gnark/std/internal/limbcomposition"
 	"github.com/consensys/gnark/std/math/emulated"
@@ -300,4 +304,56 @@ func TestMarshalG1MatchesGnarkCrypto(t *testing.T) {
 		testMarshalG1AgainstBytes[emparams.BW6761Fp, emparams.BW6761Fr](assert,
 			new(big.Int), new(big.Int), P.Marshal())
 	}, "bw6761/infinity")
+}
+
+// TestMarshalOnSmallNativeField checks that MarshalScalar and MarshalG1 work
+// when the native field is a small field (KoalaBear, BabyBear). There the limbs
+// are narrow and the limb decomposition can cover fewer bits than the
+// byte-aligned encoding (e.g. 253 bits for STARK curve elements, encoded on
+// 256 bits), so the bit decomposition must be padded.
+func TestMarshalOnSmallNativeField(t *testing.T) {
+	assert := test.NewAssert(t)
+	var s fr_stark.Element
+	_, err := s.SetRandom()
+	assert.NoError(err)
+	var P stark_curve.G1Affine
+	P.ScalarMultiplicationBase(s.BigInt(new(big.Int)))
+	sBytes := s.Marshal()
+	pBytes := P.Marshal()
+	for _, field := range []*big.Int{koalabear.Modulus(), babybear.Modulus()} {
+		assert.Run(func(assert *test.Assert) {
+			circuit := &MarshalScalarTest[emparams.STARKCurveFp, emparams.STARKCurveFr]{
+				R: make([]frontend.Variable, 8*len(sBytes)),
+			}
+			witness := &MarshalScalarTest[emparams.STARKCurveFp, emparams.STARKCurveFr]{
+				X: emulated.ValueOf[emparams.STARKCurveFr](s),
+				R: bytesToBits(sBytes),
+			}
+			assert.NoError(test.IsSolved(circuit, witness, field))
+		}, fmt.Sprintf("scalar/%s", field))
+		assert.Run(func(assert *test.Assert) {
+			circuit := &MarshalG1Test[emparams.STARKCurveFp, emparams.STARKCurveFr]{
+				R: make([]frontend.Variable, 8*len(pBytes)),
+			}
+			witness := &MarshalG1Test[emparams.STARKCurveFp, emparams.STARKCurveFr]{
+				G: AffinePoint[emparams.STARKCurveFp]{
+					X: emulated.ValueOf[emparams.STARKCurveFp](P.X),
+					Y: emulated.ValueOf[emparams.STARKCurveFp](P.Y),
+				},
+				R: bytesToBits(pBytes),
+			}
+			assert.NoError(test.IsSolved(circuit, witness, field))
+		}, fmt.Sprintf("g1/%s", field))
+	}
+}
+
+// bytesToBits returns the big-endian bit decomposition of b.
+func bytesToBits(b []byte) []frontend.Variable {
+	res := make([]frontend.Variable, 8*len(b))
+	for i := range b {
+		for j := 0; j < 8; j++ {
+			res[i*8+j] = (b[i] >> (7 - j)) & 1
+		}
+	}
+	return res
 }
