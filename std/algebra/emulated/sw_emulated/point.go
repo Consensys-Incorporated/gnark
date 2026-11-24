@@ -120,7 +120,7 @@ func (c *Curve[B, S]) MarshalScalar(s emulated.Element[S], opts ...algopts.Algeb
 	var fr S
 	nbBits := 8 * ((fr.Modulus().BitLen() + 7) / 8)
 	sReduced := c.scalarApi.ReduceStrict(&s)
-	res := c.scalarApi.ToBits(sReduced)[:nbBits]
+	res := padBits(c.scalarApi.ToBits(sReduced), nbBits)
 	slices.Reverse(res)
 	return res
 }
@@ -139,8 +139,8 @@ func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption)
 	nbBits := 8 * ((bitLen + 7) / 8)
 	x := c.baseApi.ReduceStrict(&p.X)
 	y := c.baseApi.ReduceStrict(&p.Y)
-	bx := c.baseApi.ToBits(x)[:nbBits]
-	by := c.baseApi.ToBits(y)[:nbBits]
+	bx := padBits(c.baseApi.ToBits(x), nbBits)
+	by := padBits(c.baseApi.ToBits(y), nbBits)
 	slices.Reverse(bx)
 	slices.Reverse(by)
 	res := make([]frontend.Variable, 2*nbBits)
@@ -168,6 +168,27 @@ func (c *Curve[B, S]) MarshalG1(p AffinePoint[B], opts ...algopts.AlgebraOption)
 	// isZero = 1, infty bit 0 -> res[1]=0
 	// isZero = 1, infty bit 1 -> res[1]=1
 	res[1] = c.api.Mul(isZero, c.marshalZeroG1())
+	return res
+}
+
+// padBits returns the first nbBits bits of the little-endian decomposition
+// bits, padding with constant zeros when bits is shorter. The input must be
+// the decomposition of a reduced element, whose value is less than the
+// modulus and thus fits in len(bits) bits: the padded high bits are then known
+// to be zero.
+//
+// Padding is needed when the limb layout covers fewer bits than the
+// byte-aligned encoding width, which happens over small native fields (e.g.
+// KoalaBear and BabyBear) where the limbs are narrow.
+func padBits(bits []frontend.Variable, nbBits int) []frontend.Variable {
+	if len(bits) >= nbBits {
+		return bits[:nbBits]
+	}
+	res := make([]frontend.Variable, nbBits)
+	copy(res, bits)
+	for i := len(bits); i < nbBits; i++ {
+		res[i] = 0
+	}
 	return res
 }
 
