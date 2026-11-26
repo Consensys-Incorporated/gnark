@@ -81,6 +81,16 @@ func TestDoubleNoDependencyCircuit(t *testing.T) {
 	}
 }
 
+func TestCompileWithUnregisteredHash(t *testing.T) {
+	circuit := doubleNoDependencyCircuit{
+		X:        make([]frontend.Variable, 2),
+		hashName: "unregistered-hash",
+	}
+	_, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &circuit)
+	require.ErrorContains(t, err, `hash function "unregistered-hash" not registered`)
+	require.ErrorContains(t, err, "deferred: ")
+}
+
 type sqNoDependencyCircuit struct {
 	X        []frontend.Variable
 	hashName string

@@ -88,11 +88,11 @@ func RegisterCustomHash(name string, builder func(api frontend.API) (FieldHasher
 	namedHashes[name] = builder
 }
 
-// GetFieldHasher retrieves a hash function by its name. The name should match
-// the output of [Hash.String] or name used in [RegisterCustomHash] method. To
-// ensure that the hash function is correctly registered (and thus available for
-// getting with this method), import the corresponding hash gadget package so
-// that it would call the [Register] or [RegisterCustomHash] method.
+// GetFieldHasher retrieves a hash function by name and returns an error if the
+// name is not registered. The name should match the output of [Hash.String] or
+// a name used with [RegisterCustomHash]. To register the hash function, import
+// the corresponding hash gadget package so it calls [Register] or
+// [RegisterCustomHash].
 //
 // Alternatively, you can import the [github.com/consensys/gnark/std/hash/all]
 // package which automatically registers all hash functions.
@@ -110,5 +110,5 @@ func GetFieldHasher(name string, api frontend.API) (FieldHasher, error) {
 	if f, ok := namedHashes[name]; ok {
 		return f(api)
 	}
-	panic(fmt.Sprintf("hash function \"%s\" not registered. Import the corresponding package to register it", name))
+	return nil, fmt.Errorf("hash function \"%s\" not registered. Import the corresponding package to register it", name)
 }
